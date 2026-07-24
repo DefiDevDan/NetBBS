@@ -271,6 +271,89 @@ def test_user_picker_goto_still_works(db, lane, sysop):
     assert "Level: 10" in _written_text(session)
 
 
+def test_user_picker_visibility_toggle_hides_disabled_users_on_first_press(db, lane, sysop):
+    """The biggest node's own SysOp, dogfooding the sort toggles with a
+    real ~50-user roster: [V] cycles all -> active-only -> disabled-only
+    -> all. First press hides disabled accounts entirely."""
+    from netbbs.auth.users import set_user_disabled
+
+    alice = create_user(db, "alice", password="hunter2", user_level=10)
+    bob = create_user(db, "bob", password="hunter2", user_level=10)
+    set_user_disabled(db, bob, True, changed_by=sysop)
+
+    session = FakeSession(["u", "l", "v", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    marker = "Showing: Active users only (disabled hidden)"
+    assert marker in text
+    # rindex, not index/`in`: the screen redraws in place, and the
+    # cumulative output still contains the very first, pre-toggle render
+    # (where both users are visible) earlier in the text -- only what
+    # comes after the *last* render reflects the current filter (same
+    # pitfall this codebase already hit with the A/R/L sort toggle).
+    after = text[text.rindex(marker):]
+    assert "alice" in after
+    assert "bob" not in after
+
+
+def test_user_picker_visibility_toggle_shows_only_disabled_on_second_press(db, lane, sysop):
+    from netbbs.auth.users import set_user_disabled
+
+    alice = create_user(db, "alice", password="hunter2", user_level=10)
+    bob = create_user(db, "bob", password="hunter2", user_level=10)
+    set_user_disabled(db, bob, True, changed_by=sysop)
+
+    session = FakeSession(["u", "l", "v", "v", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    marker = "Showing: Disabled users only"
+    assert marker in text
+    after = text[text.rindex(marker):]
+    assert "bob" in after
+    assert "alice" not in after
+
+
+def test_user_picker_visibility_toggle_returns_to_all_on_third_press(db, lane, sysop):
+    from netbbs.auth.users import set_user_disabled
+
+    alice = create_user(db, "alice", password="hunter2", user_level=10)
+    bob = create_user(db, "bob", password="hunter2", user_level=10)
+    set_user_disabled(db, bob, True, changed_by=sysop)
+
+    session = FakeSession(["u", "l", "v", "v", "v", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    marker = "Showing: All users"
+    # rindex: "All users" is also the *initial* pre-toggle state, so a
+    # naive `.index()` would match the very first render instead of the
+    # one after the third press.
+    after = text[text.rindex(marker):]
+    assert "alice" in after
+    assert "bob" in after
+
+
+def test_user_picker_visibility_filter_scopes_search_and_goto(db, lane, sysop):
+    """The whole point of hiding a class of accounts is to stop having to
+    look at or reach them -- search and goto should respect the active
+    visibility filter, not silently bypass it."""
+    from netbbs.auth.users import set_user_disabled
+
+    create_user(db, "alice", password="hunter2", user_level=10)
+    bob = create_user(db, "bob", password="hunter2", user_level=10)
+    set_user_disabled(db, bob, True, changed_by=sysop)
+
+    # Active-only filter is on; searching for the hidden, disabled "bob"
+    # finds nothing even though the account exists.
+    session = FakeSession(["u", "l", "v", "s", "bob", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "No matches." in _written_text(session)
+
+    # Same filter; goto by bob's numeric ID is likewise out of range.
+    session2 = FakeSession(["u", "l", "v", "g", str(bob.id), "b", "b", "b"])
+    _run(session2, lane, sysop)
+    assert "Out of range." in _written_text(session2)
+
+
 def test_list_users_unrecognized_key_sounds_a_bell_and_changes_nothing(db, lane, sysop):
     """An unrecognized key on the listing screen itself follows the same
     bell-only, no-redraw convention netbbs.net.picker.pick_item already

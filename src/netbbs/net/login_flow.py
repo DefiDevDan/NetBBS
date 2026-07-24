@@ -141,6 +141,7 @@ from netbbs.permissions import meets_level
 from netbbs.rendering import (
     ACCENT_COLOR,
     ALERT_COLOR,
+    CLOCK_COLOR,
     HEADER_COLOR,
     MUTED_COLOR,
     colored,
@@ -912,10 +913,14 @@ def _main_menu_prompt(db: Database, user: User, node_controls: NodeControls | No
     them here; still just a snapshot at draw time, not a ticking live
     clock (see `_draw_main_menu`'s own docstring for why).
 
-    Rendered as alternating colors (`HH`/`MM`/`SS` in `HEADER_COLOR`,
-    the `:` separators in `MUTED_COLOR`) rather than one flat color --
+    Rendered as alternating colors (`HH`/`MM`/`SS` in `CLOCK_COLOR`, the
+    `:` separators in `MUTED_COLOR`) rather than one flat color --
     Thiesi's own explicit request for a two-tone "digital clock" look,
     distinguishing the digit groups from the separators at a glance.
+    `CLOCK_COLOR` (not `HEADER_COLOR`, used one line above by the "Main
+    menu:" label itself) is a deliberate follow-up fix: sharing
+    `HEADER_COLOR` made the clock read as part of that header rather
+    than a separate, unrelated element of the prompt.
     """
     if node_controls is None:
         return "Choice: "
@@ -924,7 +929,7 @@ def _main_menu_prompt(db: Database, user: User, node_controls: NodeControls | No
     hours, minutes, seconds = time_only.split(":")
     separator = colored(":", fg_color=MUTED_COLOR)
     time_str = separator.join(
-        colored(part, fg_color=HEADER_COLOR) for part in (hours, minutes, seconds)
+        colored(part, fg_color=CLOCK_COLOR) for part in (hours, minutes, seconds)
     )
     tag = ""
     if node_controls.shutdown_scheduler.is_scheduled():

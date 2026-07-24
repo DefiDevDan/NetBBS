@@ -52,6 +52,16 @@ ALERT_COLOR = 202  # deep orange-red — node-wide operational alerts (an active
                    # (routine informational text) since this specifically
                    # means "something time-sensitive is happening to the node
                    # itself, act on it"
+CLOCK_COLOR = 213  # light magenta/orchid — the main-menu prompt's own HH:MM:SS
+                   # clock (Thiesi's own explicit follow-up request, after the
+                   # clock originally shared HEADER_COLOR with the "Main menu:"
+                   # label one line above it and read as part of that header
+                   # rather than a separate thing). Distinct from SELF_COLOR
+                   # (also magenta family, but specifically "the user's own
+                   # chat messages" — an unrelated context that never appears
+                   # on the same screen, so the two are kept as separate named
+                   # constants rather than one shared value, matching this
+                   # module's own "one constant per meaning" convention)
 STATUS_BAR_BACKGROUND = 236  # dark neutral gray — the chat status line's own
                              # solid background band (Thiesi's own explicit
                              # choice: literal per-field foreground colors on

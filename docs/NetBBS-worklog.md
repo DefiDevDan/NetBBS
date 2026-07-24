@@ -2029,3 +2029,26 @@ the identical reason (`channel_messages.id`/`created_at`). Any future
 `order_by` clause sorting on a `created_at`-style column needs the same
 tie-break from the start, not just once a test happens to catch the
 collision.
+
+**Testing a redraw-in-place screen: assert against the text *after* the
+triggering keystroke, not `in`/`.index()` over the whole cumulative
+output.** A `FakeSession` accumulates every `write`/`write_line` call
+across an entire scripted key sequence into one growing buffer; a screen
+like `_pick_target_user` (the A/R/L/V user-picker toggles) redraws the
+*same* listing header/labels/rows in place on every toggle keystroke,
+so an earlier (e.g. pre-toggle, default-state) render of the same label
+text is still sitting earlier in that buffer. `str.index()`/`in` find
+the *first* match anywhere in the buffer, which is the stale pre-toggle
+render whenever the default and toggled states happen to share
+vocabulary (e.g. both `[V]`'s "all" state and its "active-only" state
+list the same usernames, just a different subset) -- this produced a
+real, confusing false failure once already (the A/R/L toggle tests
+comparing `text.index("sysop") < text.index("alice")`) and was caught
+proactively a second time while adding the `[V]` visibility toggle's
+own tests, specifically by using `text.rindex(marker)` (or slicing to
+`text[text.rindex(marker):]` before checking what else appears) to
+scope an assertion to the *last* render rather than the buffer as a
+whole. Any new test against a screen that redraws rather than appending
+fresh output needs this from the start, not just after a flaky-looking
+failure surfaces it.
+

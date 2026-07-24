@@ -526,7 +526,7 @@ async def _prompt_optional_pubkey(session: Session) -> nacl.signing.VerifyKey | 
 # than reach into another module's private helper" convention
 # netbbs.link.files._file_area_from_row's own docstring already states
 # for the identical reasoning).
-_USER_PICKER_RESERVED_LINES = 6
+_USER_PICKER_RESERVED_LINES = 7
 _USER_PICKER_MAX_PAGE_SIZE = 99
 
 # One key per sort dimension, each a live toggle between its ascending
@@ -543,6 +543,24 @@ _USER_SORT_MODES = {
     "a": ("Alphabetical", "alphabetical", "alphabetical_desc"),
     "r": ("Registration date", "registered", "registered_desc"),
     "l": ("Level", "level_asc", "level_desc"),
+}
+
+# A second, independent live toggle -- requested by the SysOp of the
+# biggest node once real dogfood use with ~50 registered users made
+# scrolling past disabled accounts to find an active one (or vice versa)
+# a real friction point pagination/search alone didn't solve. A 3-state
+# cycle, not a plain on/off filter, since both "I only care about active
+# accounts" and "I only care about disabled ones" (e.g. reviewing who to
+# actually delete) are real, equally common tasks -- one boolean can't
+# express both. `[V]` always advances one step forward through the same
+# fixed order; there's no direct "jump to state N" key, matching how
+# `[A]`/`[R]`/`[L]` already only offer "toggle the active one" rather
+# than a menu of every possible value.
+_USER_VISIBILITY_MODES = ("all", "active_only", "disabled_only")
+_USER_VISIBILITY_LABELS = {
+    "all": "All users",
+    "active_only": "Active users only (disabled hidden)",
+    "disabled_only": "Disabled users only",
 }
 
 
@@ -575,16 +593,29 @@ async def _pick_target_user(session: Session, lane: DatabaseLane, *, title: str)
     closely, adding three live sort-toggle keys (`[A]lphabetical`/
     `[R]egistration date`/`[L]evel`) that re-sort and redraw the same
     screen in place, each shown with its own current direction arrow so
-    the active mode is never ambiguous.
+    the active mode is never ambiguous, plus a fourth, independent
+    `[V]isibility` toggle (a real ~50-user node's own SysOp, dogfooding
+    the sort toggles) cycling all -> active-only -> disabled-only -> all,
+    always shown as a `Showing: ...` line the same "current state is
+    never ambiguous" way the sort line already is. The visibility filter
+    applies everywhere `_load` is called -- search and goto both scope to
+    the currently visible subset, not the full roster -- since the whole
+    point of hiding a class of accounts is to stop having to look at or
+    reach them until the SysOp explicitly widens the filter again.
     """
     mode = "a"
     descending = False
+    visibility = "all"
     query: str | None = None
     page_index = 0
 
     async def _load(*, apply_search: bool = True) -> list[User]:
         _, ascending_order, descending_order = _USER_SORT_MODES[mode]
         users = await lane.run(list_users, order_by=descending_order if descending else ascending_order)
+        if visibility == "active_only":
+            users = [u for u in users if u.disabled_at is None]
+        elif visibility == "disabled_only":
+            users = [u for u in users if u.disabled_at is not None]
         if apply_search and query:
             return [u for u in users if query.lower() in u.username.lower()]
         return users
@@ -613,6 +644,9 @@ async def _pick_target_user(session: Session, lane: DatabaseLane, *, title: str)
         )
         await session.write_line(f"\r\n{header}")
         await session.write_line(colored(f"Sorted by: {label} {arrow}", fg_color=MUTED_COLOR))
+        await session.write_line(
+            colored(f"Showing: {_USER_VISIBILITY_LABELS[visibility]}", fg_color=MUTED_COLOR)
+        )
         for position, user in enumerate(page_users, start=1):
             line = f"  {position:02d}. (#{user.id}) {sanitize_text(user.username)} - {_user_description(user)}"
             await session.write_line(truncate(line, session.terminal_width))
@@ -622,6 +656,7 @@ async def _pick_target_user(session: Session, lane: DatabaseLane, *, title: str)
                 menu_key("A", "lphabetical"),
                 menu_key("R", "egistration"),
                 menu_key("L", "evel"),
+                menu_key("V", "isibility"),
                 menu_key("N", "ext"),
                 menu_key("P", "rev"),
                 menu_key("S", "earch"),
@@ -648,6 +683,15 @@ async def _pick_target_user(session: Session, lane: DatabaseLane, *, title: str)
             else:
                 mode = key_lower
                 descending = False
+            await session.write_line("")
+            working_set = await _load()
+            page_index = 0
+            page_users = await _render()
+            continue
+
+        if key_lower == "v":
+            next_index = (_USER_VISIBILITY_MODES.index(visibility) + 1) % len(_USER_VISIBILITY_MODES)
+            visibility = _USER_VISIBILITY_MODES[next_index]
             await session.write_line("")
             working_set = await _load()
             page_index = 0

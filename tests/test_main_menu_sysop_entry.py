@@ -19,7 +19,7 @@ from netbbs.net.login_flow import _draw_main_menu, _main_menu
 from netbbs.net.maintenance import MaintenanceMode
 from netbbs.net.session_registry import ActiveSessionRegistry
 from netbbs.net.shutdown import NodeControls
-from netbbs.rendering import HEADER_COLOR, MUTED_COLOR
+from netbbs.rendering import CLOCK_COLOR, MUTED_COLOR
 from netbbs.rendering.ansi import fg
 from netbbs.storage.database import Database
 
@@ -252,8 +252,10 @@ def test_prompt_clock_is_time_only_two_toned_and_has_no_date(tmp_path):
     """Thiesi's own follow-up request: the date (static clutter across an
     entire session -- see `_main_menu_prompt`'s own docstring) is gone,
     and the remaining `HH:MM:SS` is a two-tone "digital clock" -- digit
-    groups in `HEADER_COLOR`, `:` separators in `MUTED_COLOR` -- rather
-    than one flat color."""
+    groups in `CLOCK_COLOR`, `:` separators in `MUTED_COLOR` -- rather
+    than one flat color. `CLOCK_COLOR`, not `HEADER_COLOR`: a second
+    follow-up request after the first version shared `HEADER_COLOR`
+    with the "Main menu:" label and read as part of it."""
     db = Database(tmp_path / "node.db")
     user = create_user(db, "alice", password="hunter2", user_level=10)
     session = FakeSession()
@@ -266,6 +268,6 @@ def test_prompt_clock_is_time_only_two_toned_and_has_no_date(tmp_path):
     assert re.match(r"^\d{2}:\d{2}:\d{2} Choice: $", stripped)
     # No leftover date component (e.g. "24.07.2026") anywhere.
     assert not re.search(r"\d{2}\.\d{2}\.\d{4}", stripped)
-    assert prompt.count(fg(HEADER_COLOR)) == 3  # HH, MM, SS
+    assert prompt.count(fg(CLOCK_COLOR)) == 3  # HH, MM, SS
     assert prompt.count(fg(MUTED_COLOR)) == 2  # the two ":" separators
     db.close()
