@@ -1990,8 +1990,42 @@ the board/channel/file-area admin detail screens' own already-established
 shape rather than inventing a new one. `[L]ist users` used to call
 `_show_user_detail` for read-only-plus-two-prompts detail; that function
 no longer exists as a separate linear pass -- it's now exactly the same
-loop every other entry point reaches. Also added a one-shot sort-order
-choice (`netbbs.auth.users.list_users`'s new `order_by` — alphabetical/
-registered/level_asc/level_desc) before every user picker, mirroring
-`list_boards`'s own existing `order_by` convention rather than inventing
-a differently-shaped one for users.
+loop every other entry point reaches. The user picker itself
+(`_pick_target_user`) gained `netbbs.auth.users.list_users`'s new
+`order_by` values (alphabetical/alphabetical_desc/registered/
+registered_desc/level_asc/level_desc, mirroring `list_boards`'s own
+`order_by` convention) exposed as three live in-place toggle keys --
+`[A]lphabetical`/`[R]egistration`/`[L]evel` -- pressing the
+already-active mode's key flips ascending/descending without leaving the
+screen; pressing a different mode's key switches to it, always starting
+ascending; a `Sorted by: {label} {↑/↓}` line shows the current mode.
+
+**Bespoke picker vs. extending the shared `pick_item` (Thiesi's own
+follow-up dogfood request).** The live A/R/L sort-toggle screen was built
+as its own loop in `admin_flow.py` (`_pick_target_user`), deliberately
+duplicating `netbbs.net.picker.pick_item`'s pagination/search/goto
+machinery rather than adding sort-toggle support to `pick_item` itself.
+`pick_item` is a shared component used by boards, channels, and file
+areas too, none of which have asked for live sort toggles; extending it
+for a single consumer's need risks over-fitting its interface around one
+caller's shape before a second real consumer exists. Matches this
+project's own established convention (see `netbbs.link.files.
+_file_area_from_row`'s own docstring) of duplicating a small private
+helper across modules rather than reaching into another module's private
+internals -- a shared abstraction should be designed against a real
+second consumer, not an imagined future one.
+
+**`list_users(order_by="registered"/"registered_desc")` had no tie-break
+on `created_at` (found via a flaky new test, not by inspection).**
+`ORDER BY created_at ASC` alone is nondeterministic in SQLite when two
+rows share an identical timestamp -- which genuinely happens under
+`tests/conftest.py`'s autouse `_fast_argon2id` fixture, since downgrading
+Argon2id to minimum cost makes back-to-back `create_user` calls fast
+enough that Windows' clock resolution can't always separate them (outside
+pytest, with Argon2id at real cost, the same calls are slow enough to
+never collide). Fixed by adding `id ASC`/`id DESC` as a secondary
+tie-break -- the same fix already applied elsewhere in this codebase for
+the identical reason (`channel_messages.id`/`created_at`). Any future
+`order_by` clause sorting on a `created_at`-style column needs the same
+tie-break from the start, not just once a test happens to catch the
+collision.

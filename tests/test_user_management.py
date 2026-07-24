@@ -63,12 +63,26 @@ def test_list_users_alphabetical_is_case_insensitive(db, sysop):
     assert [u.username for u in list_users(db, order_by="alphabetical")] == ["alice", "Bob", "sysop"]
 
 
+def test_list_users_alphabetical_desc_reverses_alphabetical(db, sysop):
+    create_user(db, "zebra", password="hunter2", user_level=0)
+    create_user(db, "alpha", password="hunter2", user_level=0)
+    assert [u.username for u in list_users(db, order_by="alphabetical_desc")] == [
+        "zebra", "sysop", "alpha"
+    ]
+
+
 def test_list_users_registered_orders_oldest_account_first(db, sysop):
     # sysop (created in the fixture) already exists before either of
     # these, so it's the oldest regardless of name.
     create_user(db, "zebra", password="hunter2", user_level=0)
     create_user(db, "alpha", password="hunter2", user_level=0)
     assert [u.username for u in list_users(db, order_by="registered")][0] == "sysop"
+
+
+def test_list_users_registered_desc_orders_newest_account_first(db, sysop):
+    create_user(db, "zebra", password="hunter2", user_level=0)
+    create_user(db, "alpha", password="hunter2", user_level=0)
+    assert [u.username for u in list_users(db, order_by="registered_desc")][-1] == "sysop"
 
 
 def test_list_users_level_asc_orders_lowest_level_first_with_alphabetical_tiebreak(db, sysop):

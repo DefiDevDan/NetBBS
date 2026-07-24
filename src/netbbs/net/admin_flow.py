@@ -50,6 +50,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+from typing import Callable, Sequence
 
 import nacl.signing
 
@@ -191,6 +193,7 @@ from netbbs.rendering import (
     reflow,
     reject_keystroke,
     sanitize_text,
+    truncate,
 )
 from netbbs.storage.database import Database
 from netbbs.storage.execution import DatabaseLane
@@ -517,45 +520,222 @@ async def _prompt_optional_pubkey(session: Session) -> nacl.signing.VerifyKey | 
 # -- list / detail -------------------------------------------------------
 
 
-async def _pick_user_sort_order(session: Session) -> str:
-    """
-    One-shot sort-order choice before showing a list of registered users
-    (design doc -- Thiesi's own dogfood-testing report: SysOps wanted
-    more than the one fixed alphabetical order every user-picking screen
-    always used to show). Anything unrecognized, including a bare
-    Enter, quietly keeps the previous default (alphabetical) -- this is
-    a single quick preference pick before a picker, not a strict menu
-    loop worth bell-and-reject treatment for a stray key.
-    """
-    await session.write_line(
-        "\r\n"
-        + menu_key("A", "lphabetical")
-        + "  "
-        + menu_key("R", "egistration date")
-        + "  "
-        + menu_key("L", "evel, low to high")
-        + "  "
-        + menu_key("H", "ighest level first")
-    )
-    await session.write("Sort by [A]: ")
-    choice = (await session.read_key()).lower()
-    await session.write_line("")
-    return {"a": "alphabetical", "r": "registered", "l": "level_asc", "h": "level_desc"}.get(
-        choice, "alphabetical"
-    )
+# Mirrors netbbs.net.picker's own reserved-lines/max-page-size budget --
+# duplicated rather than imported (that module's own private helpers
+# aren't reached into from other modules, the same "duplicate rather
+# than reach into another module's private helper" convention
+# netbbs.link.files._file_area_from_row's own docstring already states
+# for the identical reasoning).
+_USER_PICKER_RESERVED_LINES = 6
+_USER_PICKER_MAX_PAGE_SIZE = 99
+
+# One key per sort dimension, each a live toggle between its ascending
+# and descending `netbbs.auth.users.list_users` `order_by` value.
+# Design doc -- Thiesi's own follow-up dogfood-testing request: pressing
+# the currently-active key flips direction; pressing a different key
+# switches to it, always starting ascending. Deliberately a *bespoke*
+# screen, not a generic extension to netbbs.net.picker.pick_item -- that
+# component is shared by boards/channels/file areas too, and this
+# project's own convention (worklog) is to design a shared abstraction
+# against a second real consumer, not build one on spec for a single
+# caller.
+_USER_SORT_MODES = {
+    "a": ("Alphabetical", "alphabetical", "alphabetical_desc"),
+    "r": ("Registration date", "registered", "registered_desc"),
+    "l": ("Level", "level_asc", "level_desc"),
+}
+
+
+def _user_picker_page_size(session: Session) -> int:
+    available = session.terminal_height - _USER_PICKER_RESERVED_LINES
+    return max(1, min(_USER_PICKER_MAX_PAGE_SIZE, available))
+
+
+def _user_search_completer(candidates: Sequence[str]) -> Callable[[str], list[str]]:
+    """Tab completion for the user picker's own `"Search: "` prompt --
+    mirrors `netbbs.net.picker._search_completer`'s exact behavior
+    (prefix match, no candidates once the query contains a space),
+    duplicated rather than imported for the same reason
+    `_user_picker_page_size` above is."""
+
+    def completer(text: str) -> list[str]:
+        if " " in text:
+            return []
+        lower = text.lower()
+        return sorted(name for name in candidates if name.lower().startswith(lower))
+
+    return completer
 
 
 async def _pick_target_user(session: Session, lane: DatabaseLane, *, title: str) -> User | None:
-    order_by = await _pick_user_sort_order(session)
-    users = await lane.run(list_users, order_by=order_by)
-    return await pick_item(
-        session, users,
-        name_of=lambda u: u.username,
-        stable_id_of=lambda u: u.id,
-        description_of=_user_description,
-        title=title,
-        empty_message="No registered users yet.",
-    )
+    """
+    The single screen every `[U]sers` submenu entry now reaches a target
+    account through (design doc -- Thiesi's own dogfood-testing report).
+    Mirrors `pick_item`'s own pagination/search/goto/select shape
+    closely, adding three live sort-toggle keys (`[A]lphabetical`/
+    `[R]egistration date`/`[L]evel`) that re-sort and redraw the same
+    screen in place, each shown with its own current direction arrow so
+    the active mode is never ambiguous.
+    """
+    mode = "a"
+    descending = False
+    query: str | None = None
+    page_index = 0
+
+    async def _load(*, apply_search: bool = True) -> list[User]:
+        _, ascending_order, descending_order = _USER_SORT_MODES[mode]
+        users = await lane.run(list_users, order_by=descending_order if descending else ascending_order)
+        if apply_search and query:
+            return [u for u in users if query.lower() in u.username.lower()]
+        return users
+
+    working_set = await _load()
+    if not working_set:
+        await session.write_line("\r\nNo registered users yet.")
+        return None
+
+    def _total_pages() -> int:
+        return max(1, math.ceil(len(working_set) / _user_picker_page_size(session)))
+
+    async def _render() -> list[User]:
+        nonlocal page_index
+        page_size = _user_picker_page_size(session)
+        total_pages = _total_pages()
+        page_index = max(0, min(page_index, total_pages - 1))
+        start = page_index * page_size
+        page_users = working_set[start : start + page_size]
+
+        label, _, _ = _USER_SORT_MODES[mode]
+        arrow = "↓" if descending else "↑"
+        header = colored(
+            f"{title} (page {page_index + 1}/{total_pages}, {len(working_set)} total)",
+            fg_color=HEADER_COLOR, bold=True,
+        )
+        await session.write_line(f"\r\n{header}")
+        await session.write_line(colored(f"Sorted by: {label} {arrow}", fg_color=MUTED_COLOR))
+        for position, user in enumerate(page_users, start=1):
+            line = f"  {position:02d}. (#{user.id}) {sanitize_text(user.username)} - {_user_description(user)}"
+            await session.write_line(truncate(line, session.terminal_width))
+
+        nav = "  ".join(
+            [
+                menu_key("A", "lphabetical"),
+                menu_key("R", "egistration"),
+                menu_key("L", "evel"),
+                menu_key("N", "ext"),
+                menu_key("P", "rev"),
+                menu_key("S", "earch"),
+                menu_key("G", "oto #"),
+                menu_key("B", "ack"),
+            ]
+        )
+        await session.write_line(f"\r\n{nav} — or type a 2-digit number to select")
+        await session.write("Choice: ")
+        return page_users
+
+    page_users = await _render()
+    while True:
+        key = await session.read_key()
+        key_lower = key.lower()
+
+        if key_lower == "b":
+            await session.write_line("")
+            return None
+
+        if key_lower in _USER_SORT_MODES:
+            if mode == key_lower:
+                descending = not descending
+            else:
+                mode = key_lower
+                descending = False
+            await session.write_line("")
+            working_set = await _load()
+            page_index = 0
+            page_users = await _render()
+            continue
+
+        if key_lower == "n":
+            if page_index < _total_pages() - 1:
+                await session.write_line("")
+                page_index += 1
+                page_users = await _render()
+            else:
+                await session.write(reject_keystroke())
+            continue
+
+        if key_lower == "p":
+            if page_index > 0:
+                await session.write_line("")
+                page_index -= 1
+                page_users = await _render()
+            else:
+                await session.write(reject_keystroke())
+            continue
+
+        if key_lower == "s":
+            await session.write_line("")
+            await session.write("Search: ")
+            all_users = await _load(apply_search=False)
+            completer = _user_search_completer([u.username for u in all_users])
+            typed = (await session.read_line(completer=completer)).strip()
+            if not typed:
+                # Empty search clears back to the full, unfiltered list --
+                # a no-op if nothing was filtered yet, "clear filter"
+                # otherwise, same dual role pick_item's own search
+                # command already establishes.
+                query = None
+                working_set = await _load()
+                page_index = 0
+                page_users = await _render()
+                continue
+            matches = [u for u in all_users if typed.lower() in u.username.lower()]
+            if not matches:
+                await session.write_line("No matches.")
+                await session.write("Choice: ")
+                continue
+            if len(matches) == 1:
+                return matches[0]
+            query = typed
+            working_set = matches
+            page_index = 0
+            page_users = await _render()
+            continue
+
+        if key_lower == "g":
+            await session.write_line("")
+            await session.write("Go to #: ")
+            raw = (await session.read_line()).strip()
+            try:
+                target_id = int(raw)
+            except ValueError:
+                await session.write_line("Not a number.")
+                await session.write("Choice: ")
+                continue
+            # Always searches the full, unfiltered list at the current
+            # sort -- a goto number means the same account regardless of
+            # any active search filter, matching the "(#N)" shown next
+            # to every displayed row (pick_item's own goto establishes
+            # this same "ignore the search filter" rule).
+            for user in await _load(apply_search=False):
+                if user.id == target_id:
+                    return user
+            await session.write_line("Out of range.")
+            await session.write("Choice: ")
+            continue
+
+        if key.isdigit():
+            second = await session.read_key()
+            if not second.isdigit():
+                await session.write(reject_keystroke(2))
+                continue
+            number = int(key + second)
+            if 1 <= number <= len(page_users):
+                await session.write_line("")
+                return page_users[number - 1]
+            await session.write(reject_keystroke(2))
+            continue
+
+        await session.write(reject_keystroke())
 
 
 async def _pick_and_edit_user(

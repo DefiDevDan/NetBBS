@@ -357,14 +357,31 @@ def list_users(db: Database, *, order_by: str = "alphabetical") -> list[User]:
     `netbbs.boards.boards.list_boards`'s own `order_by` convention:
     `"alphabetical"` (default, case-insensitive — exactly this
     function's own previously-unconditional behavior, so every existing
-    caller that never passes this parameter is unaffected),
-    `"registered"` (oldest account first), `"level_asc"`/`"level_desc"`
-    (by `user_level`, ties broken alphabetically for a stable order
-    within a tied level either direction).
+    caller that never passes this parameter is unaffected) and its
+    reverse `"alphabetical_desc"`; `"registered"` (oldest account first)
+    and its reverse `"registered_desc"` (newest first) -- both tie-broken
+    by `id` (this table's own autoincrement rowid, assigned in true
+    creation order) rather than `created_at` alone: two accounts created
+    close enough together can receive an *identical* stored timestamp
+    (this project's own test suite caught it -- a fast test run with
+    Argon2id downgraded to its cheapest tier, per `tests/conftest.py`,
+    can create accounts faster than this platform's own clock
+    resolution distinguishes), and `created_at` alone gives SQLite
+    nothing to break that tie with, making the result order
+    nondeterministic rather than merely "same instant, either order is
+    fine"; `"level_asc"`/`"level_desc"` (by `user_level`, ties broken
+    alphabetically for a stable order within a tied level either
+    direction). The live A/R/L sort-toggle keys on `netbbs.net.
+    admin_flow`'s own user-picker screen (a SysOp's own follow-up
+    request) are what actually exercise the `_desc` variants -- each
+    existed for the first request already, this just rounds the pair
+    out.
     """
     order_clause = {
-        "alphabetical": "username COLLATE NOCASE",
-        "registered": "created_at ASC",
+        "alphabetical": "username COLLATE NOCASE ASC",
+        "alphabetical_desc": "username COLLATE NOCASE DESC",
+        "registered": "created_at ASC, id ASC",
+        "registered_desc": "created_at DESC, id DESC",
         "level_asc": "user_level ASC, username COLLATE NOCASE",
         "level_desc": "user_level DESC, username COLLATE NOCASE",
     }.get(order_by)
