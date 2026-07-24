@@ -256,6 +256,15 @@ async def pick_item(
                 continue
             number = int(key + second)
             if 1 <= number <= len(page_items):
+                # A valid selection is a real state change -- same "end
+                # the echoed input with its own newline before whatever
+                # comes next" discipline every other branch here already
+                # follows (`b`/`n`/`p` above). Missing here was a real
+                # dogfood-reported bug: without it, a caller's own very
+                # next prompt (e.g. "Disconnect 'x'? [y/N]: ") landed
+                # directly after the echoed "02" with no separation at
+                # all, on the same line.
+                await session.write_line("")
                 return page_items[number - 1]
             await session.write(reject_keystroke(2))
             continue

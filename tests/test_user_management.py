@@ -27,6 +27,7 @@ from netbbs.auth.users import (
     create_user,
     delete_user,
     generate_challenge,
+    list_users,
     set_user_disabled,
     set_user_level,
 )
@@ -44,6 +45,54 @@ def db(tmp_path):
 @pytest.fixture
 def sysop(db):
     return create_user(db, "sysop", password="hunter2", user_level=SYSOP_LEVEL)
+
+
+# -- list_users' order_by (design doc -- Thiesi's own dogfood-testing report,
+# -- SysOps wanted more than the one fixed alphabetical order) --------------
+
+
+def test_list_users_defaults_to_alphabetical(db, sysop):
+    create_user(db, "zebra", password="hunter2", user_level=0)
+    create_user(db, "alpha", password="hunter2", user_level=0)
+    assert [u.username for u in list_users(db)] == ["alpha", "sysop", "zebra"]
+
+
+def test_list_users_alphabetical_is_case_insensitive(db, sysop):
+    create_user(db, "Bob", password="hunter2", user_level=0)
+    create_user(db, "alice", password="hunter2", user_level=0)
+    assert [u.username for u in list_users(db, order_by="alphabetical")] == ["alice", "Bob", "sysop"]
+
+
+def test_list_users_registered_orders_oldest_account_first(db, sysop):
+    # sysop (created in the fixture) already exists before either of
+    # these, so it's the oldest regardless of name.
+    create_user(db, "zebra", password="hunter2", user_level=0)
+    create_user(db, "alpha", password="hunter2", user_level=0)
+    assert [u.username for u in list_users(db, order_by="registered")][0] == "sysop"
+
+
+def test_list_users_level_asc_orders_lowest_level_first_with_alphabetical_tiebreak(db, sysop):
+    create_user(db, "alice", password="hunter2", user_level=50)
+    create_user(db, "bob", password="hunter2", user_level=10)
+    create_user(db, "carol", password="hunter2", user_level=10)
+    # bob/carol tie at level 10 -- broken alphabetically; sysop (255) last.
+    assert [u.username for u in list_users(db, order_by="level_asc")] == [
+        "bob", "carol", "alice", "sysop"
+    ]
+
+
+def test_list_users_level_desc_orders_highest_level_first_with_alphabetical_tiebreak(db, sysop):
+    create_user(db, "alice", password="hunter2", user_level=50)
+    create_user(db, "bob", password="hunter2", user_level=10)
+    create_user(db, "carol", password="hunter2", user_level=10)
+    assert [u.username for u in list_users(db, order_by="level_desc")] == [
+        "sysop", "alice", "bob", "carol"
+    ]
+
+
+def test_list_users_rejects_an_unknown_order_by(db, sysop):
+    with pytest.raises(ValueError):
+        list_users(db, order_by="nonsense")
 
 
 # -- count_sysops -----------------------------------------------------------

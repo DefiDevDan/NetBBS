@@ -231,6 +231,83 @@ def test_disconnect_all_on_an_empty_registry_returns_immediately():
     asyncio.run(scenario())
 
 
+# -- notify_one (design doc -- node management, Thiesi's own request) -------
+
+
+def test_notify_one_delivers_to_just_that_session():
+    registry = ActiveSessionRegistry()
+
+    async def scenario():
+        target, other = _FakeSession(), _FakeSession()
+        tasks = [
+            asyncio.create_task(_hold_registered(registry, target)),
+            asyncio.create_task(_hold_registered(registry, other)),
+        ]
+        await asyncio.sleep(0)
+
+        delivered = await registry.notify_one(target, "heads up")
+
+        assert delivered is True
+        assert target.written == ["heads up"]
+        assert other.written == []
+
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_notify_one_returns_false_for_an_unregistered_session():
+    registry = ActiveSessionRegistry()
+
+    async def scenario():
+        assert await registry.notify_one(_FakeSession(), "hello") is False
+
+    asyncio.run(scenario())
+
+
+def test_notify_one_returns_false_when_delivery_fails():
+    registry = ActiveSessionRegistry()
+
+    async def scenario():
+        failing = _FailingSession()
+        task = asyncio.create_task(_hold_registered(registry, failing))
+        await asyncio.sleep(0)
+
+        assert await registry.notify_one(failing, "hello") is False
+
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_notify_one_uses_pinned_notice_hook_instead_of_write_line_when_set():
+    registry = ActiveSessionRegistry()
+
+    async def scenario():
+        session = _FakeSession()
+        hook_calls: list[str] = []
+
+        async def fake_hook(text: str) -> None:
+            hook_calls.append(text)
+
+        session.pinned_notice_hook = fake_hook
+        task = asyncio.create_task(_hold_registered(registry, session))
+        await asyncio.sleep(0)
+
+        assert await registry.notify_one(session, "heads up") is True
+
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert hook_calls == ["heads up"]
+        assert session.written == []
+
+    asyncio.run(scenario())
+
+
 # -- disconnect_one / mark_authenticated / list_entries (design doc §13.8) --
 
 

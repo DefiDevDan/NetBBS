@@ -344,16 +344,33 @@ def account_still_active(db: Database, user: User) -> bool:
     return current.disabled_at is None
 
 
-def list_users(db: Database) -> list[User]:
+def list_users(db: Database, *, order_by: str = "alphabetical") -> list[User]:
     """
-    Every registered account, ordered by username — the user
-    directory's underlying listing (design doc §13). Not paginated,
-    unlike `netbbs.boards.posts.list_posts_page`:
-    total registered users is naturally bounded at this project's
-    declared scale (§14, dozens-low hundreds), unlike posts/files,
-    which can grow unboundedly over time.
+    Every registered account — the user directory's underlying listing
+    (design doc §13). Not paginated, unlike `netbbs.boards.posts.
+    list_posts_page`: total registered users is naturally bounded at
+    this project's declared scale (§14, dozens-low hundreds), unlike
+    posts/files, which can grow unboundedly over time.
+
+    `order_by` (Thiesi's own dogfood-testing report — SysOps wanted more
+    than the one fixed order this always used to return) mirrors
+    `netbbs.boards.boards.list_boards`'s own `order_by` convention:
+    `"alphabetical"` (default, case-insensitive — exactly this
+    function's own previously-unconditional behavior, so every existing
+    caller that never passes this parameter is unaffected),
+    `"registered"` (oldest account first), `"level_asc"`/`"level_desc"`
+    (by `user_level`, ties broken alphabetically for a stable order
+    within a tied level either direction).
     """
-    rows = db.connection.execute("SELECT * FROM users ORDER BY username COLLATE NOCASE").fetchall()
+    order_clause = {
+        "alphabetical": "username COLLATE NOCASE",
+        "registered": "created_at ASC",
+        "level_asc": "user_level ASC, username COLLATE NOCASE",
+        "level_desc": "user_level DESC, username COLLATE NOCASE",
+    }.get(order_by)
+    if order_clause is None:
+        raise ValueError(f"unknown order_by: {order_by!r}")
+    rows = db.connection.execute(f"SELECT * FROM users ORDER BY {order_clause}").fetchall()
     return [_row_to_user(row) for row in rows]
 
 

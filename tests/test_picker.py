@@ -109,6 +109,46 @@ def test_select_by_two_digit_number():
     assert result["value"] == "beta"
 
 
+def test_selection_ends_with_its_own_newline_before_whatever_comes_next():
+    """Real dogfood-reported bug: a valid 2-digit selection used to
+    `return` without ever writing a newline first (unlike every other
+    state-changing branch here -- `[B]ack`/`[N]ext`/`[P]rev` all do), so
+    a caller's own very next prompt landed directly after the echoed
+    digits on the same line (e.g. "Choice: 02Disconnect 'test'? [y/N]:
+    ", no separation at all)."""
+    result = {}
+    items = ["alpha", "beta", "gamma"]
+
+    async def handler(session: Session):
+        selected = await pick_item(
+            session, items, name_of=lambda x: x, stable_id_of=lambda x: items.index(x) + 1,
+            title="Items", empty_message="none",
+        )
+        result["value"] = selected
+        # Simulates a caller's own very next prompt, immediately after
+        # pick_item returns -- exactly the shape of the reported bug.
+        await session.write("AFTER")
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await reader.readexactly(9)
+            await _read_until_quiet(reader)
+            writer.write(b"02")
+            await writer.drain()
+            data = await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+            assert b"02AFTER" not in data
+            assert b"\r\nAFTER" in data or b"\nAFTER" in data
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert result["value"] == "beta"
+
+
 def test_back_returns_none():
     result = {}
     items = ["alpha", "beta"]

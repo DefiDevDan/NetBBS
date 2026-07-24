@@ -291,12 +291,15 @@ async def _users_menu(
     session: Session, lane: DatabaseLane, actor: User, *, node_controls: NodeControls | None
 ) -> None:
     """Every user-account action, grouped together (design doc): create,
-    list/detail, registration
-    policy, promote/demote, enable/disable, delete. `node_controls` is
-    threaded straight through to the screens that need it
-    (`_disable_enable_screen`/`_delete_user_screen`, for the live-
-    session-revocation guard) -- this submenu itself doesn't use it
-    directly."""
+    list/detail, registration policy, promote/demote, enable/disable,
+    delete. `[L]ist users`/`[P]romote/demote`/`[E]nable/disable`/
+    `[D]elete user` all route through the same `_pick_and_edit_user` ->
+    `_user_detail_screen` central editor now (design doc -- node
+    management, Thiesi's own dogfood-testing report), differing only in
+    the picker's own title text. `node_controls` is threaded straight
+    through to that editor -- it needs it for the live-session-
+    revocation guard on disable/delete -- this submenu itself doesn't
+    use it directly."""
     await _draw_users_menu(session)
     while True:
         choice = (await session.read_key()).lower()
@@ -310,7 +313,7 @@ async def _users_menu(
             await _draw_users_menu(session)
         elif choice == "l":
             await session.write_line("")
-            await _list_users_screen(session, lane, actor)
+            await _pick_and_edit_user(session, lane, actor, node_controls, title="Registered users")
             await _draw_users_menu(session)
         elif choice == "r":
             await session.write_line("")
@@ -318,15 +321,15 @@ async def _users_menu(
             await _draw_users_menu(session)
         elif choice == "p":
             await session.write_line("")
-            await _change_level_screen(session, lane, actor)
+            await _pick_and_edit_user(session, lane, actor, node_controls, title="Promote/demote which user?")
             await _draw_users_menu(session)
         elif choice == "e":
             await session.write_line("")
-            await _disable_enable_screen(session, lane, actor, node_controls)
+            await _pick_and_edit_user(session, lane, actor, node_controls, title="Enable/disable which user?")
             await _draw_users_menu(session)
         elif choice == "d":
             await session.write_line("")
-            await _delete_user_screen(session, lane, actor, node_controls)
+            await _pick_and_edit_user(session, lane, actor, node_controls, title="Delete which user?")
             await _draw_users_menu(session)
         else:
             await session.write(reject_keystroke())
@@ -514,18 +517,65 @@ async def _prompt_optional_pubkey(session: Session) -> nacl.signing.VerifyKey | 
 # -- list / detail -------------------------------------------------------
 
 
-async def _list_users_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
-    users = await lane.run(list_users)
-    selected = await pick_item(
+async def _pick_user_sort_order(session: Session) -> str:
+    """
+    One-shot sort-order choice before showing a list of registered users
+    (design doc -- Thiesi's own dogfood-testing report: SysOps wanted
+    more than the one fixed alphabetical order every user-picking screen
+    always used to show). Anything unrecognized, including a bare
+    Enter, quietly keeps the previous default (alphabetical) -- this is
+    a single quick preference pick before a picker, not a strict menu
+    loop worth bell-and-reject treatment for a stray key.
+    """
+    await session.write_line(
+        "\r\n"
+        + menu_key("A", "lphabetical")
+        + "  "
+        + menu_key("R", "egistration date")
+        + "  "
+        + menu_key("L", "evel, low to high")
+        + "  "
+        + menu_key("H", "ighest level first")
+    )
+    await session.write("Sort by [A]: ")
+    choice = (await session.read_key()).lower()
+    await session.write_line("")
+    return {"a": "alphabetical", "r": "registered", "l": "level_asc", "h": "level_desc"}.get(
+        choice, "alphabetical"
+    )
+
+
+async def _pick_target_user(session: Session, lane: DatabaseLane, *, title: str) -> User | None:
+    order_by = await _pick_user_sort_order(session)
+    users = await lane.run(list_users, order_by=order_by)
+    return await pick_item(
         session, users,
         name_of=lambda u: u.username,
         stable_id_of=lambda u: u.id,
         description_of=_user_description,
-        title="Registered users",
+        title=title,
         empty_message="No registered users yet.",
     )
-    if selected is not None:
-        await _show_user_detail(session, lane, actor, selected)
+
+
+async def _pick_and_edit_user(
+    session: Session, lane: DatabaseLane, actor: User, node_controls: NodeControls | None, *, title: str
+) -> None:
+    """
+    Every per-user action funnels through here now (design doc -- node
+    management, Thiesi's own dogfood-testing report: SysOps wanted one
+    central editor rather than picking the same user again through
+    three separate single-purpose screens to promote them, then disable
+    them, then...). `title` is the only thing that still varies by
+    which top-level `[U]sers` menu entry got here -- `[L]ist users`/
+    `[P]romote/demote`/`[E]nable/disable`/`[D]elete user` all land on
+    the exact same full editor once a user is actually selected, so a
+    SysOp who only meant to promote someone can still also disable them
+    right there without leaving and re-picking them a second time.
+    """
+    target = await _pick_target_user(session, lane, title=title)
+    if target is not None:
+        await _user_detail_screen(session, lane, actor, target, node_controls)
 
 
 def _status_label(user: User) -> str:
@@ -540,18 +590,21 @@ def _user_description(user: User) -> str:
     return f"level {user.user_level}, {_status_label(user)}"
 
 
-async def _show_user_detail(session: Session, lane: DatabaseLane, actor: User, target: User) -> None:
+async def _draw_user_detail(session: Session, lane: DatabaseLane, target: User) -> None:
     header = colored(sanitize_text(target.username), fg_color=HEADER_COLOR, bold=True)
     await session.write_line(f"\r\n{header}")
     await session.write_line(f"Level: {target.user_level}")
     await session.write_line(f"Status: {_status_label(target)}")
-    # Display prefs fetched once, reused for the loop below too
-    # (the format_for_display-under-a-lane fix).
     display_format, display_timezone = await lane.run(resolve_display_preferences)
     member_since = format_for_display(
         target.created_at, override_format=display_format, override_timezone=display_timezone
     )
     await session.write_line(f"Member since: {member_since}")
+    # Design doc §18: a narrow, SysOp-grantable permission independent
+    # of the four moderator scope tiers.
+    await session.write_line(
+        f"Can verify identity (age/name attestation): {'yes' if target.can_verify_identity else 'no'}"
+    )
 
     entries = await lane.run(list_actions_for_target_user, target.id)
     if not entries:
@@ -565,25 +618,130 @@ async def _show_user_detail(session: Session, lane: DatabaseLane, actor: User, t
             detail = f" -- {sanitize_text(entry.detail)}" if entry.detail else ""
             await session.write_line(f"  {when}: {sanitize_text(entry.action)}{detail}")
 
+    options = []
     if target.pending_approval:
-        if await prompt_yes_no(session, "\r\nApprove this account so it can log in?", default=False):
-            updated = await lane.run(approve_pending_user, target, approved_by=actor)
-            await session.write_line(f"{updated.username!r} approved.")
+        options.append(menu_key("A", "pprove"))
+    options.append(menu_key("L", "evel"))
+    options.append(menu_key("T", "oggle enable/disabled"))
+    options.append(menu_key("I", "dentity verification"))
+    options.append(menu_key("D", "elete"))
+    options.append(menu_key("B", "ack"))
+    await session.write_line(f"\r\n{'  '.join(options)}")
+    await session.write("Choice: ")
 
-    # Design doc §18: a narrow, SysOp-
-    # grantable permission independent of the four moderator scope
-    # tiers -- toggled here rather than a dedicated screen, same shape
-    # as the pending-approval prompt just above.
+
+async def _user_detail_screen(
+    session: Session, lane: DatabaseLane, actor: User, target: User, node_controls: NodeControls | None
+) -> None:
+    """
+    The single per-user action screen every `[U]sers` submenu entry
+    lands on now (design doc -- node management, Thiesi's own dogfood-
+    testing report), mirroring the board/channel/file-area admin
+    screens' own established "draw status, dispatch a lettered action,
+    redraw" shape rather than the linear one-pass-of-prompts this used
+    to be. A SysOp can now promote, then disable, then delete the exact
+    same already-selected account without leaving this screen or
+    re-picking them through three separate single-purpose flows.
+    """
+    await _draw_user_detail(session, lane, target)
+    while True:
+        choice = (await session.read_key()).lower()
+
+        if choice == "b":
+            await session.write_line("")
+            return
+        elif choice == "a" and target.pending_approval:
+            await session.write_line("")
+            if await prompt_yes_no(session, "Approve this account so it can log in?", default=False):
+                target = await lane.run(approve_pending_user, target, approved_by=actor)
+                await session.write_line(f"{target.username!r} approved.")
+            await _draw_user_detail(session, lane, target)
+        elif choice == "l":
+            await session.write_line("")
+            await session.write(f"New level for {target.username!r} [{target.user_level}]: ")
+            raw = (await session.read_line()).strip()
+            if raw:
+                try:
+                    new_level = int(raw)
+                except ValueError:
+                    await session.write_line(colored("Not a number -- cancelled.", fg_color=MUTED_COLOR))
+                else:
+                    try:
+                        target = await lane.run(set_user_level, target, new_level, changed_by=actor)
+                    except UserManagementError as exc:
+                        await session.write_line(colored(str(exc), fg_color=MUTED_COLOR))
+                    else:
+                        await session.write_line(f"{target.username!r} is now level {target.user_level}.")
+            await _draw_user_detail(session, lane, target)
+        elif choice == "t":
+            await session.write_line("")
+            currently_disabled = target.disabled_at is not None
+            action_word = "Enable" if currently_disabled else "Disable"
+            if await prompt_yes_no(session, f"{action_word} {target.username!r}?", default=False):
+                try:
+                    target = await lane.run(set_user_disabled, target, not currently_disabled, changed_by=actor)
+                except UserManagementError as exc:
+                    await session.write_line(colored(str(exc), fg_color=MUTED_COLOR))
+                else:
+                    await session.write_line(
+                        f"{target.username!r} is now {'disabled' if target.disabled_at is not None else 'active'}."
+                    )
+                    if target.disabled_at is not None:
+                        await _revoke_live_sessions(session, node_controls, target, actor)
+            await _draw_user_detail(session, lane, target)
+        elif choice == "i":
+            await session.write_line("")
+            new_state = "revoke" if target.can_verify_identity else "grant"
+            if await prompt_yes_no(
+                session, f"{new_state.capitalize()} identity-verification permission?", default=False
+            ):
+                target = await lane.run(
+                    set_can_verify_identity, target, not target.can_verify_identity, changed_by=actor
+                )
+                await session.write_line(
+                    f"{target.username!r} can now verify identity: "
+                    f"{'yes' if target.can_verify_identity else 'no'}."
+                )
+            await _draw_user_detail(session, lane, target)
+        elif choice == "d":
+            await session.write_line("")
+            deleted = await _delete_user_confirm(session, lane, actor, target, node_controls)
+            if deleted:
+                return
+            await _draw_user_detail(session, lane, target)
+        else:
+            await session.write(reject_keystroke())
+
+
+async def _delete_user_confirm(
+    session: Session, lane: DatabaseLane, actor: User, target: User, node_controls: NodeControls | None
+) -> bool:
+    """Returns whether the account was actually deleted -- the caller
+    (`_user_detail_screen`) uses this to know whether to return
+    entirely (nothing left worth redrawing) or keep showing the same,
+    unchanged detail screen (a declined confirmation)."""
     await session.write_line(
-        f"\r\nCan verify identity (age/name attestation): "
-        f"{'yes' if target.can_verify_identity else 'no'}"
-    )
-    new_state = "revoke" if target.can_verify_identity else "grant"
-    if await prompt_yes_no(session, f"{new_state.capitalize()} identity-verification permission?", default=False):
-        updated = await lane.run(set_can_verify_identity, target, not target.can_verify_identity, changed_by=actor)
-        await session.write_line(
-            f"{updated.username!r} can now verify identity: {'yes' if updated.can_verify_identity else 'no'}."
+        colored(
+            "\r\nThis permanently deletes the account. Posts and files they created "
+            "keep their recorded author name; moderator grants, channel membership/"
+            "invitations, preferences, and blocklist entries tied to this account are "
+            "removed. This cannot be undone.",
+            fg_color=MUTED_COLOR,
         )
+    )
+    await session.write(f"Type the username {target.username!r} to confirm, or anything else to cancel: ")
+    confirmation = (await session.read_line()).strip()
+    if confirmation != target.username:
+        await session.write_line("Cancelled.")
+        return False
+    try:
+        await lane.run(delete_user, target, deleted_by=actor)
+    except UserManagementError as exc:
+        await session.write_line(colored(str(exc), fg_color=MUTED_COLOR))
+        return False
+    await session.write_line(f"{target.username!r} deleted.")
+    await _revoke_live_sessions(session, node_controls, target, actor)
+    return True
 
 
 # -- self-service registration settings (design doc) -----------
@@ -603,7 +761,7 @@ async def _registration_settings_screen(session: Session, lane: DatabaseLane, ac
     require-approval toggle -- and surfaces how many self-registered
     accounts are currently waiting on approval. Approving/rejecting any
     of them individually still happens via `[L]ist users` -> a pending
-    account's own detail screen (`_show_user_detail`'s approve prompt),
+    account's own detail screen (`_user_detail_screen`'s `[A]pprove` action),
     reusing the existing user-management flow rather than building a
     second, parallel pending-accounts queue UI.
     """
@@ -1093,96 +1251,6 @@ async def _repair_carried_posts_screen(session: Session, lane: DatabaseLane) -> 
         await session.write_line(f"\r\nRepair carried posts: materialized {rebuilt} missing row(s).")
 
 
-# -- promote/demote, enable/disable ---------------------------------------
-
-
-async def _pick_target_user(session: Session, lane: DatabaseLane, *, title: str) -> User | None:
-    users = await lane.run(list_users)
-    return await pick_item(
-        session, users,
-        name_of=lambda u: u.username,
-        stable_id_of=lambda u: u.id,
-        description_of=_user_description,
-        title=title,
-        empty_message="No registered users yet.",
-    )
-
-
-async def _change_level_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
-    target = await _pick_target_user(session, lane, title="Promote/demote which user?")
-    if target is None:
-        return
-    await session.write(f"New level for {target.username!r} [{target.user_level}]: ")
-    raw = (await session.read_line()).strip()
-    if not raw:
-        return
-    try:
-        new_level = int(raw)
-    except ValueError:
-        await session.write_line(colored("Not a number -- cancelled.", fg_color=MUTED_COLOR))
-        return
-    try:
-        updated = await lane.run(set_user_level, target, new_level, changed_by=actor)
-    except UserManagementError as exc:
-        await session.write_line(colored(str(exc), fg_color=MUTED_COLOR))
-        return
-    await session.write_line(f"{updated.username!r} is now level {updated.user_level}.")
-
-
-async def _disable_enable_screen(
-    session: Session, lane: DatabaseLane, actor: User, node_controls: NodeControls | None = None
-) -> None:
-    target = await _pick_target_user(session, lane, title="Enable/disable which user?")
-    if target is None:
-        return
-    currently_disabled = target.disabled_at is not None
-    action_word = "Enable" if currently_disabled else "Disable"
-    if not await prompt_yes_no(session, f"{action_word} {target.username!r}?", default=False):
-        return
-    try:
-        updated = await lane.run(set_user_disabled, target, not currently_disabled, changed_by=actor)
-    except UserManagementError as exc:
-        await session.write_line(colored(str(exc), fg_color=MUTED_COLOR))
-        return
-    await session.write_line(
-        f"{updated.username!r} is now {'disabled' if updated.disabled_at is not None else 'active'}."
-    )
-    if updated.disabled_at is not None:
-        await _revoke_live_sessions(session, node_controls, updated, actor)
-
-
-# -- delete ----------------------------------------------------------------
-
-
-async def _delete_user_screen(
-    session: Session, lane: DatabaseLane, actor: User, node_controls: NodeControls | None = None
-) -> None:
-    target = await _pick_target_user(session, lane, title="Delete which user?")
-    if target is None:
-        return
-    await session.write_line(
-        colored(
-            "\r\nThis permanently deletes the account. Posts and files they created "
-            "keep their recorded author name; moderator grants, channel membership/"
-            "invitations, preferences, and blocklist entries tied to this account are "
-            "removed. This cannot be undone.",
-            fg_color=MUTED_COLOR,
-        )
-    )
-    await session.write(f"Type the username {target.username!r} to confirm, or anything else to cancel: ")
-    confirmation = (await session.read_line()).strip()
-    if confirmation != target.username:
-        await session.write_line("Cancelled.")
-        return
-    try:
-        await lane.run(delete_user, target, deleted_by=actor)
-    except UserManagementError as exc:
-        await session.write_line(colored(str(exc), fg_color=MUTED_COLOR))
-        return
-    await session.write_line(f"{target.username!r} deleted.")
-    await _revoke_live_sessions(session, node_controls, target, actor)
-
-
 async def _revoke_live_sessions(
     session: Session, node_controls: NodeControls | None, target: User, actor: User
 ) -> None:
@@ -1293,12 +1361,28 @@ def _session_description(entry: SessionSummary, display_format: str, display_tim
 
 
 async def _who_screen(session: Session, lane: DatabaseLane, actor: User, node_controls: NodeControls) -> None:
+    """
+    Design doc -- node management, Thiesi's own dogfood-testing report:
+    this screen's only action is disconnecting whoever gets selected --
+    previously undocumented anywhere on screen, so a SysOp only found
+    out by actually selecting someone. Said explicitly now, before the
+    picker, rather than left implicit.
+
+    The optional custom message (also Thiesi's own request) is delivered
+    to the target's own session, via `ActiveSessionRegistry.notify_one`,
+    *before* `disconnect_one` ends its connection -- so the about-to-be-
+    disconnected user actually gets a chance to read it, not just a
+    silently dropped connection.
+    """
     entries = node_controls.session_registry.list_entries()
     # description_of runs synchronously inside pick_item, so
     # the display-preference lookup _session_description needs is
     # resolved once via the lane *before* the picker, same shape
     # established for format_for_display generally.
     display_format, display_timezone = await lane.run(resolve_display_preferences)
+    await session.write_line(
+        colored("\r\nSelect a session below to disconnect it.", fg_color=MUTED_COLOR)
+    )
     selected = await pick_item(
         session, entries,
         name_of=_session_name,
@@ -1319,6 +1403,10 @@ async def _who_screen(session: Session, lane: DatabaseLane, actor: User, node_co
     if not await prompt_yes_no(session, f"Disconnect {_session_name(selected)!r}?", default=False):
         return
 
+    await session.write("Message to show them before disconnecting (optional): ")
+    message_raw = (await session.read_line()).strip()
+    message = message_raw or None
+
     target_user_id: int | None = None
     detail = f"peer address {selected.peer_address or 'unknown'}"
     if selected.username is not None:
@@ -1327,13 +1415,19 @@ async def _who_screen(session: Session, lane: DatabaseLane, actor: User, node_co
         except AuthError:
             pass  # account no longer exists -- log by peer address only
 
+    if message is not None:
+        await node_controls.session_registry.notify_one(
+            selected.session, colored(f"\r\n*** {sanitize_text(message)} ***", fg_color=ALERT_COLOR, bold=True)
+        )
+
     disconnected = await node_controls.session_registry.disconnect_one(selected.session)
     if not disconnected:
         await session.write_line(colored("That session is already gone.", fg_color=MUTED_COLOR))
         return
 
     await lane.run(
-        record_action, actor=actor, action="disconnect_session", target_user_id=target_user_id, detail=detail
+        record_action, actor=actor, action="disconnect_session",
+        target_user_id=target_user_id, detail=f"{detail}, message={message!r}",
     )
     await session.write_line(f"{_session_name(selected)!r} disconnected.")
 

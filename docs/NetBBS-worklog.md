@@ -1960,3 +1960,38 @@ Two narrower implementation lessons from building it:
   scoped, single-caller exception (only `run_shutdown_sequence`'s own
   cancellation handling, only for the pre-disconnect countdown window),
   not a general-purpose undo.
+
+**`netbbs.net.picker.pick_item`'s 2-digit-selection path was missing its
+own newline (found via dogfood testing, not code review).** Every other
+state-changing branch (`[B]ack`, `[N]ext`, `[P]rev`) wrote an empty line
+before acting; the valid-2-digit-selection `return` did not. The
+observable effect only showed up one level up the call stack, in whatever
+the *caller* printed immediately after `pick_item` returned (e.g. `[W]ho`'s
+own "Disconnect 'x'? [y/N]: " landing directly after the echoed "02" with
+no separation at all) — `pick_item`'s own tests never caught it because
+none of them asserted on what came *after* a successful return, only on
+the returned value itself. Worth remembering for any shared
+interaction-loop helper: a missing trailing newline on a *success* path is
+easy to miss because the bug is invisible in isolation and only manifests
+in whatever an unrelated caller does next — test what a realistic caller
+would output immediately afterward, not just the return value.
+
+**Consolidating four separate single-purpose SysOp user-management
+screens into one central editor (design doc -- Thiesi's own dogfood-
+testing report).** `[L]ist users`/`[P]romote/demote`/`[E]nable/disable`/
+`[D]elete user` each used to pick a target user through their own
+separate `pick_item` call, then perform exactly one hardcoded action
+inline with no way to do a second thing without leaving and re-picking
+the same user again. Replaced with one `_pick_and_edit_user` (varies only
+by the picker's own title text) landing on one shared `_user_detail_screen`
+-- a real redraw-on-action menu loop (`[A]pprove`/`[L]evel`/`[T]oggle
+enable-disabled`/`[I]dentity verification`/`[D]elete`/`[B]ack`), mirroring
+the board/channel/file-area admin detail screens' own already-established
+shape rather than inventing a new one. `[L]ist users` used to call
+`_show_user_detail` for read-only-plus-two-prompts detail; that function
+no longer exists as a separate linear pass -- it's now exactly the same
+loop every other entry point reaches. Also added a one-shot sort-order
+choice (`netbbs.auth.users.list_users`'s new `order_by` — alphabetical/
+registered/level_asc/level_desc) before every user picker, mirroring
+`list_boards`'s own existing `order_by` convention rather than inventing
+a differently-shaped one for users.

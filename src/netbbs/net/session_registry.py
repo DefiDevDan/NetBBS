@@ -226,6 +226,35 @@ class ActiveSessionRegistry:
             await self.disconnect_one(session)
         return len(targets)
 
+    async def notify_one(self, session: Session, text: str) -> bool:
+        """
+        Deliver `text` to just `session` -- the same hook-or-`write_line`
+        dispatch `broadcast_to_all` already uses per recipient (design
+        doc -- node management), for a single targeted notice rather
+        than every connected session. The `[N]ode` `[W]ho` screen's own
+        optional custom message, shown to a session right before a
+        SysOp disconnects it, is what this exists for: written here,
+        directly to the target, before `disconnect_one` ends its
+        connection, not broadcast to everyone else too.
+
+        Returns `False` without raising if `session` isn't (or is no
+        longer) registered, or if delivery itself fails
+        (`SessionClosedError` — the target disconnected on its own in
+        the meantime) — matching `disconnect_one`'s own tolerance for a
+        session that's already gone by the time this runs.
+        """
+        entry = self._sessions.get(session)
+        if entry is None:
+            return False
+        try:
+            if session.pinned_notice_hook is not None:
+                await session.pinned_notice_hook(text)
+            else:
+                await session.write_line(text)
+            return True
+        except SessionClosedError:
+            return False
+
     async def disconnect_one(self, session: Session) -> bool:
         """
         Forcibly end just `session`'s connection, the same way
