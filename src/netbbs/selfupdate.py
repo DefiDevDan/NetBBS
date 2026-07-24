@@ -231,6 +231,13 @@ async def run_scheduled_update_check(
                 release = await check_latest_release(fetch=fetch)
             except UpdateError as exc:
                 _logger.warning("Scheduled update check failed: %s", exc)
+                # Recorded, not just logged (design doc §17 -- "fail
+                # clearly," CLAUDE.md's own working convention): without
+                # this, a SysOp glancing at the admin update screen after
+                # several consecutive failing days would still see a
+                # stale "3 weeks ago -- up to date," with the console the
+                # only place a real, ongoing problem was ever visible.
+                record_check_outcome(db, f"check failed: {exc}")
             else:
                 if is_newer(current_version, release.tag_name):
                     record_check_outcome(db, f"newer release available: {release.tag_name}")

@@ -323,6 +323,13 @@ def test_scheduled_check_skips_a_pass_when_disabled(tmp_path):
 
 
 def test_scheduled_check_tolerates_a_fetch_failure_and_still_sleeps(tmp_path):
+    """A real SysOp report (a transient TLS error reaching GitHub's API)
+    traced a gap here: a failed check used to only ever log a console
+    warning, never `record_check_outcome` -- so the admin update screen's
+    own "Last check: ..." line stayed silently stale through any number
+    of consecutive failing days, with nothing in the product itself
+    distinguishing "fine" from "quietly failing." Now recorded the same
+    way a success is."""
     db = Database(tmp_path / "node.db")
 
     sleep_calls: list[float] = []
@@ -349,7 +356,9 @@ def test_scheduled_check_tolerates_a_fetch_failure_and_still_sleeps(tmp_path):
     asyncio.run(scenario())
 
     assert sleep_calls == [3600.0]  # a failed fetch never crashes the loop
-    assert get_last_check_summary(db) == (None, None)  # nothing recorded for a failed check
+    checked_at, outcome = get_last_check_summary(db)
+    assert checked_at is not None
+    assert outcome is not None and outcome.startswith("check failed:")
     db.close()
 
 

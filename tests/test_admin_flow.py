@@ -2170,8 +2170,13 @@ def test_update_screen_reports_newer_release_without_auto_applying(db, lane, sys
 
 
 def test_update_screen_handles_check_failure_gracefully(db, lane, sysop, monkeypatch):
+    """A real SysOp report of a transient network/TLS error traced a gap:
+    a failed manual check used to leave `record_check_outcome` uncalled
+    entirely, so this screen's own "Last check: ..." line never showed
+    that anything had gone wrong. Now recorded the same way a success
+    is."""
     import netbbs.net.admin_flow as admin_flow
-    from netbbs.selfupdate import UpdateError
+    from netbbs.selfupdate import UpdateError, get_last_check_summary
 
     async def fake_check(*, fetch=None):
         raise UpdateError("could not reach the release API: timed out")
@@ -2181,6 +2186,9 @@ def test_update_screen_handles_check_failure_gracefully(db, lane, sysop, monkeyp
     session = FakeSession(["s", "u", "y", "n", "b", "b"])
     _run(session, lane, sysop)
     assert "Could not check for updates: could not reach the release API: timed out" in _written_text(session)
+    checked_at, outcome = get_last_check_summary(db)
+    assert checked_at is not None
+    assert outcome == "check failed: could not reach the release API: timed out"
 
 
 def test_update_screen_toggles_auto_check(db, lane, sysop):

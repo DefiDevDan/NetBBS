@@ -1052,6 +1052,17 @@ async def _update_settings_screen(session: Session, lane: DatabaseLane, actor: U
     isn't wired up yet -- a deliberate scope cut for this
     implementation pass, not an oversight, so this screen doesn't
     promise automation that isn't safely built and tested yet.
+
+    A failed check (network/API error) records `"check failed: ..."`
+    too, not just the two success outcomes -- a real gap traced from a
+    SysOp's own console report of a transient TLS error: before this,
+    `record_check_outcome` was only ever called on success, so a run of
+    consecutive failing days (scheduled or manual) left this screen's
+    own "Last check: ..." line silently showing a stale success from
+    however long ago, with nothing in the product itself distinguishing
+    "quiet because it's fine" from "quiet because it's been failing" --
+    the console's own warning line was the only place that ever showed,
+    which nobody reliably watches.
     """
     from netbbs import __version__ as current_version
 
@@ -1077,6 +1088,7 @@ async def _update_settings_screen(session: Session, lane: DatabaseLane, actor: U
         try:
             release = await check_latest_release()
         except UpdateError as exc:
+            await lane.run(record_check_outcome, f"check failed: {exc}")
             await session.write_line(colored(f"Could not check for updates: {exc}", fg_color=MUTED_COLOR))
         else:
             if is_newer(current_version, release.tag_name):

@@ -2052,3 +2052,27 @@ whole. Any new test against a screen that redraws rather than appending
 fresh output needs this from the start, not just after a flaky-looking
 failure surfaces it.
 
+**`netbbs.selfupdate.record_check_outcome` was only ever called on a
+successful check, never a failed one (found from a real SysOp's own
+console report of a transient TLS error reaching GitHub's API, not by
+code review).** Both `run_scheduled_update_check`'s daily background
+pass and `_update_settings_screen`'s manual "check now" path caught
+`UpdateError` and either logged a `_logger.warning` (scheduled) or wrote
+one line to the session (manual) -- neither ever recorded the failure
+via `record_check_outcome`, so `get_last_check_summary`'s `(checked_at,
+outcome)` pair only ever reflected the *last successful* check. A node
+whose daily checks had been silently failing for weeks would still show
+"Last check: 3 weeks ago -- up to date" on the admin update screen, with
+the only evidence anything was wrong sitting in a console warning line
+nobody reliably tails. This violates this project's own stated "fail
+clearly" convention (CLAUDE.md) as much as any user-facing failure mode
+does -- a background operational check is still something a SysOp needs
+to trust is either working or visibly not, and "quiet" must not be
+ambiguous between those two. Fixed by calling `record_check_outcome(db,
+f"check failed: {exc}")` from both failure branches, the same as every
+success path already does -- one line each, not a new mechanism.
+Worth remembering as a general check for any other "periodic background
+check, log-and-continue on failure" loop in this codebase: log-only
+error handling is a silent-failure gap by definition whenever the
+result is also supposed to be visible through a persisted, SysOp-facing
+status field elsewhere.
