@@ -898,11 +898,34 @@ async def _draw_main_menu(
 def _main_menu_prompt(db: Database, user: User, node_controls: NodeControls | None) -> str:
     """`Choice: `, optionally prefixed with the current BBS time and a
     node-status alert tag -- see `_draw_main_menu`'s own docstring for
-    why `node_controls is None` leaves this completely unchanged."""
+    why `node_controls is None` leaves this completely unchanged.
+
+    Time-only (`override_format="%H:%M:%S"`), not the node's full
+    configured display format (which includes the date) -- the same
+    "date is static clutter, not information" reasoning already applied
+    to the chat status line's own clock and per-message timestamps (see
+    `netbbs.chat.timestamps.format_with_preference`'s docstring): a
+    snapshot taken once per menu redraw shows the same date for an
+    entire session for the overwhelming majority of users, so printing
+    it here added width without adding information. Seconds are kept
+    (unlike those other two clocks) since Thiesi specifically asked for
+    them here; still just a snapshot at draw time, not a ticking live
+    clock (see `_draw_main_menu`'s own docstring for why).
+
+    Rendered as alternating colors (`HH`/`MM`/`SS` in `HEADER_COLOR`,
+    the `:` separators in `MUTED_COLOR`) rather than one flat color --
+    Thiesi's own explicit request for a two-tone "digital clock" look,
+    distinguishing the digit groups from the separators at a glance.
+    """
     if node_controls is None:
         return "Choice: "
 
-    time_str = format_for_display(utc_now_iso(), db)
+    time_only = format_for_display(utc_now_iso(), db, override_format="%H:%M:%S")
+    hours, minutes, seconds = time_only.split(":")
+    separator = colored(":", fg_color=MUTED_COLOR)
+    time_str = separator.join(
+        colored(part, fg_color=HEADER_COLOR) for part in (hours, minutes, seconds)
+    )
     tag = ""
     if node_controls.shutdown_scheduler.is_scheduled():
         remaining = node_controls.shutdown_scheduler.remaining_seconds()

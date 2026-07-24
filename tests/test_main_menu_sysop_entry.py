@@ -19,6 +19,8 @@ from netbbs.net.login_flow import _draw_main_menu, _main_menu
 from netbbs.net.maintenance import MaintenanceMode
 from netbbs.net.session_registry import ActiveSessionRegistry
 from netbbs.net.shutdown import NodeControls
+from netbbs.rendering import HEADER_COLOR, MUTED_COLOR
+from netbbs.rendering.ansi import fg
 from netbbs.storage.database import Database
 
 
@@ -243,4 +245,27 @@ def test_prompt_shows_a_maintenance_mode_tag_for_a_sysop_when_lockdown_is_on(tmp
     asyncio.run(_draw_main_menu(session, db, MessageMailbox(), sysop, node_controls=node_controls))
 
     assert "[MAINT MODE]" in _written_text(session)
+    db.close()
+
+
+def test_prompt_clock_is_time_only_two_toned_and_has_no_date(tmp_path):
+    """Thiesi's own follow-up request: the date (static clutter across an
+    entire session -- see `_main_menu_prompt`'s own docstring) is gone,
+    and the remaining `HH:MM:SS` is a two-tone "digital clock" -- digit
+    groups in `HEADER_COLOR`, `:` separators in `MUTED_COLOR` -- rather
+    than one flat color."""
+    db = Database(tmp_path / "node.db")
+    user = create_user(db, "alice", password="hunter2", user_level=10)
+    session = FakeSession()
+    node_controls = _node_controls()
+
+    asyncio.run(_draw_main_menu(session, db, MessageMailbox(), user, node_controls=node_controls))
+
+    prompt = session.written[-1]
+    stripped = re.sub(r"\x1b\[[0-9;]*m", "", prompt)
+    assert re.match(r"^\d{2}:\d{2}:\d{2} Choice: $", stripped)
+    # No leftover date component (e.g. "24.07.2026") anywhere.
+    assert not re.search(r"\d{2}\.\d{2}\.\d{4}", stripped)
+    assert prompt.count(fg(HEADER_COLOR)) == 3  # HH, MM, SS
+    assert prompt.count(fg(MUTED_COLOR)) == 2  # the two ":" separators
     db.close()
