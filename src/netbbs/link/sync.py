@@ -371,25 +371,32 @@ async def _sync_one_seed(
     # requested boards/channels/file areas simply returns an empty list,
     # indistinguishable from -- and no more costly than -- this loop's
     # own existing per-seed push tolerance.
+    #
+    # Always sent, even when `inventory_request` is entirely empty
+    # (issue #94) -- an empty request is exactly what a node with zero
+    # carried boards/channels/file areas sends, and skipping the call in
+    # that case (the pre-#94 behavior) meant such a node could never
+    # discover its first one: the responder side (`board_event_diff` et
+    # al.) now also returns anything it carries that's simply absent
+    # from the request, which for an empty request means "everything."
     try:
         inventory_request = await lane.run(build_inventory_request)
-        if inventory_request.boards or inventory_request.channels or inventory_request.file_areas:
-            events, _more_available = await request_inventory(node, session, seed_url, inventory_request)
-            if events:
-                try:
-                    accepted = node.handle_events(seed_peer.fingerprint, events)
-                except LinkProtocolError as exc:
-                    _logger.warning(
-                        "Link sync: rejected an inventory response from seed %s: %s", seed_url, exc
-                    )
-                else:
-                    await persist_accepted_events(
-                        lane, node, accepted,
-                        sender_fingerprint=seed_peer.fingerprint, max_carried_boards=max_carried_boards,
-                        max_carried_channels=max_carried_channels,
-                        max_carried_file_areas=max_carried_file_areas,
-                        max_remote_files_per_area=max_remote_files_per_area,
-                    )
+        events, _more_available = await request_inventory(node, session, seed_url, inventory_request)
+        if events:
+            try:
+                accepted = node.handle_events(seed_peer.fingerprint, events)
+            except LinkProtocolError as exc:
+                _logger.warning(
+                    "Link sync: rejected an inventory response from seed %s: %s", seed_url, exc
+                )
+            else:
+                await persist_accepted_events(
+                    lane, node, accepted,
+                    sender_fingerprint=seed_peer.fingerprint, max_carried_boards=max_carried_boards,
+                    max_carried_channels=max_carried_channels,
+                    max_carried_file_areas=max_carried_file_areas,
+                    max_remote_files_per_area=max_remote_files_per_area,
+                )
     except LinkTransportError as exc:
         _logger.warning("Link sync: could not request inventory from seed %s: %s", seed_url, exc)
 

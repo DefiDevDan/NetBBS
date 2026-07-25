@@ -689,16 +689,30 @@ def board_event_diff(
 ) -> tuple[list[dict], bool]:
     """
     The responder side of one `InventoryRequest` (design doc §8.8, issue
-    #85): for each `board_id` in `requested_boards` that this node also
-    currently carries (a `board_id` this node doesn't carry is silently
-    skipped, never an error -- §9.3's existing "not carried on this
-    node" honest-exclusion principle, applied here to a request rather
-    than a push), return every board-scoped event on file for it
-    (`_all_board_events`, above) whose `content_id` is not already in
-    that board's declared known-ID list -- this is the actual multi-hop
-    mechanism: a node that only ever *carries* board X, never originated
-    it, can still answer for it here, because `_all_board_events`
-    doesn't care who authored what it has on file, only what it has.
+    #85; discovery gap closed by issue #94): for each `board_id` this
+    node also currently carries, return every board-scoped event on file
+    for it (`_all_board_events`, above) whose `content_id` is not already
+    in that board's declared known-ID list -- this is the actual
+    multi-hop mechanism: a node that only ever *carries* board X, never
+    originated it, can still answer for it here, because `_all_board_
+    events` doesn't care who authored what it has on file, only what it
+    has.
+
+    Walks `requested_boards`' keys *union* `carried_board_ids(db)`, not
+    just the former -- `InventoryRequest.boards` is documented as
+    exhaustive (every board_id the requester currently carries, see that
+    class's own docstring), so a board_id this node carries that's
+    simply absent from the request unambiguously means the requester has
+    never seen it, not that it declined to ask. Issue #94: before this,
+    a board_id missing from the request was silently skipped even when
+    this node carried it, so a node with zero carried boards could never
+    discover its first one via inventory pull at all -- `handle_events`'s
+    own "no relay from a stranger" check (origin, not sender, must be an
+    independently-known peer) already guards against abuse here, so nothing
+    new needs to gate this. A `board_id` genuinely not carried by *this*
+    node either way still contributes nothing (`_all_board_events`
+    returns `{}`), preserving the original "not carried here, silently
+    skipped, never an error" principle for that case.
 
     Bounded by `limit` (the caller's own `_MAX_EVENTS_PER_REQUEST`,
     §13.9) across the *whole* response, not per board -- boards are
@@ -713,10 +727,11 @@ def board_event_diff(
     """
     collected: list[dict] = []
     truncated = False
-    for board_id in sorted(requested_boards):
+    all_board_ids = sorted(set(requested_boards) | set(carried_board_ids(db)))
+    for board_id in all_board_ids:
         if truncated:
             break
-        known_ids = set(requested_boards[board_id])
+        known_ids = set(requested_boards.get(board_id, ()))
         for content_id, envelope in _all_board_events(db, board_id).items():
             if content_id in known_ids:
                 continue
@@ -780,7 +795,8 @@ def channel_event_diff(
 ) -> tuple[list[dict], bool]:
     """
     The channel-side responder logic for one `InventoryRequest` --
-    mirrors `board_event_diff` exactly, using `_all_channel_events`
+    mirrors `board_event_diff` exactly (including its issue #94
+    absent-means-unknown discovery fix), using `_all_channel_events`
     instead. Callers combining both board and channel results (`netbbs.
     link.transport._handle_inventory`) are responsible for sharing one
     overall `_MAX_EVENTS_PER_REQUEST` budget across both calls -- this
@@ -789,10 +805,11 @@ def channel_event_diff(
     """
     collected: list[dict] = []
     truncated = False
-    for channel_id in sorted(requested_channels):
+    all_channel_ids = sorted(set(requested_channels) | set(carried_channel_ids(db)))
+    for channel_id in all_channel_ids:
         if truncated:
             break
-        known_ids = set(requested_channels[channel_id])
+        known_ids = set(requested_channels.get(channel_id, ()))
         for content_id, envelope in _all_channel_events(db, channel_id).items():
             if content_id in known_ids:
                 continue
@@ -856,7 +873,8 @@ def file_area_event_diff(
 ) -> tuple[list[dict], bool]:
     """
     The file-area-side responder logic for one `InventoryRequest` --
-    mirrors `board_event_diff`/`channel_event_diff` exactly, using `_all_
+    mirrors `board_event_diff`/`channel_event_diff` exactly (including
+    the issue #94 absent-means-unknown discovery fix), using `_all_
     file_area_events` instead (design doc §11, issue #93). Callers
     combining all three results (`netbbs.link.transport._handle_
     inventory`) are responsible for sharing one overall `_MAX_EVENTS_
@@ -870,10 +888,11 @@ def file_area_event_diff(
     """
     collected: list[dict] = []
     truncated = False
-    for area_id in sorted(requested_file_areas):
+    all_area_ids = sorted(set(requested_file_areas) | set(carried_file_area_ids(db)))
+    for area_id in all_area_ids:
         if truncated:
             break
-        known_ids = set(requested_file_areas[area_id])
+        known_ids = set(requested_file_areas.get(area_id, ()))
         for content_id, envelope in _all_file_area_events(db, area_id).items():
             if content_id in known_ids:
                 continue

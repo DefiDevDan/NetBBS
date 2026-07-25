@@ -597,23 +597,32 @@ class LinkServer:
         except (KeyError, ValueError, TypeError) as exc:
             return web.json_response({"error": f"malformed inventory request: {exc}"}, status=400)
 
+        # Issue #94: each `*_event_diff` call runs unconditionally, not
+        # just when the *request* mentions boards/channels/file areas --
+        # each now also returns anything *this* node carries that's
+        # simply absent from the request (an empty request included), so
+        # gating the call on the request being non-empty would silently
+        # undo that fix for exactly the bootstrap case it exists for (a
+        # requester with nothing carried yet sends an all-empty request).
+        # Still gated on `remaining > 0`: that's the shared response-size
+        # budget, unrelated to whether the request itself was empty.
         board_events, board_truncated = await self._lane.run(
             board_event_diff, inventory_request.boards, limit=_MAX_EVENTS_PER_REQUEST
         )
         remaining = _MAX_EVENTS_PER_REQUEST - len(board_events)
-        if remaining > 0 and inventory_request.channels:
+        if remaining > 0:
             channel_events, channel_truncated = await self._lane.run(
                 channel_event_diff, inventory_request.channels, limit=remaining
             )
         else:
-            channel_events, channel_truncated = [], bool(inventory_request.channels)
+            channel_events, channel_truncated = [], True
         remaining -= len(channel_events)
-        if remaining > 0 and inventory_request.file_areas:
+        if remaining > 0:
             file_area_events, file_area_truncated = await self._lane.run(
                 file_area_event_diff, inventory_request.file_areas, limit=remaining
             )
         else:
-            file_area_events, file_area_truncated = [], bool(inventory_request.file_areas)
+            file_area_events, file_area_truncated = [], True
         events = board_events + channel_events + file_area_events
         more_available = board_truncated or channel_truncated or file_area_truncated
         return web.json_response({"events": events, "more_available": more_available})

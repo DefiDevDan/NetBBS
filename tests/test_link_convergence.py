@@ -82,6 +82,7 @@ from netbbs.link.node_identity import resolve_current_operational_key, rotate_op
 from netbbs.link.protocol import HelloMessage, LinkNode, LinkProtocolError
 from netbbs.link.store import (
     board_event_diff,
+    build_inventory_request,
     channel_event_diff,
     file_area_event_diff,
     load_link_node,
@@ -897,6 +898,67 @@ def test_a_node_converges_via_multi_hop_inventory_when_the_origin_is_already_kno
     relayed_accepted = c_node.handle_events(b.fingerprint, events)
     assert set(relayed_accepted) == {genesis.content_id, post.content_id}
     assert c_node.boards["existing-local-board-id"].content_id == genesis.content_id
+
+    a.close()
+    b.close()
+    c.close()
+
+
+def test_a_node_with_nothing_carried_yet_discovers_a_new_board_via_multi_hop_inventory(tmp_path, clock):
+    """Issue #94 regression. The test above proves multi-hop relay works
+    once c already knows to ask about the board_id -- but it hand-
+    constructs that knowledge (`{"existing-local-board-id": []}`)
+    instead of deriving it from the real `build_inventory_request`. That
+    quietly assumed away the actual bug: `build_inventory_request` only
+    ever lists board_ids the requester's own `boards` table already has
+    a genesis for, so a node starting from zero carried boards produced
+    an empty request, and the pre-fix responder (`board_event_diff`)
+    only ever answered board_ids present as *keys* in the request --
+    silently never disclosing anything to a requester who (correctly,
+    for a node with nothing yet) asked about nothing. This test starts
+    c from a real, honest zero and asserts it still converges."""
+    a = spawn_node(tmp_path, "a")
+    b = spawn_node(tmp_path, "b")
+    c = spawn_node(tmp_path, "c")
+    transport = ScriptedTransport()
+    for node in (a, b, c):
+        transport.register(node)
+
+    a_node = LinkNode(identity=a.identity)
+    b_node = LinkNode(identity=b.identity)
+    c_node = LinkNode(identity=c.identity)
+
+    # c and a independently say hello -- c can now verify a's signing
+    # key, same precondition as the hand-constructed test above.
+    _exchange_hellos(transport, a, a_node, c, c_node, clock)
+    # a and b sync directly: b receives and materializes a's board.
+    _exchange_hellos(transport, a, a_node, b, b_node, clock)
+
+    genesis = _board_genesis(a, clock, board_id="fresh-board-id")
+    post = _board_post(a, clock, board_id="fresh-board-id")
+    payload = json.dumps([genesis.to_dict(), post.to_dict()]).encode()
+    transport.send(a, b, payload)
+    transport.deliver_all()
+    [to_b] = [m for m in transport.inbox(b) if m.sender == a.label and m.payload == payload]
+    accepted = b_node.handle_events(a.fingerprint, json.loads(to_b.payload))
+    assert accepted == [genesis.content_id, post.content_id]
+    materialize_carried_board(b.db, genesis, own_fingerprint=b.fingerprint)
+    materialize_carried_post(b.db, post, sender_fingerprint=a.fingerprint)
+
+    # c carries nothing at all -- its real inventory request is
+    # genuinely empty, unlike the test above's hand-injected board_id.
+    assert "fresh-board-id" not in c_node.boards
+    request = build_inventory_request(c.db)
+    assert request.boards == {}
+
+    _exchange_hellos(transport, b, b_node, c, c_node, clock)
+    events, more_available = board_event_diff(b.db, request.boards, limit=200)
+    assert more_available is False
+    assert len(events) == 2  # genesis + post -- b discloses it despite c never asking for it
+
+    relayed_accepted = c_node.handle_events(b.fingerprint, events)
+    assert set(relayed_accepted) == {genesis.content_id, post.content_id}
+    assert c_node.boards["fresh-board-id"].content_id == genesis.content_id
 
     a.close()
     b.close()

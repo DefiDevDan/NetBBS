@@ -1165,6 +1165,40 @@ Reproduced multiple times across unrelated sessions; root cause not yet
 found. Worth a dedicated investigation before trusting that test as a
 regression signal.
 
+**Inventory-pull's per-kind request dict is documented as exhaustive; a
+responder must treat an absent ID as "requester has never seen this," not
+merely "requester didn't ask" (issue #94, found via a real 3-node dogfood
+deployment, not a unit test).** `InventoryRequest.boards`/`.channels`/`.
+file_areas` (`netbbs.link.protocol`) each list *every* board/channel/file-area
+ID the requester currently carries -- not a curated subset. Before issue #94,
+the responder side (`board_event_diff`/`channel_event_diff`/`file_area_event_
+diff`) only ever answered IDs present as *keys* in that dict, so a board this
+node carried but the requester never mentioned was silently skipped -- correct
+for "requester deliberately excluded it," wrong for the far more common
+"requester has zero carried boards and its request is honestly empty," which
+is exactly the state of any newly onboarded node. Combined with `netbbs.link.
+sync`'s own early-exit (never sending the request at all when the local
+inventory was empty) and the fact that direct origin-push (`load_own_board_
+events`) only re-pushes *self-originated* events, a node not directly seeded
+by a board's origin had no path to ever discover a genuinely new board,
+channel, or file area -- regardless of how many verified peers or sync cycles
+passed. Fixed by having each `*_event_diff` walk `requested ∪ carried` (an ID
+this node carries but the request omits gets full disclosure, since omission
+now unambiguously means "unknown to requester") and by always sending the
+inventory request even when empty. Safe under existing invariants without new
+gating: `handle_events`'s "no relay from a stranger" check already requires a
+`board_genesis`'s *origin* (not sender) to be independently known to the
+*receiver*, and `persist_accepted_events` already enforces `max_carried_
+boards`/etc. on intake -- both were already wired up for exactly this case,
+just never exercised. The existing deterministic regression test for this
+scenario (`test_a_node_converges_via_multi_hop_inventory_when_the_origin_is_
+already_known`) had hand-constructed the requester's inventory request
+(`{"existing-local-board-id": []}`) instead of deriving it from the real
+`build_inventory_request`, which is exactly what let this ship unnoticed --
+a lesson for any future multi-hop/relay test: build the request through the
+same code path a real node would, not a hand-picked stand-in for "the
+requester already knows what to ask about."
+
 ### WAN reachability and relay selection
 
 **§6's "reuse the existing local-reputation mechanism" had nothing to reuse --
