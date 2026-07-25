@@ -62,6 +62,11 @@ CLOCK_COLOR = 213  # light magenta/orchid — the main-menu prompt's own HH:MM:S
                    # on the same screen, so the two are kept as separate named
                    # constants rather than one shared value, matching this
                    # module's own "one constant per meaning" convention)
+WARNING_COLOR = 214  # amber — a WARNING-level diagnostic log entry (issue #101).
+                     # Distinct from ALERT_COLOR, reused here for ERROR/CRITICAL
+                     # entries on the same screen: two real severities that need
+                     # to read as visually different, not one flat "something's
+                     # wrong" color for both.
 STATUS_BAR_BACKGROUND = 236  # dark neutral gray — the chat status line's own
                              # solid background band (Thiesi's own explicit
                              # choice: literal per-field foreground colors on

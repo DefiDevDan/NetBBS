@@ -123,17 +123,43 @@ def _days_before(now_iso: str, days: int) -> str:
     return (now - timedelta(days=days)).isoformat().replace("+00:00", "Z")
 
 
+def _entry_from_row(row: sqlite3.Row) -> DiagnosticLogEntry:
+    return DiagnosticLogEntry(
+        id=row["id"], level=row["level"], logger_name=row["logger_name"],
+        message=row["message"], created_at=row["created_at"],
+    )
+
+
 def list_diagnostic_log_entries(db: Database, *, limit: int = 200) -> list[DiagnosticLogEntry]:
     """Most recent first -- the natural reading order for a diagnostic
-    log a SysOp is browsing to answer "what went wrong recently"."""
+    log a SysOp is browsing to answer "what went wrong recently".
+    Callers wanting oldest-first display (issue #101) reverse this same
+    most-recent-`limit` window in Python rather than a separate query --
+    there's no second, differently-bounded result to fetch, just the
+    other reading direction through the same rows."""
     rows = db.connection.execute(
         "SELECT id, level, logger_name, message, created_at FROM link_diagnostic_log ORDER BY id DESC LIMIT ?",
         (limit,),
     ).fetchall()
-    return [
-        DiagnosticLogEntry(
-            id=row["id"], level=row["level"], logger_name=row["logger_name"],
-            message=row["message"], created_at=row["created_at"],
-        )
-        for row in rows
-    ]
+    return [_entry_from_row(row) for row in rows]
+
+
+def list_diagnostic_log_entries_since(
+    db: Database, since_id: int, *, limit: int = 200
+) -> list[DiagnosticLogEntry]:
+    """Every entry newer than `since_id`, oldest first -- the live-tail
+    counterpart to `list_diagnostic_log_entries` (issue #101b): a poll
+    loop calls this with the highest `id` it has already shown, appends
+    whatever comes back, and remembers the new highest `id` for next
+    time. Safe against this handler's own age/row-count pruning running
+    concurrently -- pruning only ever deletes rows, so a row this call
+    already returned once can be pruned later without that ever being
+    mistaken for "nothing new happened", and a burst larger than `limit`
+    is capped rather than flooding a slow client all at once (the next
+    poll simply picks up where this one left off)."""
+    rows = db.connection.execute(
+        "SELECT id, level, logger_name, message, created_at FROM link_diagnostic_log "
+        "WHERE id > ? ORDER BY id ASC LIMIT ?",
+        (since_id, limit),
+    ).fetchall()
+    return [_entry_from_row(row) for row in rows]

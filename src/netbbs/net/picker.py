@@ -44,7 +44,17 @@ from typing import Callable, Sequence, TypeVar
 
 from netbbs.net.char_input import Completer
 from netbbs.net.session import Session
-from netbbs.rendering import HEADER_COLOR, colored, menu_key, reject_keystroke, sanitize_text, truncate
+from netbbs.rendering import (
+    ACCENT_COLOR,
+    HEADER_COLOR,
+    MENU_KEY_COLOR,
+    MUTED_COLOR,
+    colored,
+    colored_truncate,
+    menu_key,
+    reject_keystroke,
+    sanitize_text,
+)
 
 T = TypeVar("T")
 
@@ -147,11 +157,22 @@ async def pick_item(
             # showing this second number somewhere, `goto` would be
             # nearly undiscoverable — nothing else on screen reveals what
             # number to type for it.
-            line = f"  {position:02d}. (#{stable_id_of(item)}) {sanitize_text(name_of(item))}"
+            #
+            # Colored per field (issue #104) via colored_truncate, not
+            # plain truncate() on an already-colored string: the
+            # selector in MENU_KEY_COLOR (it's literally the keystroke
+            # to press), the permanent reference in MUTED_COLOR, the
+            # name in ACCENT_COLOR (this module's existing convention for
+            # navigable item names), and any description muted again.
             description = description_of(item)
+            segments: list[tuple[str, int | None]] = [
+                (f"  {position:02d}. ", MENU_KEY_COLOR),
+                (f"(#{stable_id_of(item)}) ", MUTED_COLOR),
+                (sanitize_text(name_of(item)), ACCENT_COLOR),
+            ]
             if description:
-                line += f" - {sanitize_text(description)}"
-            await session.write_line(truncate(line, session.terminal_width))
+                segments.append((f" - {sanitize_text(description)}", MUTED_COLOR))
+            await session.write_line(colored_truncate(segments, session.terminal_width))
 
         nav = "  ".join(
             [

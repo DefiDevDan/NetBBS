@@ -133,7 +133,11 @@ from netbbs.link.boards import (
     rebuild_carried_post_materialization,
 )
 from netbbs.link.channels import LinkChannelsError, is_channel_linked, link_channel
-from netbbs.link.diagnostics import list_diagnostic_log_entries
+from netbbs.link.diagnostics import (
+    DiagnosticLogEntry,
+    list_diagnostic_log_entries,
+    list_diagnostic_log_entries_since,
+)
 from netbbs.link.files import LinkFilesError, is_area_linked, link_file_area
 from netbbs.link.protocol import PeerRecord
 from netbbs.link.relay_mailbox import mailbox_sizes
@@ -188,7 +192,9 @@ from netbbs.rendering import (
     ALERT_COLOR,
     HEADER_COLOR,
     MUTED_COLOR,
+    WARNING_COLOR,
     colored,
+    colored_truncate,
     menu_key,
     reflow,
     reject_keystroke,
@@ -413,6 +419,10 @@ async def _system_menu(
             await session.write_line("")
             await _diagnostic_log_screen(session, lane)
             await _draw_system_menu(session, node_controls, link_context)
+        elif choice == "f" and link_context is not None:
+            await session.write_line("")
+            await _diagnostic_log_tail_screen(session, lane)
+            await _draw_system_menu(session, node_controls, link_context)
         elif choice == "k":
             await session.write_line("")
             await _backup_status_screen(session, lane, actor)
@@ -434,6 +444,7 @@ async def _draw_system_menu(
         option_list.append(menu_key("O", "utbox"))
         option_list.append(menu_key("R", "epair carried posts"))
         option_list.append(menu_key("D", "iagnostic log"))
+        option_list.append(menu_key("F", "ollow log"))
     if node_controls is not None:
         option_list.append(menu_key("N", "ode"))
     option_list.append(menu_key("B", "ack"))
@@ -1422,6 +1433,15 @@ async def _outbox_screen(session: Session, lane: DatabaseLane, actor: User) -> N
             await session.write_line(f"Cancelled -- status is now {cancelled.status!r}.")
 
 
+def _diagnostic_level_color(level: str) -> int:
+    """WARNING reads as merely notable; ERROR/CRITICAL (the only other
+    levels `LinkDiagnosticLogHandler` ever forwards -- it's attached at
+    `WARNING` and above) read as more urgent, via the same `ALERT_COLOR`
+    a live drain/shutdown countdown already uses for "something
+    time-sensitive, act on it"."""
+    return ALERT_COLOR if level in ("ERROR", "CRITICAL") else WARNING_COLOR
+
+
 async def _diagnostic_log_screen(session: Session, lane: DatabaseLane) -> None:
     """
     Read-only SysOp inspection of the bounded Link diagnostic log
@@ -1432,29 +1452,111 @@ async def _diagnostic_log_screen(session: Session, lane: DatabaseLane) -> None:
     operator-configured age/row bounds on every write. No action to
     take on an entry here, unlike `[O]utbox` -- purely "what has this
     node's own Link activity been complaining about lately."
-    """
-    entries = await lane.run(list_diagnostic_log_entries)
 
+    Issue #101: order is a simple per-visit toggle (asked once, up
+    front, via the same `prompt_yes_no` convention used throughout this
+    module for a binary choice, and only once there's actually something
+    to reorder) rather than a live in-list hotkey -- `pick_item`'s own
+    key dispatch (N/P/S/G/B/digits) has no room for a caller-defined
+    extra command, and a full custom picker (the shape
+    `_pick_target_user`'s multi-mode sort/visibility toggle needed) would
+    be disproportionate for what is, here, a single boolean.
+    """
     await session.write_line(colored("\r\nDiagnostic log:", fg_color=HEADER_COLOR, bold=True))
+    entries = await lane.run(list_diagnostic_log_entries)
     if not entries:
         await session.write_line(colored("Nothing logged yet.", fg_color=MUTED_COLOR))
         return
 
+    ascending = not await prompt_yes_no(session, "Show newest first?", default=True)
+    order_label = "oldest first" if ascending else "most recent first"
+    if ascending:
+        entries = list(reversed(entries))
     selected = await pick_item(
         session, entries,
         name_of=lambda entry: f"{entry.created_at}  {entry.level}",
         stable_id_of=lambda entry: entry.id,
         description_of=lambda entry: sanitize_text(entry.message),
-        title="Diagnostic log (most recent first)",
+        title=f"Diagnostic log ({order_label})",
         empty_message="Nothing logged yet.",
     )
     if selected is None:
         return
 
-    await session.write_line(f"\r\nWhen: {selected.created_at}")
-    await session.write_line(f"Level: {selected.level}")
-    await session.write_line(f"Logger: {sanitize_text(selected.logger_name)}")
+    level_color = _diagnostic_level_color(selected.level)
+    await session.write_line(colored(f"\r\nWhen: {selected.created_at}", fg_color=MUTED_COLOR))
+    await session.write_line(f"Level: {colored(selected.level, fg_color=level_color, bold=True)}")
+    await session.write_line(colored(f"Logger: {sanitize_text(selected.logger_name)}", fg_color=MUTED_COLOR))
     await session.write_line(f"Message: {sanitize_text(selected.message)}")
+
+
+# How often `_diagnostic_log_tail_screen` polls for new rows -- the log
+# is DB-backed (LinkDiagnosticLogHandler's own connection), not an
+# in-memory ring buffer, so "live" here really is short-interval
+# polling, not a push subscription. 2s keeps the table read cheap
+# (an indexed "id > ?" scan on an already row/age-bounded table) while
+# still feeling immediate to a SysOp actively watching.
+_DIAGNOSTIC_TAIL_POLL_INTERVAL_SECONDS = 2.0
+
+# How many of the most recent entries to seed the view with on entry --
+# enough recent context to be useful without dumping the entire
+# (already up-to-200-row) log before anything new has even happened.
+_DIAGNOSTIC_TAIL_SEED_COUNT = 20
+
+
+def _diagnostic_entry_line(entry: DiagnosticLogEntry, width: int) -> str:
+    level_color = _diagnostic_level_color(entry.level)
+    segments: list[tuple[str, int | None]] = [
+        (f"{entry.created_at}  ", MUTED_COLOR),
+        (f"[{entry.level}] ", level_color),
+        (f"{sanitize_text(entry.logger_name)}: ", MUTED_COLOR),
+        (sanitize_text(entry.message), None),
+    ]
+    return colored_truncate(segments, width)
+
+
+async def _diagnostic_log_tail_screen(session: Session, lane: DatabaseLane) -> None:
+    """
+    Issue #101b: a live "follow" view of the diagnostic log, appending
+    new entries as they're written rather than requiring the SysOp to
+    back out of `_diagnostic_log_screen` and reopen it to see what's new
+    since.
+
+    Races a single `read_key()` call (any key stops the tail) against a
+    polling timer via `asyncio.wait` -- own async tasks (CLAUDE.md): the
+    `finally` always cancels and gathers the read task, on every exit
+    path, whether that's the SysOp actually pressing a key or an
+    exception unwinding out of the poll loop, so a stray uncompleted
+    `read_key()` never leaks past this function's return.
+    """
+    await session.write_line(
+        colored("\r\nDiagnostic log (live) -- press any key to stop.", fg_color=HEADER_COLOR, bold=True)
+    )
+    seed = await lane.run(list_diagnostic_log_entries, limit=_DIAGNOSTIC_TAIL_SEED_COUNT)
+    last_id = 0
+    for entry in reversed(seed):  # oldest of the seeded batch first, matching tail's own reading order
+        await session.write_line(_diagnostic_entry_line(entry, session.terminal_width))
+        last_id = max(last_id, entry.id)
+    if not seed:
+        await session.write_line(colored("Nothing logged yet -- watching for new entries.", fg_color=MUTED_COLOR))
+
+    key_task = asyncio.create_task(session.read_key())
+    try:
+        while True:
+            done, _pending = await asyncio.wait(
+                {key_task}, timeout=_DIAGNOSTIC_TAIL_POLL_INTERVAL_SECONDS
+            )
+            if key_task in done:
+                break
+            new_entries = await lane.run(list_diagnostic_log_entries_since, last_id)
+            for entry in new_entries:
+                await session.write_line(_diagnostic_entry_line(entry, session.terminal_width))
+                last_id = entry.id
+    finally:
+        if not key_task.done():
+            key_task.cancel()
+            await asyncio.gather(key_task, return_exceptions=True)
+    await session.write_line("")
 
 
 async def _repair_carried_posts_screen(session: Session, lane: DatabaseLane) -> None:

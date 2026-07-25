@@ -14,6 +14,9 @@ uniformly).
 from __future__ import annotations
 
 import textwrap
+from typing import Sequence
+
+from netbbs.rendering.ansi import colored
 
 DEFAULT_WIDTH = 80
 
@@ -55,3 +58,41 @@ def truncate(text: str, width: int, *, ellipsis: str = "...") -> str:
     if width <= len(ellipsis):
         return ellipsis[:width]
     return text[: width - len(ellipsis)] + ellipsis
+
+
+def colored_truncate(
+    segments: Sequence[tuple[str, int | None]], width: int, *, ellipsis: str = "..."
+) -> str:
+    """
+    Like `truncate`, but for a line built from several differently-
+    colored fields (`(text, fg_color)` pairs, `fg_color=None` for
+    uncolored) -- coloring each segment only *after* the truncation
+    budget is decided against the plain, unescaped text.
+
+    Coloring first and truncating the ANSI-escaped result the way
+    `truncate()` alone would is unsafe: SGR escape sequences count
+    toward `truncate`'s character budget just like visible text, and a
+    cut mid-sequence leaves an unterminated code that bleeds its color
+    into everything printed afterward (see `colored()`'s own docstring
+    on exactly that failure mode).
+    """
+    if width < 1:
+        raise ValueError(f"width must be >= 1, got {width}")
+
+    plain = "".join(text for text, _ in segments)
+    if len(plain) <= width:
+        return "".join(colored(text, fg_color=color) for text, color in segments if text)
+    if width <= len(ellipsis):
+        return ellipsis[:width]
+
+    budget = width - len(ellipsis)
+    rendered: list[str] = []
+    for text, color in segments:
+        if budget <= 0:
+            break
+        piece = text[:budget]
+        if piece:
+            rendered.append(colored(piece, fg_color=color))
+        budget -= len(piece)
+    rendered.append(ellipsis)
+    return "".join(rendered)

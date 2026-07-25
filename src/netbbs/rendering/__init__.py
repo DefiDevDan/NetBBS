@@ -30,7 +30,7 @@ from netbbs.rendering.ansi import (
 from netbbs.rendering.ansi_art import decode_ansi_bytes, encode_ansi_bytes
 from netbbs.rendering.ansi_parse import parse_ansi_into_buffer
 from netbbs.rendering.menu import menu_key
-from netbbs.rendering.reflow import DEFAULT_WIDTH, reflow, truncate
+from netbbs.rendering.reflow import DEFAULT_WIDTH, colored_truncate, reflow, truncate
 from netbbs.rendering.sanitize import sanitize_text
 from netbbs.rendering.screen_buffer import Cell, ScreenBuffer, Snapshot, diff_ansi, full_render_ansi
 from netbbs.rendering.theme import (
@@ -47,6 +47,7 @@ from netbbs.rendering.theme import (
     STATUS_BAR_BACKGROUND,
     TOPIC_COLOR,
     VERIFIED_COLOR,
+    WARNING_COLOR,
 )
 
 __all__ = [
@@ -69,6 +70,7 @@ __all__ = [
     "set_scroll_region",
     "menu_key",
     "DEFAULT_WIDTH",
+    "colored_truncate",
     "reflow",
     "truncate",
     "sanitize_text",
@@ -90,4 +92,5 @@ __all__ = [
     "STATUS_BAR_BACKGROUND",
     "TOPIC_COLOR",
     "VERIFIED_COLOR",
+    "WARNING_COLOR",
 ]

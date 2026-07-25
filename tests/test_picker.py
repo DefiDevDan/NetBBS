@@ -11,10 +11,22 @@ real rather than trusting from a read-through.
 from __future__ import annotations
 
 import asyncio
+import re
 
 from netbbs.net.session import Session
 from netbbs.net.telnet import IAC, NAWS, SB, SE, WILL, TelnetServer
 from netbbs.net.picker import pick_item
+
+_ANSI_ESCAPE_RE = re.compile(rb"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _visible(data: bytes) -> bytes:
+    """Strips SGR color codes -- issue #104 colorizes each list row field
+    by field, so a raw byte scan for a line spanning multiple fields
+    (e.g. "01. (#1) item1") would otherwise miss it: reset/color-on
+    escapes now sit between the fields, even though each field's own
+    text is still contiguous."""
+    return _ANSI_ESCAPE_RE.sub(b"", data)
 
 
 async def _run_server(session_handler):
@@ -904,8 +916,8 @@ def test_stable_absolute_index_is_displayed_alongside_page_relative_number():
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
             await reader.readexactly(9)
             data = await _read_until_quiet(reader)
-            assert b"01. (#1) item1" in data
-            assert b"02. (#2) item2" in data
+            assert b"01. (#1) item1" in _visible(data)
+            assert b"02. (#2) item2" in _visible(data)
             writer.write(b"b")
             await writer.drain()
             await _read_until_quiet(reader)
@@ -952,8 +964,8 @@ def test_stable_index_correct_on_second_page():
     data = asyncio.run(scenario())
     # Default terminal height (80x24, no NAWS sent) gives page_size=18,
     # so page 2 starts at item19: absolute index 19, not restarted at 1.
-    assert b"01. (#19) item19" in data
-    assert b"02. (#20) item20" in data
+    assert b"01. (#19) item19" in _visible(data)
+    assert b"02. (#20) item20" in _visible(data)
 
 
 # -- genuine stable-ID/position decoupling (not just index-based IDs) -----
@@ -1024,8 +1036,8 @@ def test_display_shows_caller_supplied_stable_id_not_position():
             data = await _read_until_quiet(reader)
             # Position 1 on screen ("01.") shows stable ID 205, not "1" —
             # and position 2 ("02.") shows stable ID 7, not "2".
-            assert b"01. (#205) gamma" in data
-            assert b"02. (#7) alpha" in data
+            assert b"01. (#205) gamma" in _visible(data)
+            assert b"02. (#7) alpha" in _visible(data)
             writer.write(b"b")
             await writer.drain()
             await _read_until_quiet(reader)

@@ -2486,13 +2486,122 @@ def test_diagnostic_log_screen_lists_and_shows_entry_detail(db, lane, sysop):
     )
     db.connection.commit()
 
-    session = FakeSession(["s", "d", "0", "1", "b", "b"])
+    session = FakeSession(["s", "d", "y", "0", "1", "b", "b"])  # "y" keeps the newest-first default
     asyncio.run(admin_menu(session, lane, sysop, link_context=link_context))
 
     text = _written_text(session)
     assert "netbbs.link.sync" in text
     assert "could not complete hello with seed X" in text
     assert "WARNING" in text
+
+
+def test_diagnostic_log_screen_order_toggle_reverses_display_order(db, lane, sysop):
+    """Issue #101a: declining "newest first?" shows the oldest entry
+    first instead -- the only other order the toggle offers."""
+    link_context = _link_context()
+    for i in range(2):
+        db.connection.execute(
+            "INSERT INTO link_diagnostic_log (level, logger_name, message, created_at) "
+            "VALUES ('WARNING', 'netbbs.link.sync', ?, ?)",
+            (f"failure {i}", f"2026-01-0{i + 1}T00:00:00Z"),
+        )
+    db.connection.commit()
+
+    session = FakeSession(["s", "d", "n", "b", "b", "b"])  # "n" -> oldest first
+    asyncio.run(admin_menu(session, lane, sysop, link_context=link_context))
+
+    text = _written_text(session)
+    # The oldest entry ("failure 0") must appear before the newest
+    # ("failure 1") in the rendered list -- proves the toggle actually
+    # reordered the displayed rows, not just relabeled them.
+    assert text.index("failure 0") < text.index("failure 1")
+
+
+def test_diagnostic_log_screen_colors_level_by_severity(db, lane, sysop):
+    """Issue #101c: the detail view's Level field is colorized, and an
+    ERROR entry reads as more urgent (ALERT_COLOR) than a WARNING one
+    (WARNING_COLOR) -- not both flattened to the same color."""
+    from netbbs.rendering import ALERT_COLOR, WARNING_COLOR
+    from netbbs.rendering.ansi import fg
+
+    link_context = _link_context()
+    db.connection.execute(
+        "INSERT INTO link_diagnostic_log (level, logger_name, message, created_at) "
+        "VALUES ('ERROR', 'netbbs.link.sync', 'dial failed', '2026-01-01T00:00:00Z')"
+    )
+    db.connection.commit()
+
+    session = FakeSession(["s", "d", "y", "0", "1", "b", "b"])
+    asyncio.run(admin_menu(session, lane, sysop, link_context=link_context))
+
+    text = _written_text(session)
+    assert fg(ALERT_COLOR) in text
+    assert fg(WARNING_COLOR) not in text
+
+
+def test_diagnostic_log_tail_screen_shows_seeded_entries_and_stops_on_any_key(db, lane, sysop):
+    """Issue #101b: entering [F]ollow shows the existing log immediately
+    (the "seed"), and any keystroke ends the tail and returns to the
+    System menu -- doesn't require a specific stop key."""
+    link_context = _link_context()
+    db.connection.execute(
+        "INSERT INTO link_diagnostic_log (level, logger_name, message, created_at) "
+        "VALUES ('WARNING', 'netbbs.link.sync', 'seeded entry', '2026-01-01T00:00:00Z')"
+    )
+    db.connection.commit()
+
+    session = FakeSession(["s", "f", "x", "b", "b"])
+    asyncio.run(admin_menu(session, lane, sysop, link_context=link_context))
+
+    text = _written_text(session)
+    assert "Diagnostic log (live)" in text
+    assert "seeded entry" in text
+    assert "System:" in text  # back at the System menu -- tail actually ended
+
+
+def test_diagnostic_log_tail_screen_appends_entries_written_while_watching(db, lane, monkeypatch):
+    """The actual "live" property: an entry written *after* the tail
+    screen is already open shows up without backing out and reopening
+    it. Drives `_diagnostic_log_tail_screen` directly (not through the
+    full scripted admin_menu) since this needs real concurrency --
+    inserting a row *while* the tail loop's poll is in flight -- that a
+    single ordered FakeSession input queue can't express."""
+    from netbbs.net import admin_flow
+
+    poll_interval = 0.02
+    monkeypatch.setattr(admin_flow, "_DIAGNOSTIC_TAIL_POLL_INTERVAL_SECONDS", poll_interval)
+
+    db.connection.execute(
+        "INSERT INTO link_diagnostic_log (level, logger_name, message, created_at) "
+        "VALUES ('WARNING', 'netbbs.link.sync', 'seeded entry', '2026-01-01T00:00:00Z')"
+    )
+    db.connection.commit()
+
+    class _SlowKeySession(FakeSession):
+        # Long enough for several 0.02s poll ticks to fire first -- the
+        # whole point is to observe the tail loop pick up a row inserted
+        # *after* it started, not just its initial seed.
+        async def read_key(self, echo: bool = True) -> str:
+            await asyncio.sleep(poll_interval * 5)
+            return await super().read_key(echo=echo)
+
+    session = _SlowKeySession(["x"])
+
+    async def scenario():
+        task = asyncio.create_task(admin_flow._diagnostic_log_tail_screen(session, lane))
+        await asyncio.sleep(poll_interval * 2)
+        db.connection.execute(
+            "INSERT INTO link_diagnostic_log (level, logger_name, message, created_at) "
+            "VALUES ('ERROR', 'netbbs.link.sync', 'new failure while watching', '2026-01-01T00:00:01Z')"
+        )
+        db.connection.commit()
+        await asyncio.wait_for(task, timeout=5.0)
+
+    asyncio.run(scenario())
+
+    text = _written_text(session)
+    assert "seeded entry" in text
+    assert "new failure while watching" in text
 
 
 def test_link_status_screen_lists_and_shows_peer_detail(db, lane, sysop):
