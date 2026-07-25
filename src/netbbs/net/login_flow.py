@@ -120,6 +120,10 @@ from netbbs.link.boards import (
     queue_board_post_tombstone_if_linked,
 )
 from netbbs.mail import unread_count as unread_mail_count
+from netbbs.messaging_preferences import (
+    accepts_direct_messages,
+    set_accepts_direct_messages,
+)
 from netbbs.moderation import BoardPermission, has_permission, is_blocked
 from netbbs.net.admin_flow import admin_menu
 from netbbs.net.char_input import InputHistory
@@ -133,7 +137,7 @@ from netbbs.net.nodeconfig import ThrottleConfig
 from netbbs.net.picker import pick_item
 from netbbs.net.prose_editor import edit_prose
 from netbbs.net.session import Session, SessionClosedError
-from netbbs.net.session_registry import ActiveSessionRegistry
+from netbbs.net.session_registry import ActiveSessionRegistry, SessionSummary
 from netbbs.net.shutdown import NodeControls, SequenceScheduler, format_remaining_seconds
 from netbbs.net.throttle import LoginThrottle
 from netbbs.net.welcome_banner import load_welcome_banner
@@ -884,6 +888,8 @@ async def _draw_main_menu(
             menu_key("E", mail_label),
         ]
     )
+    if node_controls is not None:
+        option_list.append(menu_key("W", "ho's online"))
     if list_pending_invitations_for_user(db, user):
         option_list.append(menu_key("I", "nvitations"))
     if user.can_verify_identity or meets_level(user, SYSOP_LEVEL):
@@ -1077,6 +1083,10 @@ async def _main_menu(
                 await session.write_line(
                     colored("Mail is not available in this context.", fg_color=MUTED_COLOR)
                 )
+            await _draw_main_menu(session, db, mailbox, user, node_controls=node_controls)
+        elif choice == "w" and node_controls is not None:
+            await session.write_line("")
+            await _caller_who_screen(session, db, node_controls, user)
             await _draw_main_menu(session, db, mailbox, user, node_controls=node_controls)
         elif choice == "i" and list_pending_invitations_for_user(db, user):
             await session.write_line("")
@@ -2477,6 +2487,84 @@ async def _show_vcard(session: Session, db: Database, target: User, requesting_u
         await session.write_line(colored("(no public bio)", fg_color=MUTED_COLOR))
 
 
+def _who_entry_name(entry: SessionSummary) -> str:
+    return entry.username or "(unauthenticated)"
+
+
+def _who_entry_description(db: Database, entry: SessionSummary) -> str:
+    when = format_for_display(entry.connected_at, db)
+    return f"connected since {when}"
+
+
+async def _caller_who_screen(
+    session: Session, db: Database, node_controls: NodeControls, user: User
+) -> None:
+    """
+    Issue #99: the caller-facing counterpart to the SysOp `[N]ode`
+    menu's own `[W]ho` screen (`netbbs.net.admin_flow._who_screen`) --
+    same underlying `ActiveSessionRegistry`, but scoped down to what an
+    ordinary caller should actually see and do: no peer addresses (the
+    SysOp version's unauthenticated-session fallback shows one; this
+    never does), no disconnect action, just "who else is here" plus an
+    optional one-off message.
+
+    Unauthenticated sessions (still at the login prompt) are excluded
+    entirely -- there's no account to message, and `_who_entry_name`'s
+    `"(unauthenticated)"` fallback exists only so `SessionSummary`'s
+    general shape doesn't need a second, caller-specific variant.
+
+    A target who has opted out (`netbbs.messaging_preferences.
+    accepts_direct_messages`, default `True`) still appears in the list
+    -- this screen answers "who's online", not "who's reachable" -- but
+    sending to them is refused up front, before even prompting for
+    message text, with a plain explanation rather than a silently
+    swallowed send.
+    """
+    entries = [
+        entry
+        for entry in node_controls.session_registry.list_entries()
+        if entry.username is not None and entry.session is not session
+    ]
+    selected = await pick_item(
+        session, entries,
+        name_of=_who_entry_name,
+        stable_id_of=lambda e: id(e.session),
+        description_of=lambda e: _who_entry_description(db, e),
+        title="Who's online",
+        empty_message="No one else is online right now.",
+    )
+    if selected is None:
+        return
+
+    assert selected.username is not None  # filtered above
+    try:
+        target = get_user_by_username(db, selected.username)
+    except AuthError:
+        await session.write_line(colored("That account no longer exists.", fg_color=MUTED_COLOR))
+        return
+
+    if not accepts_direct_messages(db, target):
+        await session.write_line(
+            colored(f"{target.username} has opted out of receiving direct messages.", fg_color=MUTED_COLOR)
+        )
+        return
+
+    await session.write(f"Message to {selected.username}: ")
+    message = (await session.read_line()).strip()
+    if not message:
+        await session.write_line(colored("Cancelled: message cannot be blank.", fg_color=MUTED_COLOR))
+        return
+
+    delivered = await node_controls.session_registry.notify_one(
+        selected.session,
+        colored(f"\r\n*** Message from {user.username}: {sanitize_text(message)} ***", fg_color=ALERT_COLOR, bold=True),
+    )
+    if delivered:
+        await session.write_line("Message sent.")
+    else:
+        await session.write_line(colored(f"{selected.username} is no longer online.", fg_color=MUTED_COLOR))
+
+
 async def _render_profile(session: Session, db: Database, user: User) -> bool:
     """Renders the profile state plus its option line — the unit that
     should be redrawn on an actual state change (initial entry, an edit
@@ -2486,6 +2574,7 @@ async def _render_profile(session: Session, db: Database, user: User) -> bool:
     current_bio = get_bio(db, user)
     visible = is_bio_visible(db, user)
     editor_on = fullscreen_editor_enabled(db, user)
+    accepts_dm = accepts_direct_messages(db, user)
 
     await session.write_line(colored("\r\nYour profile:", fg_color=HEADER_COLOR, bold=True))
     if current_bio:
@@ -2496,12 +2585,16 @@ async def _render_profile(session: Session, db: Database, user: User) -> bool:
         await session.write_line(colored("(no bio set)", fg_color=MUTED_COLOR))
     await session.write_line(f"Visibility: {'public' if visible else 'private'}")
     await session.write_line(f"Fullscreen editor for posts/bio: {'on' if editor_on else 'off'}")
+    await session.write_line(
+        f"Direct messages (Who's online): {'accepted' if accepts_dm else 'not accepted'}"
+    )
 
     options = "  ".join(
         [
             menu_key("E", "dit bio"),
             menu_key("V", "isibility"),
             menu_key("F", "ullscreen editor"),
+            menu_key("M", "essages"),
             menu_key("N", "ame & details"),
             menu_key("B", "ack"),
         ]
@@ -2546,6 +2639,14 @@ async def _edit_profile(session: Session, db: Database, user: User) -> None:
             set_fullscreen_editor_enabled(db, user, not fullscreen_editor_enabled(db, user))
             await session.write_line(
                 f"Fullscreen editor is now {'on' if fullscreen_editor_enabled(db, user) else 'off'}."
+            )
+            visible = await _render_profile(session, db, user)
+        elif choice == "m":
+            await session.write_line("")
+            set_accepts_direct_messages(db, user, not accepts_direct_messages(db, user))
+            await session.write_line(
+                f"Direct messages are now "
+                f"{'accepted' if accepts_direct_messages(db, user) else 'not accepted'}."
             )
             visible = await _render_profile(session, db, user)
         elif choice == "n":

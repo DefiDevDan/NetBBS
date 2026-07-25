@@ -1,0 +1,280 @@
+"""
+Tests for the caller-facing [W]ho's online screen (issue #99) --
+`netbbs.net.login_flow._caller_who_screen`, reached from the main menu.
+
+Distinct from the SysOp `[N]ode` menu's own `[W]ho` screen (covered in
+tests/test_admin_flow.py): no disconnect action, no peer addresses,
+just "who else is here" plus an optional one-off message, gated by the
+target's own `netbbs.messaging_preferences.accepts_direct_messages`
+opt-out.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+from netbbs.auth.users import create_user
+from netbbs.chat import ChatHub, MessageMailbox, PresenceRegistry
+from netbbs.messaging_preferences import accepts_direct_messages, set_accepts_direct_messages
+from netbbs.net.char_input import InputHistory
+from netbbs.net.login_flow import _main_menu
+from netbbs.net.maintenance import MaintenanceMode
+from netbbs.net.session import Session
+from netbbs.net.session_registry import ActiveSessionRegistry
+from netbbs.net.shutdown import NodeControls
+from netbbs.storage.database import Database
+
+
+class FakeSession(Session):
+    def __init__(self, inputs: list[str] | None = None):
+        self._inputs = list(inputs or [])
+        self.written: list[str] = []
+        self.terminal_width = 80
+        self.terminal_height = 24
+        self.peer_address = "203.0.113.5"
+
+    async def write(self, text: str) -> None:
+        self.written.append(text)
+
+    async def write_line(self, text: str = "") -> None:
+        self.written.append(text + "\n")
+
+    async def read_line(self, echo: bool = True, history=None, completer=None) -> str:
+        if not self._inputs:
+            raise AssertionError("FakeSession ran out of scripted input (read_line)")
+        return self._inputs.pop(0)
+
+    async def read_key(self, echo: bool = True) -> str:
+        if not self._inputs:
+            raise AssertionError("FakeSession ran out of scripted input (read_key)")
+        return self._inputs.pop(0)
+
+    async def close(self) -> None:
+        pass
+
+    async def read_byte(self) -> int | None:
+        raise NotImplementedError
+
+    async def write_raw(self, data: bytes) -> None:
+        raise NotImplementedError
+
+    async def read_editor_key(self):
+        raise NotImplementedError
+
+
+def _written_text(session: FakeSession) -> str:
+    return "".join(session.written)
+
+
+async def _hold_registered(registry: ActiveSessionRegistry, session: Session, username: str) -> None:
+    """Registers `session` as an authenticated session and stays
+    "connected" (blocked) until cancelled -- mirrors tests/
+    test_shutdown.py's own `_hold_registered`, plus `mark_authenticated`
+    since `_caller_who_screen` only ever lists authenticated sessions."""
+    registry.enter(session)
+    registry.mark_authenticated(session, username)
+    try:
+        await asyncio.Event().wait()
+    finally:
+        registry.leave(session)
+
+
+def _node_controls() -> NodeControls:
+    return NodeControls(
+        session_registry=ActiveSessionRegistry(),
+        maintenance=MaintenanceMode(),
+        shutdown_event=asyncio.Event(),
+        graceful_delay_seconds=60.0,
+    )
+
+
+def db(tmp_path):
+    return Database(tmp_path / "node.db")
+
+
+async def _run_main_menu(session, database, user, node_controls, *, keys=None):
+    await _main_menu(
+        session, database, ChatHub(), PresenceRegistry(), MessageMailbox(), InputHistory(), user,
+        node_controls=node_controls,
+    )
+
+
+def test_who_option_hidden_without_node_controls(tmp_path):
+    database = db(tmp_path)
+    alice = create_user(database, "alice", password="hunter2", user_level=10)
+    session = FakeSession(["w", "l", "y"])  # "w" must be rejected -- no node_controls at all
+
+    asyncio.run(
+        _main_menu(
+            session, database, ChatHub(), PresenceRegistry(), MessageMailbox(), InputHistory(), alice,
+        )
+    )
+    assert "\b \b\a" in _written_text(session)  # rejected as invalid, not entered
+    database.close()
+
+
+def test_who_screen_lists_other_online_users_and_excludes_self(tmp_path):
+    database = db(tmp_path)
+    alice = create_user(database, "alice", password="hunter2", user_level=10)
+    create_user(database, "bob", password="hunter2", user_level=10)
+
+    async def scenario():
+        node_controls = _node_controls()
+        registry = node_controls.session_registry
+        other = FakeSession()
+        other_task = asyncio.create_task(_hold_registered(registry, other, "bob"))
+        await asyncio.sleep(0)
+
+        session = FakeSession(["w", "b", "l", "y"])  # w -> who; b -> back out of picker; logoff
+        registry.enter(session)
+        registry.mark_authenticated(session, "alice")
+        try:
+            await _run_main_menu(session, database, alice, node_controls)
+        finally:
+            registry.leave(session)
+            other_task.cancel()
+            await asyncio.gather(other_task, return_exceptions=True)
+
+        text = _written_text(session)
+        assert "bob" in text
+        assert "alice" not in text.split("Who's online")[1].split("Choice: ")[0]
+
+    asyncio.run(scenario())
+    database.close()
+
+
+def test_who_screen_excludes_unauthenticated_sessions(tmp_path):
+    database = db(tmp_path)
+    alice = create_user(database, "alice", password="hunter2", user_level=10)
+
+    async def scenario():
+        node_controls = _node_controls()
+        registry = node_controls.session_registry
+        anon = FakeSession()
+        registry.enter(anon)  # never mark_authenticated -- still at the login prompt
+
+        session = FakeSession(["w", "b", "l", "y"])
+        registry.enter(session)
+        registry.mark_authenticated(session, "alice")
+        try:
+            await _run_main_menu(session, database, alice, node_controls)
+        finally:
+            registry.leave(session)
+            registry.leave(anon)
+
+        assert "No one else is online right now." in _written_text(session)
+
+    asyncio.run(scenario())
+    database.close()
+
+
+def test_who_screen_delivers_a_message_to_the_selected_user(tmp_path):
+    database = db(tmp_path)
+    alice = create_user(database, "alice", password="hunter2", user_level=10)
+    create_user(database, "bob", password="hunter2", user_level=10)
+
+    async def scenario():
+        node_controls = _node_controls()
+        registry = node_controls.session_registry
+        other = FakeSession()
+        other_task = asyncio.create_task(_hold_registered(registry, other, "bob"))
+        await asyncio.sleep(0)
+
+        session = FakeSession(["w", "0", "1", "Hi there!", "l", "y"])
+        registry.enter(session)
+        registry.mark_authenticated(session, "alice")
+        try:
+            await _run_main_menu(session, database, alice, node_controls)
+        finally:
+            registry.leave(session)
+            other_task.cancel()
+            await asyncio.gather(other_task, return_exceptions=True)
+
+        assert "Message sent." in _written_text(session)
+        assert any("Message from alice: Hi there!" in line for line in other.written)
+
+    asyncio.run(scenario())
+    database.close()
+
+
+def test_who_screen_blank_message_cancels_without_sending(tmp_path):
+    database = db(tmp_path)
+    alice = create_user(database, "alice", password="hunter2", user_level=10)
+    create_user(database, "bob", password="hunter2", user_level=10)
+
+    async def scenario():
+        node_controls = _node_controls()
+        registry = node_controls.session_registry
+        other = FakeSession()
+        other_task = asyncio.create_task(_hold_registered(registry, other, "bob"))
+        await asyncio.sleep(0)
+
+        session = FakeSession(["w", "0", "1", "", "l", "y"])  # blank message
+        registry.enter(session)
+        registry.mark_authenticated(session, "alice")
+        try:
+            await _run_main_menu(session, database, alice, node_controls)
+        finally:
+            registry.leave(session)
+            other_task.cancel()
+            await asyncio.gather(other_task, return_exceptions=True)
+
+        assert "Cancelled: message cannot be blank." in _written_text(session)
+        assert other.written == []  # nothing at all reached the target
+
+    asyncio.run(scenario())
+    database.close()
+
+
+def test_who_screen_refuses_to_message_an_opted_out_user(tmp_path):
+    """Issue #99's opt-out: still listed (this screen answers "who's
+    online", not "who's reachable"), but sending is refused before even
+    prompting for message text -- no extra keystroke should be
+    consumed for a prompt that will never appear."""
+    database = db(tmp_path)
+    alice = create_user(database, "alice", password="hunter2", user_level=10)
+    bob = create_user(database, "bob", password="hunter2", user_level=10)
+    set_accepts_direct_messages(database, bob, False)
+
+    async def scenario():
+        node_controls = _node_controls()
+        registry = node_controls.session_registry
+        other = FakeSession()
+        other_task = asyncio.create_task(_hold_registered(registry, other, "bob"))
+        await asyncio.sleep(0)
+
+        # No message text scripted after "01" -- if the screen wrongly
+        # prompted for one anyway, read_line would raise and fail the
+        # test outright, proving the refusal happens first.
+        session = FakeSession(["w", "0", "1", "l", "y"])
+        registry.enter(session)
+        registry.mark_authenticated(session, "alice")
+        try:
+            await _run_main_menu(session, database, alice, node_controls)
+        finally:
+            registry.leave(session)
+            other_task.cancel()
+            await asyncio.gather(other_task, return_exceptions=True)
+
+        assert "bob has opted out of receiving direct messages." in _written_text(session)
+        assert other.written == []
+
+    asyncio.run(scenario())
+    database.close()
+
+
+def test_profile_screen_toggles_direct_message_acceptance(tmp_path):
+    database = db(tmp_path)
+    alice = create_user(database, "alice", password="hunter2", user_level=10)
+    assert accepts_direct_messages(database, alice) is True  # default
+
+    session = FakeSession(["p", "m", "b", "l", "y"])
+    asyncio.run(
+        _main_menu(
+            session, database, ChatHub(), PresenceRegistry(), MessageMailbox(), InputHistory(), alice,
+        )
+    )
+
+    assert accepts_direct_messages(database, alice) is False
+    assert "Direct messages are now not accepted." in _written_text(session)
+    database.close()
