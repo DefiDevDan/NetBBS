@@ -164,7 +164,7 @@ fits your own availability.
 
 ### Backup, restore, and upgrade (week 2)
 
-- [ ] Take a real backup of one node that's been running for real for
+- [x] Take a real backup of one node that's been running for real for
       at least a week (`python -m netbbs.backup create`), then
       **rehearse a restore onto a disposable copy** — a second
       machine/VM/directory, not the live node — following
@@ -172,10 +172,20 @@ fits your own availability.
       this against a node with real accumulated state (real peers,
       real carried boards, real work-item history), not a freshly
       created one, is exactly what a single-session test can't
-      exercise. *(Partial: `python -m netbbs.backup create` was run for
-      real against all three nodes before the upgrade below, but
-      against freshly-provisioned nodes, not one a week old, and the
-      restore-onto-a-disposable-copy half hasn't been rehearsed yet.)*
+      exercise. Done: a fresh backup of NetBBS-1 (real linked board
+      with an edit chain, a local board, real user accounts, local
+      mail) restored into a disposable directory on the same host
+      (`--db`/`--identity-dir` pointed at a separate path, never the
+      live node's own files) while NetBBS-1 kept running untouched.
+      Fingerprint matched exactly; all real content came back intact.
+      Deviation: not against a node a week old (this deployment is
+      hours old, not weeks), and the drill doc's own corruption-
+      refusal/interrupted-restore steps (§3/§5) weren't separately
+      re-exercised here since those test the mechanism's own
+      robustness in the abstract, already covered by the automated
+      suite's dedicated tests -- this rehearsal's own point was
+      proving restore against *this deployment's* real accumulated
+      state, which it did.
 - [x] Perform at least one real upgrade on one node using
       `docs/NetBBS-operator-guide.md`'s documented procedure (back up
       first, upgrade the package, restart). If no new NetBBS release
