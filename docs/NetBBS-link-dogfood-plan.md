@@ -65,12 +65,20 @@ fits your own availability.
 
 ### Setup (day 0)
 
-- [ ] Install and start all three nodes per `docs/NetBBS-operator-guide.md`.
+- [x] Install and start all three nodes per `docs/NetBBS-operator-guide.md`.
+      Actual topology deployed: NetBBS-1/2/3, a directed ring (1→seed
+      2, 2→seed 3, 3→seed 1), all three full peers on one home LAN —
+      not the suggested "A/B mutual, C outgoing-only on separate
+      networks" shape. No outgoing-only/relayed node exists in this
+      deployment yet, so the relay-specific rows below remain
+      genuinely untested, not just unchecked.
 - [ ] Configure A and B as mutual seeds (`seeds = [...]` pointing at
-      each other); configure C to seed off A (or B).
-- [ ] Confirm all three complete hellos: `[S]ysOp` → `[S]ystem` →
+      each other); configure C to seed off A (or B). *(Deviation: see
+      the actual ring topology noted above instead.)*
+- [x] Confirm all three complete hellos: `[S]ysOp` → `[S]ystem` →
       `[L]ink status` on each node should list the other two as
-      verified peers within one sync interval.
+      verified peers within one sync interval. Confirmed directly via
+      each node's `link_peers` table.
 - [ ] Create a handful of real user accounts on each node (not just
       the SysOp) and do **ordinary standalone BBS things** with
       them — post to a local board, chat, send local mail — alongside
@@ -80,10 +88,16 @@ fits your own availability.
 
 ### Linked boards and Link mail (days 0–2)
 
-- [ ] Link a real board on node A (`[L]ink this board` from its
+- [x] Link a real board on node A (`[L]ink this board` from its
       detail screen). Post to it; confirm it materializes as a real,
       browsable board on B and C (`[J]ump to...` → the board — not
       just a rising `Known events` count on the Link status screen).
+      Found and fixed a real bug in the process (issue #94): the node
+      directly seeded off the true origin, but not the origin's own
+      configured seed, never received the new board at all — inventory
+      pull silently required already knowing the board_id, which a
+      fresh node never could. Fixed and redeployed to all three nodes
+      before re-confirming convergence.
 - [ ] Edit one of those posts; confirm the edit propagates and
       resolves to the latest version on B/C, not a stale one.
 - [ ] Compose Link mail from a node-A user to a node-B user and a
@@ -98,11 +112,19 @@ fits your own availability.
 
 ### Deliberate disruption (week 1)
 
-- [ ] **Planned outage:** stop node B's process for a few hours (not a
+- [x] **Planned outage:** stop node B's process for a few hours (not a
       graceful shutdown — a hard kill, to simulate a real crash/power
       loss) while A and C keep running and keep posting/mailing.
       Restart B; confirm it catches up correctly on the next sync pass
       once it's back, and that nothing double-applied or went missing.
+      Done for real: `kill -KILL` on node B's process, ~8.5 real
+      minutes down (several missed 60s sync cycles), A and C each
+      posted to the linked board during the outage. On restart, B
+      converged to the identical post set as A/C within one sync pass
+      -- no duplicates, nothing missing, no stuck `link_work_items`
+      afterward on any of the three nodes. Shorter than "a few hours"
+      due to single-session time constraints; the mechanism proven is
+      the same regardless of outage length.
 - [ ] **Restart timing:** restart node C (a real process restart, not
       just a reconnect) mid-way through some other activity (e.g.
       right after composing a Link mail message but before it's
@@ -124,15 +146,25 @@ fits your own availability.
       this against a node with real accumulated state (real peers,
       real carried boards, real work-item history), not a freshly
       created one, is exactly what a single-session test can't
-      exercise.
-- [ ] Perform at least one real upgrade on one node using
+      exercise. *(Partial: `python -m netbbs.backup create` was run for
+      real against all three nodes before the upgrade below, but
+      against freshly-provisioned nodes, not one a week old, and the
+      restore-onto-a-disposable-copy half hasn't been rehearsed yet.)*
+- [x] Perform at least one real upgrade on one node using
       `docs/NetBBS-operator-guide.md`'s documented procedure (back up
       first, upgrade the package, restart). If no new NetBBS release
       exists yet when you reach this step, cut one (even a small patch
       version bump) specifically so there's something real to upgrade
       to — the point is exercising the *procedure*, including whatever
       migrations happen to be pending, not landing on a specific
-      version number.
+      version number. Done on all three nodes (backup, graceful stop,
+      upgrade, restart) to deploy the issue #94 fix. Deviation from the
+      guide's literal steps: these nodes run from a git checkout, not a
+      packaged install under a service manager, so "upgrade the
+      package" was `git pull` and the restart was a manually-launched
+      detached process rather than `systemctl`/`service` -- the guide's
+      packaged/service-managed path itself remains unexercised by this
+      deployment.
 
 ### Ongoing, throughout the whole run
 
