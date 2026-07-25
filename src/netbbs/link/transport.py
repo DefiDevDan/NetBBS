@@ -131,6 +131,7 @@ from netbbs.link.protocol import (
     PeerRecord,
 )
 from netbbs.link.relay_mailbox import (
+    RelayableEnvelope,
     RelayMailboxFullError,
     deposit_relay_mailbox_envelope,
     pickup_relay_mailbox_envelopes,
@@ -771,28 +772,34 @@ class LinkServer:
 
     async def _handle_relay_mailbox_deposit(self, request: web.Request) -> web.Response:
         """
-        Issue #58: accept one opaque `link_message` for
-        `recipient_fingerprint`, held until that recipient itself picks
-        it up (`_handle_relay_mailbox_pickup`). Unlike every other route
-        on this server, the depositing caller need not be a completed
-        peer -- receiving on behalf of a stranger is the entire point of
-        relaying (see `netbbs.link.relay_mailbox`'s own module docstring
-        for why no signature verification happens here either: this node
-        can't meaningfully check a signature for an identity chain it
-        may have never seen, and doesn't need to -- the recipient re-
-        verifies everything itself after pickup).
+        Issue #58 (widened by issue #94's ack-relay sibling fix): accept
+        one opaque `link_message`/`link_message_accepted`/`link_message_
+        bounced` for `recipient_fingerprint`, held until that recipient
+        itself picks it up (`_handle_relay_mailbox_pickup`). Unlike every
+        other route on this server, the depositing caller need not be a
+        completed peer -- receiving on behalf of a stranger is the
+        entire point of relaying (see `netbbs.link.relay_mailbox`'s own
+        module docstring for why no signature verification happens here
+        either: this node can't meaningfully check a signature for an
+        identity chain it may have never seen, and doesn't need to -- the
+        recipient re-verifies everything itself after pickup).
         """
         recipient_fingerprint = request.match_info["fingerprint"]
         try:
             body = await request.json(loads=strict_json_loads)
-            message = LinkMessage.from_dict(body)
+            object_type = body["envelope"]["object_type"]
+            envelope_cls = {
+                LINK_MESSAGE_OBJECT_TYPE: LinkMessage,
+                LINK_MESSAGE_ACCEPTED_OBJECT_TYPE: LinkMessageAccepted,
+                LINK_MESSAGE_BOUNCED_OBJECT_TYPE: LinkMessageBounced,
+            }.get(object_type)
+            if envelope_cls is None:
+                return web.json_response(
+                    {"error": f"{object_type!r} may not be deposited into a relay mailbox"}, status=400
+                )
+            message: RelayableEnvelope = envelope_cls.from_dict(body)
         except (KeyError, ValueError, TypeError) as exc:
-            return web.json_response({"error": f"malformed link_message: {exc}"}, status=400)
-
-        if message.envelope.get("object_type") != LINK_MESSAGE_OBJECT_TYPE:
-            return web.json_response(
-                {"error": "only link_message may be deposited into a relay mailbox"}, status=400
-            )
+            return web.json_response({"error": f"malformed relay mailbox deposit: {exc}"}, status=400)
 
         if recipient_fingerprint not in self._node.relaying_for:
             return web.json_response(
@@ -1261,18 +1268,19 @@ async def deposit_into_relay_mailbox(
     session: ClientSession,
     relay_base_url: str,
     recipient_fingerprint: str,
-    message: LinkMessage,
+    message: RelayableEnvelope,
     *,
     timeout: float = _DEFAULT_TIMEOUT_SECONDS,
 ) -> None:
     """
-    Leave `message` (a `link_message` this node couldn't deliver
-    directly) at the relay reachable at `relay_base_url`, for
-    `recipient_fingerprint` to pick up on its own next outbound sync
-    pass (design doc §12, issue #58). Does not require a
-    completed hello with the relay first — see `LinkServer._handle_
-    relay_mailbox_deposit`'s own docstring for why depositing is the one
-    route on this server that's intentionally open to a stranger.
+    Leave `message` (a `link_message`/`link_message_accepted`/`link_
+    message_bounced` this node couldn't deliver directly) at the relay
+    reachable at `relay_base_url`, for `recipient_fingerprint` to pick up
+    on its own next outbound sync pass (design doc §12, issue #58; issue
+    #94 widened this from `link_message` alone to all three). Does not
+    require a completed hello with the relay first — see `LinkServer.
+    _handle_relay_mailbox_deposit`'s own docstring for why depositing is
+    the one route on this server that's intentionally open to a stranger.
 
     Raises `LinkTransportError` for a transport-level failure, including
     the relay reporting it isn't currently relaying for `recipient_
@@ -1298,7 +1306,7 @@ async def pickup_from_relay_mailbox(
     hello: HelloMessage,
     *,
     timeout: float = _DEFAULT_TIMEOUT_SECONDS,
-) -> list[LinkMessage]:
+) -> list[RelayableEnvelope]:
     """
     Pick up (and clear) whatever mail the relay at `relay_base_url` is
     currently holding for this node -- design doc §12, issue
@@ -1309,12 +1317,15 @@ async def pickup_from_relay_mailbox(
     pickup`'s own docstring explains why a hello, not a new signed
     message type).
 
-    Returns raw, **not yet verified** `LinkMessage`s -- the caller
-    (issue #58 task #25's sync-loop wiring) is responsible for running
-    each one through `LinkNode.handle_events` (keyed by that message's
-    own claimed sender, not this relay) before treating it as accepted,
-    same as `netbbs.link.relay_mailbox.pickup_relay_mailbox_envelopes`'s
-    own docstring already documents on the server side.
+    Returns raw, **not yet verified** `LinkMessage`/`LinkMessageAccepted`/
+    `LinkMessageBounced` objects (issue #94 widened this from `link_
+    message` alone), each reconstructed by its own envelope's `object_
+    type` -- the caller (issue #58 task #25's sync-loop wiring) is
+    responsible for running each one through `LinkNode.handle_events`
+    (keyed by that envelope's own claimed sender/signer, not this relay)
+    before treating it as accepted, same as `netbbs.link.relay_mailbox.
+    pickup_relay_mailbox_envelopes`'s own docstring already documents on
+    the server side.
 
     Raises `LinkTransportError` for a transport-level failure.
     """
@@ -1335,7 +1346,16 @@ async def pickup_from_relay_mailbox(
     except (KeyError, TypeError) as exc:
         raise LinkTransportError(f"malformed relay mailbox pickup response from {url}: {exc}") from exc
 
+    envelope_types_by_object_type = {
+        LINK_MESSAGE_OBJECT_TYPE: LinkMessage,
+        LINK_MESSAGE_ACCEPTED_OBJECT_TYPE: LinkMessageAccepted,
+        LINK_MESSAGE_BOUNCED_OBJECT_TYPE: LinkMessageBounced,
+    }
     try:
-        return [LinkMessage.from_dict(raw) for raw in raw_envelopes]
+        result = []
+        for raw in raw_envelopes:
+            envelope_cls = envelope_types_by_object_type[raw["envelope"]["object_type"]]
+            result.append(envelope_cls.from_dict(raw))
+        return result
     except (KeyError, ValueError, TypeError) as exc:
         raise LinkTransportError(f"malformed envelope in relay mailbox pickup response from {url}: {exc}") from exc

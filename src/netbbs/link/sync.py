@@ -140,9 +140,14 @@ from aiohttp import ClientSession
 from netbbs.link.boards import load_own_board_events
 from netbbs.link.channels import load_own_channel_events
 from netbbs.link.files import load_own_file_area_events
-from netbbs.link.events import LINK_MESSAGE_OBJECT_TYPE, EndpointDescriptor, LinkMessage
+from netbbs.link.events import (
+    LINK_MESSAGE_OBJECT_TYPE,
+    EndpointDescriptor,
+    LinkMessage,
+    LinkMessageAccepted,
+    LinkMessageBounced,
+)
 from netbbs.link.mail import (
-    deliver_link_message,
     expire_link_message_delivery,
     get_link_mail_acknowledgement,
     get_link_message_for_delivery,
@@ -671,24 +676,40 @@ async def _pickup_relay_mail(
     lane: DatabaseLane,
 ) -> None:
     """
-    Issue #58: for every relay currently serving this node
-    (`node.relays_serving_me`), pick up whatever mail it's holding and
-    feed each envelope through the exact same `LinkNode.handle_events`
-    acceptance path a directly-arrived `link_message` already goes
-    through, keyed by that message's own claimed sender -- never the
-    relay that happened to hand it over (see `netbbs.link.relay_mailbox.
-    pickup_relay_mailbox_envelopes`'s own docstring for why the relay
-    itself never verifies anything). A sender this node has no
-    completed hello with is rejected here exactly as it would be for a
-    directly-arrived message -- relaying doesn't relax "no relay from a
-    stranger," it just changes which node performs the check.
+    Issue #58 (widened by issue #94 to the full `link_message`-family
+    round trip, not just the original message): for every relay
+    currently serving this node (`node.relays_serving_me`), pick up
+    whatever mail it's holding and feed each envelope through the exact
+    same `LinkNode.handle_events` acceptance path a directly-arrived
+    event of the same type already goes through, keyed by that
+    envelope's own claimed sender/signer -- never the relay that
+    happened to hand it over (see `netbbs.link.relay_mailbox.pickup_
+    relay_mailbox_envelopes`'s own docstring for why the relay itself
+    never verifies anything). A sender/signer this node has no completed
+    hello with is rejected here exactly as it would be for a directly-
+    arrived event -- relaying doesn't relax "no relay from a stranger,"
+    it just changes which node performs the check.
 
-    Persistence after acceptance mirrors `LinkServer._handle_events`
-    exactly (`save_event` then `deliver_link_message`) -- this is the
-    one place in this module that duplicates transport-layer bookkeeping
-    rather than calling through `netbbs.link.transport`, since pickup
-    has no equivalent existing entry point to reuse (it isn't an inbound
-    HTTP request `LinkServer` ever sees).
+    `link_message`'s own claimed sender lives at `payload.sender.home_
+    node_fingerprint`; `link_message_accepted`/`_bounced` have no such
+    field -- `handle_events` itself requires the identity passed in here
+    to equal their own `payload.recipient_node_fingerprint` instead
+    (protocol.py's "vouching for a different recipient" check), since
+    those two are always signed by the *original message's recipient*,
+    never a third-party sender.
+
+    Persistence after acceptance reuses `persist_accepted_events` --
+    the same shared post-acceptance dispatch `LinkServer._handle_events`
+    and the inventory-pull path already use -- rather than a hand-rolled
+    `link_message`-only `save_event`/`deliver_link_message` pair, so
+    `link_message_accepted`/`_bounced` picked up this way get the exact
+    same `apply_link_message_accepted`/`_bounced` follow-up a directly-
+    arrived one already does. No board/channel/file-area quota applies
+    (`max_carried_boards=None` etc.) -- only `link_message`-family
+    events are ever deposit-able into a relay mailbox in the first
+    place (`LinkServer._handle_relay_mailbox_deposit`'s own type check),
+    so those branches of `persist_accepted_events` are never reached
+    from this caller.
     """
     for relay_fingerprint in list(node.relays_serving_me):
         base_urls = _candidate_dialable_addresses(node, relay_fingerprint)
@@ -701,7 +722,11 @@ async def _pickup_relay_mail(
             continue
 
         for message in messages:
-            claimed_sender = message.payload.get("sender", {}).get("home_node_fingerprint")
+            object_type = message.envelope.get("object_type")
+            if object_type == LINK_MESSAGE_OBJECT_TYPE:
+                claimed_sender = message.payload.get("sender", {}).get("home_node_fingerprint")
+            else:
+                claimed_sender = message.payload.get("recipient_node_fingerprint")
             if claimed_sender is None:
                 continue
             raw = message.to_dict()
@@ -709,27 +734,24 @@ async def _pickup_relay_mail(
                 accepted = node.handle_events(claimed_sender, [raw])
             except LinkProtocolError as exc:
                 _logger.warning(
-                    "Link sync: rejected a link_message picked up from relay %s: %s",
-                    relay_fingerprint,
-                    exc,
+                    "Link sync: rejected a %s picked up from relay %s: %s",
+                    object_type, relay_fingerprint, exc,
                 )
                 continue
-            for content_id in accepted:
-                envelope = node.events[content_id]
-                await lane.run(
-                    save_event,
-                    sender_fingerprint=claimed_sender,
-                    content_id=content_id,
-                    object_type=LINK_MESSAGE_OBJECT_TYPE,
-                    envelope=envelope,
-                )
-                await lane.run(deliver_link_message, envelope, node_identity=node.identity)
             if accepted:
+                await persist_accepted_events(
+                    lane, node, accepted, sender_fingerprint=claimed_sender,
+                    max_carried_boards=None, max_carried_channels=None,
+                    max_carried_file_areas=None, max_remote_files_per_area=None,
+                )
                 await lane.run(save_peer, node.peers[claimed_sender])
 
 
 async def _deposit_one(
-    session: ClientSession, base_url: str, recipient_fingerprint: str, message: LinkMessage
+    session: ClientSession,
+    base_url: str,
+    recipient_fingerprint: str,
+    message: LinkMessage | LinkMessageAccepted | LinkMessageBounced,
 ) -> bool:
     """One relay-mailbox deposit attempt against a single `base_url`,
     collapsed to a bool for `_try_addresses_via`'s own contract -- a
@@ -808,11 +830,10 @@ async def _push_pending_link_mail(node: LinkNode, session: ClientSession, lane: 
         if base_urls:
             delivered = await _try_addresses_via(base_urls, lambda url: _push_one(node, session, url, [message]))
         if not delivered:
-            # Issue #58: send-via-relay -- the recipient is
-            # either unknown-as-directly-dialable or genuinely outgoing-
-            # only. Only `link_message` gets this fallback (never an
-            # acknowledgement, below) -- `netbbs.link.relay_mailbox`'s
-            # own documented boundary; see that module's docstring.
+            # Issue #58 (issue #94: the acknowledgement loop below now
+            # gets the identical fallback, no longer only this one):
+            # send-via-relay -- the recipient is either unknown-as-
+            # directly-dialable or genuinely outgoing-only.
             relay_urls = _relay_base_urls_for_peer(node, target_fingerprint)
             if relay_urls:
                 delivered = await _try_addresses_via(
@@ -843,11 +864,26 @@ async def _push_pending_link_mail(node: LinkNode, session: ClientSession, lane: 
         delivered = False
         if base_urls:
             delivered = await _try_addresses_via(base_urls, lambda url: _push_one(node, session, url, [ack]))
+        if not delivered:
+            # Issue #94: an acknowledgement now gets the identical
+            # relay fallback `link_mail_delivery` above already has --
+            # the recipient here is the *original message's sender*,
+            # who is every bit as capable of being outgoing-only as any
+            # other node. Before this fix, an outgoing-only node's own
+            # sent mail could never resolve to "delivered" on its own
+            # side: the ack had no way back, retried forever, and
+            # eventually dead-lettered -- found live during issue #83's
+            # dogfood run.
+            relay_urls = _relay_base_urls_for_peer(node, target_fingerprint)
+            if relay_urls:
+                delivered = await _try_addresses_via(
+                    relay_urls, lambda url: _deposit_one(session, url, target_fingerprint, ack)
+                )
 
         if delivered:
             await lane.run(record_success, work_item)
         else:
-            updated = await lane.run(record_failure, work_item, error="could not push on any known address")
+            updated = await lane.run(record_failure, work_item, error="could not push on any known or relayed address")
             if updated.status == "dead_lettered":
                 _logger.warning(
                     "Link sync: dead-lettered acknowledgement to %s after %s attempts",

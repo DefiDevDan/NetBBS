@@ -1262,6 +1262,34 @@ Any peer record constructed purely for an unrelated test precondition should
 be `outgoing_only=True` with no address unless the test actually needs that
 peer to be dialable.
 
+**The relay mailbox's original "only `link_message`" scope silently starved
+an outgoing-only sender's own acknowledgement, found live during issue #83's
+dogfood run, fixed by issue #94.** `netbbs.link.relay_mailbox`'s own module
+docstring used to document this as a deliberate, not-yet-built follow-up --
+but "documented as a known boundary" and "harmless in practice" are different
+claims, and only the first was actually true. Concretely: an outgoing-only
+node's own sent mail could be delivered to a full peer just fine (the sender
+dials out itself, no relay needed for that hop), but the recipient's
+`link_message_accepted`/`_bounced` reply had no relay fallback at all --
+`_push_pending_link_mail`'s ack loop only ever attempted a direct push, which
+can never reach a genuinely outgoing-only target. The ack retried until dead-
+lettered, and the *sender's own* view of mail it sent stayed on "pending"
+forever, with nothing surfaced to the SysOp beyond an eventual diagnostic-log
+warning -- a real, operator-visible product gap, not merely an internal one.
+Fixed by widening `deposit_relay_mailbox_envelope`/`pickup_relay_mailbox_
+envelopes` (and the transport-layer deposit/pickup routes) to the full
+`link_message`-family shape, reconstructing the right dataclass from each
+row's own stored `object_type`, and giving the ack-delivery loop the identical
+relay-fallback the message-delivery loop already had. Safe under the same
+existing invariants issue #94's board/channel/file-area sibling fix relied
+on: `handle_events`'s "no relay from a stranger" check already requires an
+ack's *signer* (`payload.recipient_node_fingerprint`, not the depositing
+relay) to be an independently-known peer, so nothing new needed to gate
+against abuse -- the capability was already wired up, just never exercised
+from this direction. **A "documented known limitation" is a claim about
+scope, not a proof that the gap is tolerable in practice** -- worth an actual
+dogfood exercise before assuming either.
+
 ### Current distribution limit
 
 Configured-seed sync currently sends the complete supported outbound event set
