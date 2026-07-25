@@ -69,9 +69,9 @@ fits your own availability.
       Actual topology deployed: NetBBS-1/2/3, a directed ring (1→seed
       2, 2→seed 3, 3→seed 1), all three full peers on one home LAN —
       not the suggested "A/B mutual, C outgoing-only on separate
-      networks" shape. No outgoing-only/relayed node exists in this
-      deployment yet, so the relay-specific rows below remain
-      genuinely untested, not just unchecked.
+      networks" shape. A fourth node, NetBBS-4, was added later
+      (`outgoing_only = true`, seeded off NetBBS-3) — see the
+      relay-specific rows below, no longer untested once it joined.
 - [ ] Configure A and B as mutual seeds (`seeds = [...]` pointing at
       each other); configure C to seed off A (or B). *(Deviation: see
       the actual ring topology noted above instead.)*
@@ -79,12 +79,16 @@ fits your own availability.
       `[L]ink status` on each node should list the other two as
       verified peers within one sync interval. Confirmed directly via
       each node's `link_peers` table.
-- [ ] Create a handful of real user accounts on each node (not just
+- [x] Create a handful of real user accounts on each node (not just
       the SysOp) and do **ordinary standalone BBS things** with
       them — post to a local board, chat, send local mail — alongside
       the Link setup. Issue #83 explicitly asks for this: Link
       shouldn't be the only thing happening on these nodes, the same
-      way a real operator's node wouldn't be Link-traffic-only.
+      way a real operator's node wouldn't be Link-traffic-only. Done
+      on NetBBS-1: two real level-0 accounts (`wanderer`, `pathfinder`)
+      created via the real `new` account flow, a plain local (non-
+      linked) board created and posted to, and local (non-Link) mail
+      exchanged between them. Chat not yet exercised.
 
 ### Linked boards and Link mail (days 0–2)
 
@@ -98,17 +102,31 @@ fits your own availability.
       pull silently required already knowing the board_id, which a
       fresh node never could. Fixed and redeployed to all three nodes
       before re-confirming convergence.
-- [ ] Edit one of those posts; confirm the edit propagates and
-      resolves to the latest version on B/C, not a stale one.
-- [ ] Compose Link mail from a node-A user to a node-B user and a
+- [x] Edit one of those posts; confirm the edit propagates and
+      resolves to the latest version on B/C, not a stale one. Done:
+      edited a post on NetBBS-1 twice (chained `edit_of_post_id`);
+      both edits propagated correctly to NetBBS-2/3/4, each resolving
+      to the same latest version via the same content-addressed chain
+      -- no stale copies anywhere.
+- [x] Compose Link mail from a node-A user to a node-B user and a
       node-C user; confirm delivery on the recipient side and that the
       sender's own delivery status resolves (no dedicated UI for this
       yet — check via `python -m netbbs.admin` or the `[O]utbox`
-      screen, per the design doc's own noted UI gap).
-- [ ] From node C (outgoing-only), confirm relay selection actually
+      screen, per the design doc's own noted UI gap). Done in both
+      directions between a full peer and NetBBS-4 (outgoing-only): a
+      full-peer→NetBBS-4 message and its relayed acknowledgement, and a
+      NetBBS-4→full-peer message. The reverse-direction ack **found and
+      fixed a real bug** (issue #95): the acknowledgement had no relay
+      fallback at all, so it retried forever and would eventually
+      dead-letter, leaving the sender's own delivery status stuck on
+      "pending" permanently. Fixed and redeployed to all four nodes.
+- [x] From node C (outgoing-only), confirm relay selection actually
       picked a relay (`[L]ink status` should show it relaying through
       A or B) and that mail composed *from* C reaches A/B via that
-      relay.
+      relay. Confirmed directly via `link_relay_consents`/the
+      `relays` field on NetBBS-4's own advertised descriptor (all
+      three other nodes granted consent) and via the real mail round
+      trips above.
 
 ### Deliberate disruption (week 1)
 
@@ -125,11 +143,19 @@ fits your own availability.
       afterward on any of the three nodes. Shorter than "a few hours"
       due to single-session time constraints; the mechanism proven is
       the same regardless of outage length.
-- [ ] **Restart timing:** restart node C (a real process restart, not
+- [x] **Restart timing:** restart node C (a real process restart, not
       just a reconnect) mid-way through some other activity (e.g.
       right after composing a Link mail message but before it's
       confirmed delivered). Confirm it resumes correctly from
-      persisted state.
+      persisted state. Done on NetBBS-4: composed a Link message, then
+      immediately restarted the process for real (graceful stop,
+      relaunch) before delivery/ack completed. Fingerprint persisted
+      across restart; the sync loop resumed cleanly and the message
+      resolved to "delivered" on its own within the next cycle -- no
+      manual intervention needed. (This same restart also incidentally
+      confirmed the issue #96 timeout fix: NetBBS-4's sync loop had
+      died from an unrelated real network timeout earlier in this
+      session and needed this exact kind of restart to recover.)
 - [ ] **Changing address:** if practical, change node C's network
       (e.g. move the laptop to a different Wi-Fi/hotspot) partway
       through the run, so its own outbound IP changes — this is the
