@@ -42,6 +42,10 @@ from netbbs.timeutil import utc_now_iso
 
 _logger = logging.getLogger(__name__)
 
+# Every logged event -- console or file -- carries a timestamp (issue
+# #98); `basicConfig`'s own default format has none.
+_LOG_FORMAT = "%(asctime)s %(levelname)s:%(name)s:%(message)s"
+
 
 class StartupError(Exception):
     """Raised for any startup failure `main()` should report as one
@@ -818,13 +822,25 @@ def _install_signal_handlers(
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    # Timestamped from the very first line, including a config error
+    # raised before the logfile handler below can be attached (which
+    # needs config.db_path to know where to put it).
+    logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT)
 
     try:
         config = load_config(sys.argv[1:])
     except ConfigError as exc:
         _logger.error("configuration error: %s", exc)
         raise SystemExit(1) from exc
+
+    # Issue #98: a logfile by default, next to the node's own database
+    # rather than an operator-chosen path -- consistent with db_path's
+    # own CWD-relative default, and one less thing to configure for a
+    # deployment that hasn't asked for anything fancier.
+    log_path = config.db_path.parent / "netbbs.log"
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+    logging.getLogger().addHandler(file_handler)
 
     shutdown_event = asyncio.Event()
     session_registry = ActiveSessionRegistry()
