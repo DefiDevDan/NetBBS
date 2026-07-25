@@ -235,6 +235,59 @@ def test_dial_hello_raises_link_transport_error_when_nothing_is_listening(tmp_pa
         alice.close()
 
 
+async def _start_hanging_server(*, delay: float) -> asyncio.AbstractServer:
+    """A real TCP listener that accepts the connection and then simply
+    never responds -- forces a genuine client-side `ClientTimeout`, not
+    a connection refusal (`test_dial_hello_raises_link_transport_error_
+    when_nothing_is_listening` above) or any other `ClientError`
+    subclass. `delay` just needs to outlast whatever timeout the caller
+    configures; the connection is closed either way once it elapses."""
+    async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await asyncio.sleep(delay)
+        writer.close()
+
+    return await asyncio.start_server(_handle, "127.0.0.1", 0)
+
+
+def test_dial_hello_raises_link_transport_error_on_a_genuine_timeout(tmp_path):
+    """Issue #95's sibling fix: `dial_hello`'s own docstring already
+    promised "Raises LinkTransportError for anything transport-level
+    gone wrong (connection failure, timeout, ...)", but the `except`
+    clause only ever caught `aiohttp.ClientError` -- aiohttp raises a
+    bare `TimeoutError` (not a `ClientError` subclass) when a
+    `ClientTimeout` elapses, so a merely slow peer (not even a hard
+    failure) propagated an uncaught exception straight out of
+    `run_link_sync`, killing the entire sync loop for the rest of that
+    node's uptime. Found live during issue #83's dogfood run, when a
+    real relay-mailbox pickup attempt against a peer that happened to
+    be mid-restart genuinely timed out. Every other client-side dial in
+    this module (`push_events`, `request_inventory`, `request_peer_
+    list`, `request_relay_consent`, `request_file_chunk`, `deposit_
+    into_relay_mailbox`, `pickup_from_relay_mailbox`) shared the
+    identical gap and got the identical fix -- this test covers
+    `dial_hello` as the representative case, not all eight."""
+    alice_node = LinkNode(identity=bootstrap_node_identity("alice"))
+    alice = _NodeDb(tmp_path, "alice")
+
+    async def scenario():
+        server = await _start_hanging_server(delay=2.0)
+        try:
+            async with aiohttp.ClientSession() as session:
+                await dial_hello(
+                    alice_node, session, f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}",
+                    _hello_for(alice_node), alice.lane, timeout=0.05,
+                )
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    try:
+        with pytest.raises(LinkTransportError):
+            asyncio.run(scenario())
+    finally:
+        alice.close()
+
+
 # -- issue #11: duplicate JSON keys are rejected at the wire boundary -------
 
 

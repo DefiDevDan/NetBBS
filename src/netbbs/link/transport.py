@@ -875,7 +875,7 @@ async def dial_hello(
                 text = await response.text()
                 raise LinkTransportError(f"hello to {url} failed: HTTP {response.status}: {text}")
             body = await response.json(loads=strict_json_loads)
-    except (ClientError, ValueError) as exc:
+    except (ClientError, TimeoutError, ValueError) as exc:
         raise LinkTransportError(f"could not reach {url}: {exc}") from exc
 
     try:
@@ -930,7 +930,7 @@ async def push_events(
                 text = await response.text()
                 raise LinkTransportError(f"events push to {url} failed: HTTP {response.status}: {text}")
             body = await response.json(loads=strict_json_loads)
-    except (ClientError, ValueError) as exc:
+    except (ClientError, TimeoutError, ValueError) as exc:
         raise LinkTransportError(f"could not reach {url}: {exc}") from exc
 
     try:
@@ -977,7 +977,7 @@ async def request_inventory(
                 text = await response.text()
                 raise LinkTransportError(f"inventory request to {url} failed: HTTP {response.status}: {text}")
             body = await response.json(loads=strict_json_loads)
-    except (ClientError, ValueError) as exc:
+    except (ClientError, TimeoutError, ValueError) as exc:
         raise LinkTransportError(f"could not reach {url}: {exc}") from exc
 
     try:
@@ -1020,7 +1020,7 @@ async def request_file_chunk(
                 raise LinkTransportError(f"file chunk request to {url} failed: HTTP {response.status}: {text}")
             chunk_bytes = await response.read()
             envelope_header = response.headers.get("X-NetBBS-Chunk-Envelope")
-    except ClientError as exc:
+    except (ClientError, TimeoutError) as exc:
         raise LinkTransportError(f"could not reach {url}: {exc}") from exc
 
     if envelope_header is None:
@@ -1176,7 +1176,7 @@ async def request_peer_list(
                 text = await response.text()
                 raise LinkTransportError(f"peer list request to {url} failed: HTTP {response.status}: {text}")
             body = await response.json(loads=strict_json_loads)
-    except (ClientError, ValueError) as exc:
+    except (ClientError, TimeoutError, ValueError) as exc:
         raise LinkTransportError(f"could not reach {url}: {exc}") from exc
 
     try:
@@ -1244,7 +1244,7 @@ async def request_relay_consent(
                 text = await response.text()
                 raise LinkTransportError(f"relay consent request to {url} failed: HTTP {response.status}: {text}")
             body = await response.json(loads=strict_json_loads)
-    except (ClientError, ValueError) as exc:
+    except (ClientError, TimeoutError, ValueError) as exc:
         raise LinkTransportError(f"could not reach {url}: {exc}") from exc
     finally:
         node.pending_own_relay_requests.pop(relay_fingerprint, None)
@@ -1296,7 +1296,7 @@ async def deposit_into_relay_mailbox(
             if response.status != 200:
                 text = await response.text()
                 raise LinkTransportError(f"relay mailbox deposit to {url} failed: HTTP {response.status}: {text}")
-    except ClientError as exc:
+    except (ClientError, TimeoutError) as exc:
         raise LinkTransportError(f"could not reach {url}: {exc}") from exc
 
 
@@ -1338,7 +1338,7 @@ async def pickup_from_relay_mailbox(
                 text = await response.text()
                 raise LinkTransportError(f"relay mailbox pickup from {url} failed: HTTP {response.status}: {text}")
             body = await response.json(loads=strict_json_loads)
-    except (ClientError, ValueError) as exc:
+    except (ClientError, TimeoutError, ValueError) as exc:
         raise LinkTransportError(f"could not reach {url}: {exc}") from exc
 
     try:

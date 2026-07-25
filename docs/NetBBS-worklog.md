@@ -1290,6 +1290,33 @@ from this direction. **A "documented known limitation" is a claim about
 scope, not a proof that the gap is tolerable in practice** -- worth an actual
 dogfood exercise before assuming either.
 
+**`aiohttp` raises a bare `TimeoutError`, not a `ClientError` subclass, when
+a `ClientTimeout` elapses -- every client-side dial in `netbbs.link.transport`
+had this wrong until issue #95's own sibling fix, found live during issue
+#83's dogfood run.** Each of `dial_hello`/`push_events`/`request_inventory`/
+`request_peer_list`/`request_relay_consent`/`request_file_chunk`/`deposit_
+into_relay_mailbox`/`pickup_from_relay_mailbox` caught `except (ClientError,
+...)` only -- several of these functions' own docstrings already promised
+"timeout" specifically surfaces as `LinkTransportError`, but the actual
+`except` clause never matched what a real timeout raises. Net effect: a
+merely *slow* peer (not even a hard failure -- exactly the "real internet
+latency/jitter" class of condition this project's own dogfood plan exists to
+exercise, and something loopback/deterministic-harness tests essentially
+never hit) propagated an uncaught exception straight out of `run_link_sync`,
+killing that node's *entire* sync loop for the rest of its uptime -- caught
+and logged clearly at the top level (`netbbs.__main__` does not crash, and
+says so explicitly), but Link sync itself never resumes without a manual
+process restart. Fixed by adding `TimeoutError` to all eight `except` tuples.
+**When wrapping a third-party async HTTP client's exceptions into a project's
+own transport-error type, verify what a real, elapsed client-side timeout
+actually raises for that library -- do not assume it's a subclass of that
+library's own generic connection-error base class.** `tests/test_link_
+transport.py::test_dial_hello_raises_link_transport_error_on_a_genuine_
+timeout` proves this with a real hanging TCP listener, not a mock, and is
+confirmed to fail without the fix -- the pattern any future dial-timeout
+regression test in this codebase should follow, rather than trusting a
+`ClientError`-only mock to stand in for what a real elapsed timeout does.
+
 ### Current distribution limit
 
 Configured-seed sync currently sends the complete supported outbound event set
