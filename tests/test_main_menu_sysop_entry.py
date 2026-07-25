@@ -27,6 +27,11 @@ from netbbs.storage.database import Database
 class FakeSession:
     def __init__(self, keys=None):
         self._keys = iter(keys or [])
+        # Every scripted `keys` list here ends with "l" to leave the
+        # main menu cleanly, which now requires a logoff confirmation
+        # -- a single "y" answer, and nothing beyond it, since no test
+        # in this file exercises any other read_line-driven prompt.
+        self._lines = iter(["y"])
         self.written: list[str] = []
         self.terminal_width = 80
         self.terminal_height = 24
@@ -45,7 +50,10 @@ class FakeSession:
         return key
 
     async def read_line(self, echo: bool = True) -> str:
-        raise AssertionError("read_line should not be reached by these tests")
+        line = next(self._lines, None)
+        if line is None:
+            raise AssertionError("read_line should not be reached by these tests")
+        return line
 
 
 def _written_text(session: FakeSession) -> str:

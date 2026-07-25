@@ -111,7 +111,7 @@ def test_handle_session_enters_and_leaves_presence_around_the_main_menu(db, monk
 
     async def scenario() -> None:
         presence = _SpyPresence()
-        session = FakeSession(["alice", "correct-password"], keys=["l"])  # "l" = logoff immediately
+        session = FakeSession(["alice", "correct-password", "y"], keys=["l"])  # "l" = logoff, confirmed
         config = _throttle_config()
         await login_flow.handle_session(session, db, ChatHub(), presence, MessageMailbox(), _throttle(config), config, ActiveSessionRegistry(), MaintenanceMode())
 

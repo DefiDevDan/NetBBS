@@ -110,7 +110,7 @@ def test_new_scan_is_always_shown_regardless_of_level(db, alice):
 
 
 def test_new_scan_is_not_available_without_a_lane(db, alice):
-    session = FakeSession(["n", "l"])
+    session = FakeSession(["n", "l", "y"])
     asyncio.run(
         _main_menu(session, db, ChatHub(), PresenceRegistry(), MessageMailbox(), InputHistory(), alice)
     )
@@ -125,7 +125,7 @@ def test_new_scan_shows_never_visited_for_an_unvisited_board(db, lane, alice):
     board = create_board(db, "general", creator=other)
     create_post(db, board, other, "hello", "world")
 
-    session = _run_main_menu(db, lane, alice, ["n", "b", "b", "l"])
+    session = _run_main_menu(db, lane, alice, ["n", "b", "b", "l", "y"])
 
     assert "not yet visited" in _written_text(session)
 
@@ -137,9 +137,9 @@ def test_new_scan_shows_caught_up_once_the_board_has_been_visited(db, lane, alic
     create_post(db, board, other, "hello", "world")
 
     # First visit: pick the board (only item, "01"), back out of it, back to main menu.
-    _run_main_menu(db, lane, alice, ["n", "0", "1", "b", "b", "l"])
+    _run_main_menu(db, lane, alice, ["n", "0", "1", "b", "b", "l", "y"])
     # Second new scan: now caught up.
-    session = _run_main_menu(db, lane, alice, ["n", "b", "l"])
+    session = _run_main_menu(db, lane, alice, ["n", "b", "l", "y"])
 
     assert "caught up" in _written_text(session)
     assert "not yet visited" not in _written_text(session)
@@ -152,10 +152,10 @@ def test_new_scan_shows_unread_count_for_new_activity(db, lane, alice, monkeypat
     monkeypatch.setattr(posts_module, "utc_now_iso", lambda: next(timestamps))
     create_post(db, board, other, "first", "1")
 
-    _run_main_menu(db, lane, alice, ["n", "0", "1", "b", "b", "l"])  # visit once, catch up
+    _run_main_menu(db, lane, alice, ["n", "0", "1", "b", "b", "l", "y"])  # visit once, catch up
     create_post(db, board, other, "second", "2")  # new activity after the visit
 
-    session = _run_main_menu(db, lane, alice, ["n", "b", "l"])
+    session = _run_main_menu(db, lane, alice, ["n", "b", "l", "y"])
 
     assert "1 unread" in _written_text(session)
 
@@ -171,14 +171,14 @@ def test_new_scan_shows_replies_to_you(db, lane, alice, monkeypatch):
     other = create_user(db, "bob", password="hunter2", user_level=10)
     create_post(db, board, other, "Re: question", "like this", parent_post_id=alices_post.post_id)
 
-    session = _run_main_menu(db, lane, alice, ["n", "b", "l"])
+    session = _run_main_menu(db, lane, alice, ["n", "b", "l", "y"])
 
     assert "Replies to you: 1" in _written_text(session)
     assert "Re: question" in _written_text(session)
 
 
 def test_new_scan_shows_no_replies_when_there_are_none(db, lane, alice):
-    session = _run_main_menu(db, lane, alice, ["n", "b", "l"])
+    session = _run_main_menu(db, lane, alice, ["n", "b", "l", "y"])
     assert "Replies to you: none." in _written_text(session)
 
 
@@ -197,7 +197,7 @@ def test_selecting_a_board_jumps_to_the_first_unread_post(db, lane, alice, monke
 
     record_board_seen(db, alice, board, first)
 
-    session = _run_main_menu(db, lane, alice, ["n", "0", "1", "b", "l"])
+    session = _run_main_menu(db, lane, alice, ["n", "0", "1", "b", "l", "y"])
 
     text = _written_text(session)
     assert "first --" not in text
@@ -217,7 +217,7 @@ def test_selecting_a_file_area_jumps_to_the_first_unread_file(db, lane, alice, m
 
     record_file_area_seen(db, alice, area, first)
 
-    session = _run_main_menu(db, lane, alice, ["n", "0", "1", "b", "l"])
+    session = _run_main_menu(db, lane, alice, ["n", "0", "1", "b", "l", "y"])
 
     text = _written_text(session)
     assert "a.txt" not in text
@@ -237,7 +237,7 @@ def test_selecting_a_channel_calls_browse_channels_with_that_channel(db, lane, a
 
     monkeypatch.setattr(login_flow, "browse_channels", fake_browse_channels)
 
-    _run_main_menu(db, lane, alice, ["n", "0", "1", "l"])
+    _run_main_menu(db, lane, alice, ["n", "0", "1", "l", "y"])
 
     assert len(calls) == 1
     assert calls[0].id == channel.id

@@ -201,7 +201,7 @@ def test_watcher_does_not_disconnect_a_still_active_session(db):
     hub, presence, mailbox = ChatHub(), PresenceRegistry(), MessageMailbox()
     registry = ActiveSessionRegistry()
     alice = create_user(db, "alice", password="hunter2", user_level=10)
-    session = FakeSession(["l"])  # logs off normally, on its own
+    session = FakeSession(["l", "y"])  # logs off normally, on its own (confirmed)
 
     async def scenario():
         task = asyncio.create_task(_drive(db, hub, presence, mailbox, registry, alice, session))
@@ -216,7 +216,7 @@ def test_watcher_task_does_not_leak_after_normal_logoff(db):
     hub, presence, mailbox = ChatHub(), PresenceRegistry(), MessageMailbox()
     registry = ActiveSessionRegistry()
     alice = create_user(db, "alice", password="hunter2", user_level=10)
-    session = FakeSession(["l"])
+    session = FakeSession(["l", "y"])  # confirmed logoff
 
     async def scenario():
         current = asyncio.current_task()

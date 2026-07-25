@@ -72,7 +72,7 @@ def test_main_menu_shows_mail_option_with_no_unread_badge(tmp_path):
     db_path = tmp_path / "node.db"
     db = Database(db_path)
     bob = create_user(db, "bob", password="hunter2pw", user_level=10)
-    session = FakeSession(keys=["l"])
+    session = FakeSession(keys=["l"], lines=["y"])
     lane = DatabaseLane(db_path)
 
     asyncio.run(
@@ -92,7 +92,7 @@ def test_main_menu_shows_unread_count_badge(tmp_path):
     alice = create_user(db, "alice", password="hunter2pw", user_level=10)
     bob = create_user(db, "bob", password="hunter2pw", user_level=10)
     send_mail(db, alice, bob, "Hello", "body")
-    session = FakeSession(keys=["l"])
+    session = FakeSession(keys=["l"], lines=["y"])
     lane = DatabaseLane(db_path)
 
     asyncio.run(
@@ -108,7 +108,7 @@ def test_main_menu_e_key_opens_mail(tmp_path):
     db_path = tmp_path / "node.db"
     db = Database(db_path)
     bob = create_user(db, "bob", password="hunter2pw", user_level=10)
-    session = FakeSession(keys=["e", "b", "l"])
+    session = FakeSession(keys=["e", "b", "l"], lines=["y"])
     lane = DatabaseLane(db_path)
 
     asyncio.run(
@@ -127,7 +127,7 @@ def test_main_menu_mail_unavailable_without_a_lane(tmp_path):
     `node_controls=None` already uses for the `[N]ode` admin option."""
     db = Database(tmp_path / "node.db")
     bob = create_user(db, "bob", password="hunter2pw", user_level=10)
-    session = FakeSession(keys=["e", "l"])
+    session = FakeSession(keys=["e", "l"], lines=["y"])
 
     asyncio.run(_main_menu(session, db, ChatHub(), PresenceRegistry(), MessageMailbox(), InputHistory(), bob))
 

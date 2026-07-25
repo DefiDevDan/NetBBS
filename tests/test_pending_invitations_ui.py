@@ -31,6 +31,10 @@ from netbbs.storage.database import Database
 class FakeSession:
     def __init__(self, keys=None):
         self._keys = iter(keys or [])
+        # Scripted `keys` lists that end with "l" now need a single
+        # logoff-confirmation answer; nothing in this file exercises
+        # any other read_line-driven prompt.
+        self._lines = iter(["y"])
         self.written: list[str] = []
         self.terminal_width = 80
         self.terminal_height = 24
@@ -49,7 +53,10 @@ class FakeSession:
         return key
 
     async def read_line(self, echo: bool = True) -> str:
-        raise AssertionError("read_line should not be reached by these tests")
+        line = next(self._lines, None)
+        if line is None:
+            raise AssertionError("read_line should not be reached by these tests")
+        return line
 
 
 def _written_text(session: FakeSession) -> str:

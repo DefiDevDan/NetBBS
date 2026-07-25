@@ -208,7 +208,7 @@ def test_registration_mode_new_key_takes_precedence_over_legacy(db):
 
 
 def test_typing_new_registers_and_logs_straight_in_when_mode_is_open(db):
-    session = FakeSession(["new", "alice", "hunter2pw", "hunter2pw"], keys=["l"])
+    session = FakeSession(["new", "alice", "hunter2pw", "hunter2pw", "y"], keys=["l"])
 
     asyncio.run(_run_login(session, db))
 
@@ -324,7 +324,7 @@ def test_registration_is_throttled_by_the_shared_login_throttle(db):
 
 
 def test_registration_username_prompt_is_case_insensitive_for_the_sentinel(db):
-    session = FakeSession(["NEW", "alice", "hunter2pw", "hunter2pw"], keys=["l"])
+    session = FakeSession(["NEW", "alice", "hunter2pw", "hunter2pw", "y"], keys=["l"])
 
     asyncio.run(_run_login(session, db))
 

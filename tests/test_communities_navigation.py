@@ -49,7 +49,12 @@ class FakeSession:
         return key
 
     async def read_line(self, echo: bool = True, history=None, completer=None, *, live_buffer=None, lock=None) -> str:
-        return next(self._lines, "")
+        # Every scenario in this file ends by pressing "l" to leave the
+        # main menu cleanly; default the now-required logoff
+        # confirmation to "y" once the scripted lines run out, rather
+        # than making every call site thread an explicit confirmation
+        # answer through just to reach its real assertions.
+        return next(self._lines, "y")
 
 
 def _written_text(session: FakeSession) -> str:

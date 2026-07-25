@@ -1003,6 +1003,9 @@ async def _main_menu(
 
         if choice == "l":
             await session.write_line("")
+            if not await prompt_yes_no(session, "Log off?", default=False):
+                await _draw_main_menu(session, db, mailbox, user, node_controls=node_controls)
+                continue
             return
         elif choice == "c" and _has_visible_communities(db, user):
             await session.write_line("")

@@ -325,17 +325,17 @@ def _run_main_menu(db, lane, user, keys):
 
 
 def test_find_is_always_shown_on_the_main_menu(db, alice):
-    session = _run_main_menu(db, None, alice, ["l"])
+    session = _run_main_menu(db, None, alice, ["l", "y"])
     assert "[F]ind" in _visible_text(session)
 
 
 def test_find_is_not_available_without_a_lane(db, alice):
-    session = _run_main_menu(db, None, alice, ["f", "l"])
+    session = _run_main_menu(db, None, alice, ["f", "l", "y"])
     assert "not available in this context" in _visible_text(session)
 
 
 def test_find_cancels_on_an_empty_query(db, lane, alice):
-    session = _run_main_menu(db, lane, alice, ["f", "", "l"])
+    session = _run_main_menu(db, lane, alice, ["f", "", "l", "y"])
     assert "Search cancelled." in _visible_text(session)
 
 
@@ -343,7 +343,7 @@ def test_find_selecting_a_post_jumps_to_it(db, lane, alice):
     board = create_board(db, "general", creator=alice)
     create_post(db, board, alice, "hello world", "body")
 
-    session = _run_main_menu(db, lane, alice, ["f", "hello", "0", "1", "b", "l"])
+    session = _run_main_menu(db, lane, alice, ["f", "hello", "0", "1", "b", "l", "y"])
 
     text = _visible_text(session)
     assert "hello world" in text
@@ -353,14 +353,14 @@ def test_find_selecting_a_file_jumps_to_it(db, lane, alice):
     area = create_file_area(db, "downloads", creator=alice)
     upload_file(db, area, alice, "readme.txt", b"data", description="a helpful guide")
 
-    session = _run_main_menu(db, lane, alice, ["f", "helpful", "0", "1", "b", "l"])
+    session = _run_main_menu(db, lane, alice, ["f", "helpful", "0", "1", "b", "l", "y"])
 
     text = _visible_text(session)
     assert "readme.txt" in text
 
 
 def test_find_no_matches(db, lane, alice):
-    session = _run_main_menu(db, lane, alice, ["f", "nonexistentterm", "l"])
+    session = _run_main_menu(db, lane, alice, ["f", "nonexistentterm", "l", "y"])
     assert "No matches." in _visible_text(session)
 
 

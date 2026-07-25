@@ -33,8 +33,9 @@ def db(tmp_path):
 
 
 class FakeSession:
-    def __init__(self, keys: list[str] | None = None):
+    def __init__(self, keys: list[str] | None = None, lines: list[str] | None = None):
         self._keys = iter(keys or [])
+        self._lines = iter(lines or ["y"] * (keys or []).count("l"))
         self.written: list[str] = []
         self.terminal_width = 80
         self.terminal_height = 24
@@ -48,6 +49,9 @@ class FakeSession:
 
     async def read_key(self, echo: bool = True) -> str:
         return next(self._keys)
+
+    async def read_line(self, echo: bool = True) -> str:
+        return next(self._lines)
 
     @property
     def output(self) -> str:

@@ -124,8 +124,8 @@ class _SSHFakeSession(FakeSession):
     calls `read_key()` immediately (unlike the plain `FakeSession`
     above, built for tests that must never reach it)."""
 
-    def __init__(self, keys: list[str]):
-        super().__init__([])
+    def __init__(self, keys: list[str], lines: list[str] | None = None):
+        super().__init__(lines or [])
         self._keys = iter(keys)
         self.authenticated_username: str | None = None
 
@@ -135,12 +135,13 @@ class _SSHFakeSession(FakeSession):
 
 def test_ssh_session_skips_login_and_reaches_main_menu_directly(db):
     """The core regression: handle_ssh_session must never call
-    _login() -- proven here by a session whose read_line() would raise
-    if ever invoked (it's still the inherited FakeSession.read_line,
-    with an empty scripted-lines list -- calling it raises
-    StopIteration, not silently succeeding)."""
+    _login() -- proven here by a session whose scripted `lines` queue
+    holds only the logoff-confirmation answer ("y"), not credentials.
+    If _login() ran anyway, it would consume "y" as a username and then
+    exhaust the queue asking for a password, raising StopIteration
+    rather than silently succeeding."""
     create_user(db, "alice", password="hunter2", user_level=10)
-    session = _SSHFakeSession(["l"])  # logoff immediately
+    session = _SSHFakeSession(["l"], lines=["y"])  # logoff immediately, confirmed
     session.authenticated_username = "alice"
 
     asyncio.run(
