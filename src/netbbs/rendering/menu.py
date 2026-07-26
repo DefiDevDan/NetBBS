@@ -23,8 +23,20 @@ def menu_key(key: str, rest: str = "", *, prefix: str = "") -> str:
     `prefix` covers the case where the natural hotkey isn't the word's
     first letter (e.g. when that letter is already claimed by another
     option in the same menu) — pass the letters before it so the label
-    still reads as a real word, e.g. `menu_key("N", "nels", prefix="Cha")`
-    for `Cha[N]nels` rather than truncating to a nonsense `[H]annels`.
+    still reads as a real word, e.g. `menu_key("n", "nels", prefix="Cha")`
+    for `Cha[n]nels` rather than truncating to a nonsense `[H]annels`.
+
+    Whenever `prefix` is given, `key` is displayed lowercase rather than
+    however the caller passed it — a real word is never capitalized
+    mid-way through (`Cha[N]nels`/`Bac[K]up` read as a grammar mistake,
+    not a hotkey), and the brackets/bold/color already mark the hotkey
+    unambiguously on their own, so capitalization was never doing any of
+    that work. A bare first-letter hotkey (`prefix=""`) is untouched —
+    that position is already naturally capitalized as the start of a
+    title-cased label, so there's nothing to fix there. Case is display
+    only in both cases: dispatch always lowercases the actual keystroke
+    before comparing it, regardless of what's shown here.
     """
-    highlighted = colored(key, fg_color=MENU_KEY_COLOR, bold=True)
+    display_key = key.lower() if prefix else key
+    highlighted = colored(display_key, fg_color=MENU_KEY_COLOR, bold=True)
     return f"{prefix}[{highlighted}]{rest}"
