@@ -25,8 +25,10 @@ from netbbs.net.char_input import (
     read_editor_key,
     read_key,
     read_line,
+    reject_unhandled_key,
 )
 from netbbs.net.session import SessionClosedError
+from netbbs.rendering.ansi import reject_keystroke
 
 
 class FakeByteSource:
@@ -273,7 +275,40 @@ def test_read_key_still_skips_other_control_bytes_as_before():
 
     asyncio.run(scenario())
 
-    asyncio.run(scenario())
+
+# -- reject_unhandled_key: real dogfood-reported bug fix -----------------
+# -- (Ctrl-L/Ctrl-R erasing the previous on-screen character on a menu ---
+# -- that doesn't specifically support them) ------------------------------
+
+
+def test_reject_unhandled_key_bells_only_for_redraw_key():
+    """REDRAW_KEY was returned unechoed by read_key() -- nothing was
+    actually drawn for this keystroke, so there's nothing to erase."""
+    assert reject_unhandled_key(REDRAW_KEY) == "\a"
+
+
+def test_reject_unhandled_key_bells_only_for_refresh_key():
+    """Same reasoning as REDRAW_KEY -- REFRESH_KEY is also unechoed."""
+    assert reject_unhandled_key(REFRESH_KEY) == "\a"
+
+
+def test_reject_unhandled_key_matches_reject_keystroke_for_ordinary_keys():
+    """Every other unrecognized key keeps today's erase-and-bell
+    behavior, unchanged."""
+    assert reject_unhandled_key("z") == reject_keystroke()
+    assert reject_unhandled_key("9") == reject_keystroke()
+
+
+def test_reject_unhandled_key_honors_a_custom_count_for_ordinary_keys():
+    assert reject_unhandled_key("z", count=2) == reject_keystroke(2)
+
+
+def test_reject_unhandled_key_ignores_count_for_redraw_and_refresh():
+    """A bell-only response for these two doesn't scale with `count` --
+    there's still nothing echoed to erase, regardless of how many
+    characters a caller would otherwise have asked to erase."""
+    assert reject_unhandled_key(REDRAW_KEY, count=2) == "\a"
+    assert reject_unhandled_key(REFRESH_KEY, count=2) == "\a"
 
 
 def test_connection_closed_mid_line_raises_session_closed_error():

@@ -57,11 +57,12 @@ from netbbs.mail import (
     send_mail,
     unread_count,
 )
+from netbbs.net.char_input import reject_unhandled_key
 from netbbs.net.editor_preference import fullscreen_editor_enabled
 from netbbs.net.picker import pick_item
 from netbbs.net.prose_editor import edit_prose
 from netbbs.net.session import Session
-from netbbs.rendering import HEADER_COLOR, MUTED_COLOR, colored, menu_key, reflow, reject_keystroke, sanitize_text
+from netbbs.rendering import HEADER_COLOR, MUTED_COLOR, colored, menu_key, reflow, sanitize_text
 from netbbs.storage.execution import DatabaseLane
 from netbbs.timeutil import format_for_display, resolve_display_preferences
 
@@ -105,7 +106,7 @@ async def browse_mail(
             await _compose_mail(session, lane, user, link_context=link_context)
             await _render_mail_menu(session, lane, user)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _render_mail_menu(session: Session, lane: DatabaseLane, user: User) -> None:
@@ -239,7 +240,7 @@ async def _show_inbox_message(session: Session, lane: DatabaseLane, user: User, 
             reply_subject = message.subject if message.subject.lower().startswith("re:") else f"Re: {message.subject}"
             await _compose_mail(session, lane, user, prefill_recipient=sender, prefill_subject=reply_subject)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _show_sent_message(session: Session, lane: DatabaseLane, user: User, message: MailMessage) -> None:
@@ -262,7 +263,7 @@ async def _show_sent_message(session: Session, lane: DatabaseLane, user: User, m
             await session.write_line("Message deleted.")
             return
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _compose_mail(

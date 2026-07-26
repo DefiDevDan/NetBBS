@@ -161,6 +161,7 @@ from netbbs.moderation.roles import (
     list_grants_for_community,
     revoke_permissions,
 )
+from netbbs.net.char_input import REDRAW_KEY, REFRESH_KEY, reject_unhandled_key
 from netbbs.net.confirm import prompt_yes_no, prompt_yes_no_or_keep
 from netbbs.net.picker import pick_item
 from netbbs.net.session import Session
@@ -276,7 +277,7 @@ async def admin_menu(
             await _system_menu(session, lane, user, node_controls=node_controls, link_context=link_context)
             await _draw_admin_menu(session)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _draw_admin_menu(session: Session) -> None:
@@ -341,7 +342,7 @@ async def _users_menu(
             await _pick_and_edit_user(session, lane, actor, node_controls, title="Delete which user?")
             await _draw_users_menu(session)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _draw_users_menu(session: Session) -> None:
@@ -428,7 +429,7 @@ async def _system_menu(
             await _backup_status_screen(session, lane, actor)
             await _draw_system_menu(session, node_controls, link_context)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _draw_system_menu(
@@ -715,7 +716,7 @@ async def _pick_target_user(session: Session, lane: DatabaseLane, *, title: str)
                 page_index += 1
                 page_users = await _render()
             else:
-                await session.write(reject_keystroke())
+                await session.write(reject_unhandled_key(key))
             continue
 
         if key_lower == "p":
@@ -724,7 +725,7 @@ async def _pick_target_user(session: Session, lane: DatabaseLane, *, title: str)
                 page_index -= 1
                 page_users = await _render()
             else:
-                await session.write(reject_keystroke())
+                await session.write(reject_unhandled_key(key))
             continue
 
         if key_lower == "s":
@@ -781,7 +782,14 @@ async def _pick_target_user(session: Session, lane: DatabaseLane, *, title: str)
         if key.isdigit():
             second = await session.read_key()
             if not second.isdigit():
-                await session.write(reject_keystroke(2))
+                # Only `key` (the first digit) was actually echoed --
+                # `second` here is either an ordinary unrecognized
+                # character (also echoed, erase both) or REDRAW_KEY/
+                # REFRESH_KEY (never echoed, erase just the one real
+                # character on screen, same reasoning as
+                # reject_unhandled_key itself).
+                erase_count = 1 if second in (REDRAW_KEY, REFRESH_KEY) else 2
+                await session.write(reject_keystroke(erase_count))
                 continue
             number = int(key + second)
             if 1 <= number <= len(page_users):
@@ -790,7 +798,7 @@ async def _pick_target_user(session: Session, lane: DatabaseLane, *, title: str)
             await session.write(reject_keystroke(2))
             continue
 
-        await session.write(reject_keystroke())
+        await session.write(reject_unhandled_key(key))
 
 
 async def _pick_and_edit_user(
@@ -945,7 +953,7 @@ async def _user_detail_screen(
                 return
             await _draw_user_detail(session, lane, target)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _delete_user_confirm(
@@ -1650,8 +1658,12 @@ async def _node_menu(session: Session, lane: DatabaseLane, actor: User, node_con
             await session.write_line("")
             await _drain_screen(session, lane, actor, node_controls)
             await _draw_node_menu(session, node_controls)
+        elif choice == "l":
+            await session.write_line("")
+            await _lock_and_drain_screen(session, lane, actor, node_controls)
+            await _draw_node_menu(session, node_controls)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _draw_node_menu(session: Session, node_controls: NodeControls) -> None:
@@ -1670,7 +1682,7 @@ async def _draw_node_menu(session: Session, node_controls: NodeControls) -> None
     options = "  ".join(
         [
             menu_key("W", "ho"), menu_key("M", "aintenance mode"), menu_key("D", "rain"),
-            menu_key("S", "hutdown"), menu_key("B", "ack"),
+            menu_key("L", "ock & drain"), menu_key("S", "hutdown"), menu_key("B", "ack"),
         ]
     )
     await session.write_line(f"\r\n{header} {options}")
@@ -1980,6 +1992,109 @@ async def _drain_screen(session: Session, lane: DatabaseLane, actor: User, node_
     await session.write_line(f"Drain started -- non-SysOp sessions will be disconnected in {int(delay_seconds)}s.")
 
 
+async def _lock_and_drain_screen(session: Session, lane: DatabaseLane, actor: User, node_controls: NodeControls) -> None:
+    """
+    Design doc §13.8, Thiesi's own dogfood-testing report: `[M]aintenance
+    mode` and `[D]rain` are deliberately separate, composable commands
+    (see both their own docstrings), but in practice a SysOp almost
+    always wants both together -- lock out new non-SysOp logins *and*
+    clear out whoever's already connected, in one action. This composes
+    the two existing primitives; it adds no new mechanism of its own.
+
+    Keyed off `maintenance.is_lockdown_active()`, not
+    `drain_scheduler.is_scheduled()`: a second press always means "turn
+    this off", whether or not the drain countdown happens to still be
+    running -- `drain_scheduler.cancel()` is a safe no-op (via its own
+    documented `bool` return) once the drain has already finished on its
+    own, so there's no need to branch on that separately.
+    """
+    if node_controls.maintenance.is_lockdown_active():
+        if node_controls.drain_scheduler.is_scheduled():
+            remaining = node_controls.drain_scheduler.remaining_seconds()
+            status = f"non-SysOps will be disconnected in {format_remaining_seconds(remaining)}"
+        else:
+            status = "the drain has already finished (or none was scheduled) -- new non-SysOp logins are still blocked"
+        await session.write_line(
+            colored(f"\r\nLock & drain is active -- {status}.", fg_color=ALERT_COLOR, bold=True)
+        )
+        if await prompt_yes_no(session, "Unlock and cancel the drain (if still running)?", default=False):
+            node_controls.drain_scheduler.cancel()
+            node_controls.maintenance.disable_lockdown()
+            await lane.run(record_action, actor=actor, action="cancel_lock_and_drain")
+            _logger.info("lock & drain cancelled by %s", actor.username)
+            await session.write_line("Lock & drain cancelled -- maintenance mode is off again.")
+            return
+        await session.write_line(colored("Leaving lock & drain active.", fg_color=MUTED_COLOR))
+        return
+
+    if node_controls.drain_scheduler.is_scheduled():
+        remaining = node_controls.drain_scheduler.remaining_seconds()
+        await session.write_line(
+            colored(
+                f"\r\nA drain is already scheduled -- non-SysOps will be disconnected in "
+                f"{format_remaining_seconds(remaining)}.",
+                fg_color=ALERT_COLOR, bold=True,
+            )
+        )
+        if await prompt_yes_no(session, "Cancel it?", default=False):
+            node_controls.drain_scheduler.cancel()
+            await lane.run(record_action, actor=actor, action="cancel_drain")
+            _logger.info("scheduled drain cancelled by %s", actor.username)
+            await session.write_line("Scheduled drain cancelled.")
+            return
+        await session.write_line(
+            colored("Continuing -- scheduling a new drain will replace it.", fg_color=MUTED_COLOR)
+        )
+
+    await session.write_line(
+        colored(
+            "\r\nThis immediately locks out new non-SysOp logins, then warns every "
+            "connected non-SysOp session, waits, and disconnects them. SysOp sessions "
+            "(including this one) are never warned or disconnected. Maintenance mode "
+            "stays on afterward until you run this again to unlock.",
+            fg_color=MUTED_COLOR,
+        )
+    )
+    await session.write("Delay in seconds before disconnecting [60]: ")
+    delay_raw = (await session.read_line()).strip()
+    try:
+        delay_seconds = float(delay_raw) if delay_raw else 60.0
+    except ValueError:
+        await session.write_line("Not a number -- cancelled.")
+        return
+    if delay_seconds < 0:
+        await session.write_line("Delay cannot be negative -- cancelled.")
+        return
+
+    await session.write("Custom broadcast message (leave blank for the default): ")
+    message_raw = (await session.read_line()).strip()
+    message = message_raw or None
+
+    if not await prompt_yes_no(
+        session, f"\r\nConfirm lock & drain (lock now, disconnect non-SysOps after {int(delay_seconds)}s)?", default=False
+    ):
+        await session.write_line("Cancelled.")
+        return
+
+    await lane.run(
+        record_action, actor=actor, action="trigger_lock_and_drain",
+        detail=f"delay_seconds={delay_seconds}, message={message!r}",
+    )
+    _logger.info("lock & drain triggered by %s (delay_seconds=%s)", actor.username, delay_seconds)
+    node_controls.maintenance.enable_lockdown()
+    task = asyncio.create_task(
+        run_drain_sequence(
+            session_registry=node_controls.session_registry, delay_seconds=delay_seconds, message=message,
+        )
+    )
+    loop = asyncio.get_running_loop()
+    node_controls.drain_scheduler.schedule(task, deadline=loop.time() + delay_seconds, message=message)
+    await session.write_line(
+        f"Locked -- new non-SysOp logins are blocked, and non-SysOp sessions will be "
+        f"disconnected in {int(delay_seconds)}s."
+    )
+
+
 # -- welcome banner (design doc -- part one of a three-part skinning
 # initiative) ----------------------------------------------------------
 
@@ -2009,7 +2124,7 @@ async def _welcome_banner_menu(session: Session, lane: DatabaseLane, actor: User
             await _edit_welcome_banner_screen(session, lane, actor)
             await _draw_welcome_banner_menu(session, lane)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _draw_welcome_banner_menu(session: Session, lane: DatabaseLane) -> None:
@@ -2169,7 +2284,7 @@ async def _content_menu(
             await _revoke_moderator_screen(session, lane, actor)
             await _draw_content_menu(session)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _draw_content_menu(session: Session) -> None:
@@ -2400,7 +2515,7 @@ async def _community_menu(session: Session, lane: DatabaseLane, actor: User) -> 
             await _list_communities_screen(session, lane, actor)
             await _draw_community_menu(session)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _draw_community_menu(session: Session) -> None:
@@ -2475,7 +2590,7 @@ async def _community_detail_screen(session: Session, lane: DatabaseLane, actor: 
                 return
             await _draw_community_detail(session, community)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _draw_community_detail(session: Session, community: Community) -> None:
@@ -2595,7 +2710,7 @@ async def _board_menu(
             await _list_boards_screen(session, lane, actor, link_context=link_context)
             await _draw_board_menu(session)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _draw_board_menu(session: Session) -> None:
@@ -2743,7 +2858,7 @@ async def _board_detail_screen(
                 session, lane, board, linked=linked, link_context=link_context
             )
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _link_board_screen(session: Session, lane: DatabaseLane, board: Board, link_context: LinkContext) -> None:
@@ -3247,7 +3362,7 @@ async def _post_action_screen(
             post = await lane.run(set_post_exempt, post, not post.exempt_from_expiry, changed_by=actor)
             await _draw_post_action(session, post)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 # -- file areas ----------------------------------------------------------
@@ -3276,7 +3391,7 @@ async def _area_menu(
             await _gc_screen(session, lane)
             await _draw_area_menu(session)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _draw_area_menu(session: Session) -> None:
@@ -3450,7 +3565,7 @@ async def _area_detail_screen(
             linked = await lane.run(is_area_linked, area)
             await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _draw_area_detail(
@@ -3692,7 +3807,7 @@ async def _file_action_screen(session: Session, lane: DatabaseLane, actor: User,
             entry = await lane.run(set_file_exempt, entry, not entry.exempt_from_expiry, changed_by=actor)
             await _draw_file_action(session, entry)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 # -- channels (design doc) --------------------------------------------------
@@ -3728,7 +3843,7 @@ async def _channel_menu(
             await _list_channels_screen(session, lane, actor, link_context=link_context)
             await _draw_channel_menu(session)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _draw_channel_menu(session: Session) -> None:
@@ -3839,7 +3954,7 @@ async def _channel_detail_screen(
             linked = await lane.run(is_channel_linked, channel)
             await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _draw_channel_detail(
@@ -4030,7 +4145,7 @@ async def _category_menu(session: Session, lane: DatabaseLane, actor: User) -> N
             )
             await _draw_category_menu(session)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _draw_category_menu(session: Session) -> None:
@@ -4072,7 +4187,7 @@ async def _generic_category_screen(
             )
             await _draw_generic_category_menu(session, title)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _draw_generic_category_menu(session: Session, title: str) -> None:

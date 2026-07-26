@@ -126,7 +126,7 @@ from netbbs.messaging_preferences import (
 )
 from netbbs.moderation import BoardPermission, has_permission, is_blocked
 from netbbs.net.admin_flow import admin_menu
-from netbbs.net.char_input import REDRAW_KEY, InputHistory
+from netbbs.net.char_input import REDRAW_KEY, InputHistory, reject_unhandled_key
 from netbbs.net.confirm import prompt_yes_no
 from netbbs.net.chat_flow import browse_channels, has_visible_channels, list_visible_channels_for
 from netbbs.net.color_depth_preference import color_depth_override, set_color_depth_override
@@ -152,7 +152,6 @@ from netbbs.rendering import (
     colored,
     menu_key,
     reflow,
-    reject_keystroke,
     sanitize_text,
     truncate,
 )
@@ -810,11 +809,16 @@ async def _draw_main_menu(
     BBS time (a snapshot at draw time, not a ticking live clock -- this
     codebase has no per-session background refresh mechanism, and
     building one just for a clock would be disproportionate to what was
-    actually asked for) and, at most one at a time (most urgent first: a
-    scheduled shutdown, then a scheduled drain, then -- SysOps only,
-    since a non-SysOp who reached the menu at all already implies
-    lockdown isn't blocking them -- maintenance mode being on), a visual
-    alert tag. `None` (a direct test call site bypassing `handle_
+    actually asked for) and a visual alert tag for every currently-
+    applicable status (a scheduled shutdown, a scheduled drain, and --
+    SysOps only, since a non-SysOp who reached the menu at all already
+    implies lockdown isn't blocking them -- maintenance mode being on),
+    concatenated in that order rather than showing only the single most
+    urgent one: `[L]ock & drain` (design doc §13.8) makes "drain and
+    maintenance mode both active at once" a common case, not a rare
+    edge case, so dropping one silently would recreate the exact blind
+    spot `_draw_node_menu`'s own docstring already describes for the
+    separate-toggle case. `None` (a direct test call site bypassing `handle_
     session`) leaves the prompt exactly as it always was -- bare
     `Choice: `, no time, no tag -- the same degrade-gracefully
     convention every other optional `node_controls` parameter in this
@@ -958,17 +962,18 @@ def _main_menu_prompt(db: Database, user: User, node_controls: NodeControls | No
     time_str = separator.join(
         colored(part, fg_color=CLOCK_COLOR) for part in (hours, minutes, seconds)
     )
-    tag = ""
+    tags: list[str] = []
     if node_controls.shutdown_scheduler.is_scheduled():
         remaining = node_controls.shutdown_scheduler.remaining_seconds()
-        tag = colored(f"[SHUTDOWN {format_remaining_seconds(remaining)}] ", fg_color=ALERT_COLOR, bold=True)
-    elif node_controls.drain_scheduler.is_scheduled():
+        tags.append(colored(f"[SHUTDOWN {format_remaining_seconds(remaining)}]", fg_color=ALERT_COLOR, bold=True))
+    if node_controls.drain_scheduler.is_scheduled():
         remaining = node_controls.drain_scheduler.remaining_seconds()
-        tag = colored(f"[DRAINING {format_remaining_seconds(remaining)}] ", fg_color=ALERT_COLOR, bold=True)
-    elif node_controls.maintenance.is_lockdown_active():
+        tags.append(colored(f"[DRAINING {format_remaining_seconds(remaining)}]", fg_color=ALERT_COLOR, bold=True))
+    if node_controls.maintenance.is_lockdown_active():
         # Only ever reached by a SysOp -- a non-SysOp who made it to the
         # main menu at all already implies lockdown wasn't blocking them.
-        tag = colored("[MAINT MODE] ", fg_color=ALERT_COLOR, bold=True)
+        tags.append(colored("[MAINT MODE]", fg_color=ALERT_COLOR, bold=True))
+    tag = "".join(t + " " for t in tags)
     return f"{time_str} {tag}Choice: "
 
 
@@ -1146,7 +1151,7 @@ async def _main_menu(
                 )
             await _draw_main_menu(session, db, mailbox, user, node_controls=node_controls)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 @dataclass(frozen=True)
@@ -1780,7 +1785,7 @@ async def _resource_type_menu(
                     colored("File areas are not available in this context.", fg_color=MUTED_COLOR)
                 )
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _enter_communities(
@@ -2237,7 +2242,7 @@ async def _show_board(
             await session.write_line("")
             return
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _edit_existing_post(
@@ -2776,7 +2781,7 @@ async def _edit_profile(session: Session, db: Database, user: User) -> None:
             await _identity_details_screen(session, db, user)
             visible = await _render_profile(session, db, user)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _edit_bio(session: Session, db: Database, user: User) -> None:
@@ -2871,7 +2876,7 @@ async def _identity_details_screen(session: Session, db: Database, user: User) -
             await session.write_line(f"Verified badge is now {'public' if new_value else 'private'}.")
             await _render_identity_details(session, db, user)
         else:
-            await session.write(reject_keystroke())
+            await session.write(reject_unhandled_key(choice))
 
 
 async def _render_identity_details(session: Session, db: Database, user: User) -> None:

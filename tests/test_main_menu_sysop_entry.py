@@ -133,6 +133,28 @@ def test_pressing_a_is_now_an_invalid_key_for_a_sysop_level_user(tmp_path):
     db.close()
 
 
+def test_pressing_ctrl_r_on_the_main_menu_only_bells_no_erase(tmp_path):
+    """Real dogfood-reported bug fix: Ctrl-R (REFRESH_KEY) has no
+    meaning on the main menu (unlike inside a picker), and is returned
+    *unechoed* by read_key() -- before the fix, falling through to the
+    ordinary reject_keystroke() here erased the previous real character
+    on screen instead of nothing, since nothing was actually echoed for
+    this keystroke. Contrast with the "a" test above, which presses an
+    ordinary rejected key and *does* expect an erase."""
+    db = Database(tmp_path / "node.db")
+    sysop = create_user(db, "root", password="hunter2", user_level=255)
+    session = FakeSession(keys=["\x12", "l"])
+
+    asyncio.run(
+        _main_menu(session, db, ChatHub(), PresenceRegistry(), MessageMailbox(), InputHistory(), sysop)
+    )
+
+    text = _written_text(session)
+    assert "\a" in text
+    assert "\b \b" not in text
+    db.close()
+
+
 def test_pressing_s_does_nothing_for_a_non_sysop_user(tmp_path):
     db = Database(tmp_path / "node.db")
     user = create_user(db, "alice", password="hunter2", user_level=10)
@@ -213,9 +235,13 @@ def test_prompt_shows_a_draining_tag_when_a_drain_is_scheduled(tmp_path):
     asyncio.run(scenario())
 
 
-def test_prompt_shows_a_shutdown_tag_when_scheduled_taking_priority_over_drain(tmp_path):
-    """Shutdown is the more urgent of the two -- shown instead of
-    [DRAINING] whenever both happen to be scheduled at once."""
+def test_prompt_shows_both_shutdown_and_drain_tags_when_both_scheduled(tmp_path):
+    """Design doc §13.8, Thiesi's own dogfood-testing report: every
+    currently-applicable tag is shown, not just the single most urgent
+    one -- `[L]ock & drain` makes "more than one active" a common case,
+    not a rare edge case, so dropping one silently would recreate the
+    exact blind spot `_draw_node_menu`'s own docstring already describes
+    for the separate-toggle case."""
     async def scenario():
         db = Database(tmp_path / "node.db")
         try:
@@ -232,7 +258,9 @@ def test_prompt_shows_a_shutdown_tag_when_scheduled_taking_priority_over_drain(t
 
             text = _written_text(session)
             assert "[SHUTDOWN" in text
-            assert "[DRAINING" not in text
+            assert "[DRAINING" in text
+            # Documented order: shutdown first, then drain.
+            assert text.index("[SHUTDOWN") < text.index("[DRAINING")
 
             for task in (drain_task, shutdown_task):
                 task.cancel()
@@ -254,6 +282,36 @@ def test_prompt_shows_a_maintenance_mode_tag_for_a_sysop_when_lockdown_is_on(tmp
 
     assert "[MAINT MODE]" in _written_text(session)
     db.close()
+
+
+def test_prompt_shows_drain_and_maintenance_tags_together(tmp_path):
+    """The actual scenario `[L]ock & drain` (design doc §13.8) makes
+    common: both a scheduled drain and maintenance-mode lockdown active
+    at once, for a SysOp -- both tags must appear, not just one."""
+    async def scenario():
+        db = Database(tmp_path / "node.db")
+        try:
+            sysop = create_user(db, "root", password="hunter2", user_level=255)
+            session = FakeSession()
+            node_controls = _node_controls()
+            node_controls.maintenance.enable_lockdown()
+            loop = asyncio.get_running_loop()
+            drain_task = asyncio.create_task(asyncio.Event().wait())
+            node_controls.drain_scheduler.schedule(drain_task, deadline=loop.time() + 42.0, message=None)
+
+            await _draw_main_menu(session, db, MessageMailbox(), sysop, node_controls=node_controls)
+
+            text = _written_text(session)
+            assert "[DRAINING" in text
+            assert "[MAINT MODE]" in text
+            assert text.index("[DRAINING") < text.index("[MAINT MODE]")
+
+            drain_task.cancel()
+            await asyncio.gather(drain_task, return_exceptions=True)
+        finally:
+            db.close()
+
+    asyncio.run(scenario())
 
 
 def test_prompt_clock_is_time_only_two_toned_and_has_no_date(tmp_path):

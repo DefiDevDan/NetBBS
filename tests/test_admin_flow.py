@@ -1088,6 +1088,145 @@ def test_node_menu_shows_maintenance_and_schedule_status(db, lane, sysop):
     asyncio.run(scenario())
 
 
+# -- [L]ock & drain (design doc §13.8, Thiesi's own dogfood-testing report) --
+# -- the combined toggle that engages maintenance mode and a drain together --
+
+
+def test_node_menu_shows_lock_and_drain_option(db, lane, sysop):
+    node_controls = _node_controls()
+    session = FakeSession(["s", "n", "b", "b", "b"])
+    asyncio.run(admin_menu(session, lane, sysop, node_controls=node_controls))
+    assert "ock & drain" in _written_text(session)
+
+
+def test_lock_and_drain_screen_engages_lockdown_and_schedules_drain(db, lane, sysop):
+    async def scenario():
+        node_controls = _node_controls()
+        registry = node_controls.session_registry
+
+        other = FakeSession()
+        other_task = asyncio.create_task(_hold_registered(registry, other))
+        await asyncio.sleep(0)
+
+        admin_session = FakeSession(["s", "n", "l", "0", "", "y", "b", "b", "b"])
+        admin_task = asyncio.create_task(
+            _run_admin_session_as_its_own_task(admin_session, lane, sysop, node_controls, registry)
+        )
+        await asyncio.wait_for(admin_task, timeout=2.0)
+        await _wait_until_done(other_task)
+
+        assert node_controls.maintenance.is_lockdown_active() is True
+        assert "Locked --" in _written_text(admin_session)
+        assert other_task.cancelled()
+
+    asyncio.run(scenario())
+
+
+def test_lock_and_drain_screen_rejects_a_negative_delay(db, lane, sysop):
+    node_controls = _node_controls()
+    session = FakeSession(["s", "n", "l", "-5", "b", "b", "b"])
+    asyncio.run(admin_menu(session, lane, sysop, node_controls=node_controls))
+    assert "cannot be negative" in _written_text(session)
+    assert node_controls.maintenance.is_lockdown_active() is False
+
+
+def test_lock_and_drain_screen_rejects_a_non_numeric_delay(db, lane, sysop):
+    node_controls = _node_controls()
+    session = FakeSession(["s", "n", "l", "soon", "b", "b", "b"])
+    asyncio.run(admin_menu(session, lane, sysop, node_controls=node_controls))
+    assert "Not a number" in _written_text(session)
+    assert node_controls.maintenance.is_lockdown_active() is False
+
+
+def test_lock_and_drain_screen_declined_final_confirmation_leaves_lockdown_off(db, lane, sysop):
+    node_controls = _node_controls()
+    session = FakeSession(["s", "n", "l", "0", "", "n", "b", "b", "b"])
+    asyncio.run(admin_menu(session, lane, sysop, node_controls=node_controls))
+    assert "Cancelled." in _written_text(session)
+    assert node_controls.maintenance.is_lockdown_active() is False
+
+
+def test_lock_and_drain_screen_offers_to_cancel_a_bare_already_scheduled_drain(db, lane, sysop):
+    """Engaging while a plain [D]rain (no lockdown) is already scheduled
+    reuses [D]rain's own "already scheduled -- cancel it?" sub-flow
+    verbatim, for consistency."""
+    async def scenario():
+        node_controls = _node_controls()
+        loop = asyncio.get_running_loop()
+        drain_task = asyncio.create_task(asyncio.Event().wait())
+        node_controls.drain_scheduler.schedule(drain_task, deadline=loop.time() + 60.0, message=None)
+
+        session = FakeSession(["s", "n", "l", "y", "b", "b", "b"])
+        await admin_menu(session, lane, sysop, node_controls=node_controls)
+
+        text = _written_text(session)
+        assert "already scheduled" in text
+        assert "Scheduled drain cancelled." in text
+        assert node_controls.maintenance.is_lockdown_active() is False
+        assert node_controls.drain_scheduler.is_scheduled() is False
+        assert drain_task.cancelled()
+
+    asyncio.run(scenario())
+
+
+def test_lock_and_drain_screen_cancels_lockdown_and_drain_while_still_counting(db, lane, sysop):
+    async def scenario():
+        node_controls = _node_controls()
+        node_controls.maintenance.enable_lockdown()
+        loop = asyncio.get_running_loop()
+        drain_task = asyncio.create_task(asyncio.Event().wait())
+        node_controls.drain_scheduler.schedule(drain_task, deadline=loop.time() + 60.0, message=None)
+
+        session = FakeSession(["s", "n", "l", "y", "b", "b", "b"])
+        await admin_menu(session, lane, sysop, node_controls=node_controls)
+
+        text = _written_text(session)
+        assert "Lock & drain cancelled" in text
+        assert node_controls.maintenance.is_lockdown_active() is False
+        assert node_controls.drain_scheduler.is_scheduled() is False
+        assert drain_task.cancelled()
+
+    asyncio.run(scenario())
+
+
+def test_lock_and_drain_screen_cancel_after_drain_already_finished(db, lane, sysop):
+    """Keyed off `maintenance.is_lockdown_active()`, not
+    `drain_scheduler.is_scheduled()` -- a second press still offers to
+    unlock even once the drain itself has already finished on its own,
+    per the approved toggle design."""
+    node_controls = _node_controls()
+    node_controls.maintenance.enable_lockdown()
+    session = FakeSession(["s", "n", "l", "y", "b", "b", "b"])
+    asyncio.run(admin_menu(session, lane, sysop, node_controls=node_controls))
+
+    text = _written_text(session)
+    assert "already finished" in text
+    assert "Lock & drain cancelled" in text
+    assert node_controls.maintenance.is_lockdown_active() is False
+
+
+def test_lock_and_drain_screen_declining_cancel_leaves_it_active(db, lane, sysop):
+    async def scenario():
+        node_controls = _node_controls()
+        node_controls.maintenance.enable_lockdown()
+        loop = asyncio.get_running_loop()
+        drain_task = asyncio.create_task(asyncio.Event().wait())
+        node_controls.drain_scheduler.schedule(drain_task, deadline=loop.time() + 60.0, message=None)
+
+        session = FakeSession(["s", "n", "l", "n", "b", "b", "b"])
+        await admin_menu(session, lane, sysop, node_controls=node_controls)
+
+        text = _written_text(session)
+        assert "Leaving lock & drain active." in text
+        assert node_controls.maintenance.is_lockdown_active() is True
+        assert node_controls.drain_scheduler.is_scheduled() is True
+
+        drain_task.cancel()
+        await asyncio.gather(drain_task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
 # -- boards & areas -------------------------------------------------------
 
 

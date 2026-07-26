@@ -44,6 +44,7 @@ from enum import Enum, auto
 from typing import Awaitable, Callable, Protocol, Sequence
 
 from netbbs.net.session import SessionClosedError
+from netbbs.rendering.ansi import reject_keystroke
 
 # Control byte values relevant to character-mode line building.
 _CR = 0x0D
@@ -69,6 +70,25 @@ _TAB = 0x09
 # function's own documented "not a standalone key" contract.
 REDRAW_KEY = "\x0c"  # Ctrl-L
 REFRESH_KEY = "\x12"  # Ctrl-R
+
+
+def reject_unhandled_key(key: str, *, count: int = 1) -> str:
+    """
+    Like `netbbs.rendering.ansi.reject_keystroke`, but aware that
+    `REDRAW_KEY`/`REFRESH_KEY` are returned *unechoed* by `read_key()`
+    above (a real dogfood-reported bug this fixes): `reject_keystroke()`
+    unconditionally erases "the last echoed character" before ringing
+    the bell, an assumption that's wrong for these two -- since nothing
+    was echoed for this particular keystroke, that erase instead deletes
+    whatever real character was last drawn on screen, once per press. A
+    menu loop that doesn't specifically support Ctrl-L/Ctrl-R just bells
+    for them instead; every other unrecognized key keeps today's
+    erase-and-bell behavior unchanged.
+    """
+    if key in (REDRAW_KEY, REFRESH_KEY):
+        return "\a"
+    return reject_keystroke(count)
+
 
 # Bounded wait used when peeking for a byte that might not be coming (a
 # following LF after a lone CR; the rest of an escape sequence) — short
