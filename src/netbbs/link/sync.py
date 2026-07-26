@@ -143,9 +143,6 @@ from netbbs.link.files import load_own_file_area_events
 from netbbs.link.events import (
     LINK_MESSAGE_OBJECT_TYPE,
     EndpointDescriptor,
-    LinkMessage,
-    LinkMessageAccepted,
-    LinkMessageBounced,
 )
 from netbbs.link.mail import (
     expire_link_message_delivery,
@@ -153,6 +150,7 @@ from netbbs.link.mail import (
     get_link_message_for_delivery,
 )
 from netbbs.link.protocol import HelloMessage, LinkNode, LinkProtocolError
+from netbbs.link.relay_mailbox import RelayableEnvelope
 from netbbs.link.relay_selection import relays_needing_replacement, select_relay_candidates
 from netbbs.link.reliability import record_dial_outcome
 from netbbs.link.seedlist import get_cached_supplementary_seeds
@@ -655,7 +653,7 @@ async def _maintain_relay_selection(
 
 async def _pickup_one_relay_mailbox(
     session: ClientSession, base_urls: list[str], own_hello_provider: Callable[[], HelloMessage]
-) -> list[LinkMessage]:
+) -> list[RelayableEnvelope]:
     """Try each of `base_urls` in turn (issue #58's own multi-address
     "peers try them in order" convention), returning whatever the first
     reachable one hands back. Raises `LinkTransportError` only once
@@ -751,7 +749,7 @@ async def _deposit_one(
     session: ClientSession,
     base_url: str,
     recipient_fingerprint: str,
-    message: LinkMessage | LinkMessageAccepted | LinkMessageBounced,
+    message: RelayableEnvelope,
 ) -> bool:
     """One relay-mailbox deposit attempt against a single `base_url`,
     collapsed to a bool for `_try_addresses_via`'s own contract -- a
