@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from netbbs.auth.users import User
 from netbbs.storage.database import Database
 from netbbs.timeutil import utc_now_iso
-from netbbs.user_preferences import get_user_preference, set_user_preference
+from netbbs.user_preferences import get_user_preference
 
 # Keeps only the most recent this-many rows on every insert -- generous
 # enough that "last N sessions" (N well under this) always has a full
@@ -121,6 +121,42 @@ def list_recent_sessions(db: Database, *, limit: int = 20) -> list[SessionHistor
     ]
 
 
+def _backfill_name_visibility_fallbacks(db: Database) -> None:
+    """Synchronize existing live-account history rows with the current
+    visibility preference (issue #123).
+
+    Issue #111's migration necessarily gave every pre-existing row a
+    default-visible fallback when the column was first added. A user who
+    had already opted out before that upgrade could therefore retain a
+    stale visible fallback until they happened to toggle the setting
+    again. Rather than mutating an already-shipped migration, the node's
+    existing bounded startup reconciliation pass repairs those legacy
+    rows before listeners start. The table is capped at 500 rows, so the
+    idempotent scan is deliberately tiny and bounded.
+
+    Deleted-account rows (`user_id IS NULL`) are never touched: their
+    fallback is already the permanent historical privacy decision left
+    behind at deletion time, and there is no live preference left to
+    reconcile against.
+    """
+    db.connection.execute(
+        """
+        UPDATE session_history
+        SET name_visible_fallback = CASE
+            WHEN EXISTS (
+                SELECT 1 FROM user_preferences
+                WHERE user_preferences.user_id = session_history.user_id
+                  AND user_preferences.key = ?
+                  AND user_preferences.value = '0'
+            ) THEN 0
+            ELSE 1
+        END
+        WHERE user_id IS NOT NULL
+        """,
+        (_NAME_VISIBLE_KEY,),
+    )
+
+
 def reconcile_interrupted_sessions(db: Database) -> int:
     """Issue #110: called once, at node startup (`netbbs.__main__.run`),
     *before* any listener can accept a new session -- the same "anything
@@ -152,9 +188,17 @@ def reconcile_interrupted_sessions(db: Database) -> int:
     original detection timestamp, and count/log it as newly reconciled
     again.
 
-    Returns the number of rows reconciled, purely for the caller's own
-    startup log line (same convention `purge_incoming_staging` returns
-    its own count for)."""
+    Issue #123 also uses this already-existing before-listeners startup
+    boundary to repair any pre-upgrade `name_visible_fallback` rows from
+    their still-live account preference. Both updates commit together,
+    so startup never exposes a half-reconciled history table.
+
+    Returns the number of *interrupted-session* rows reconciled, purely
+    for the caller's existing startup log line (same convention
+    `purge_incoming_staging` returns its own count for). Privacy-backfill
+    rows are intentionally not included in that unrelated count.
+    """
+    _backfill_name_visibility_fallbacks(db)
     cursor = db.connection.execute(
         "UPDATE session_history SET interrupted_at = ? "
         "WHERE disconnected_at IS NULL AND interrupted_at IS NULL",
@@ -175,19 +219,30 @@ def session_history_name_visible(db: Database, user: User) -> bool:
 
 
 def set_session_history_name_visible(db: Database, user: User, visible: bool) -> None:
-    """Issue #111: also updates `name_visible_fallback` across every one
-    of `user`'s existing `session_history` rows, not only the preference
-    itself. While the account exists this has no visible effect on its
-    own (`_session_history_display_name` re-checks the live preference,
-    never this column, for an existing account) -- it exists purely so
-    that if this account is deleted at any point afterward, the fallback
-    every one of its rows falls back to is the value that was actually
-    in effect right up until deletion, matching what an ordinary caller
-    was already seeing, rather than reverting to whatever was true back
-    when each row happened to first connect."""
-    set_user_preference(db, user, _NAME_VISIBLE_KEY, "1" if visible else "0")
-    db.connection.execute(
-        "UPDATE session_history SET name_visible_fallback = ? WHERE user_id = ?",
-        (int(visible), user.id),
-    )
-    db.connection.commit()
+    """Issue #111: update both the live preference and every historical
+    fallback for `user`.
+
+    While the account exists `_session_history_display_name` re-checks
+    the live preference, never the fallback. The fallback exists so that
+    deletion cannot make a previously hidden name visible again.
+
+    Issue #123: these two pieces of the same privacy decision are written
+    in one SQLite transaction. The generic `set_user_preference()` helper
+    commits internally, so using it here created a crash window where the
+    opt-out could be durable but the historical fallback still visible.
+    This typed wrapper intentionally performs the same small UPSERT itself
+    and commits only after the history rows have been synchronized too.
+    """
+    value = "1" if visible else "0"
+    with db.connection:
+        db.connection.execute(
+            """
+            INSERT INTO user_preferences (user_id, key, value) VALUES (?, ?, ?)
+            ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value
+            """,
+            (user.id, _NAME_VISIBLE_KEY, value),
+        )
+        db.connection.execute(
+            "UPDATE session_history SET name_visible_fallback = ? WHERE user_id = ?",
+            (int(visible), user.id),
+        )
