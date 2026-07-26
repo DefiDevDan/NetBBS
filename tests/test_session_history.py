@@ -9,6 +9,7 @@ from netbbs.auth.users import create_user, delete_user
 from netbbs.session_history import (
     _MAX_SESSION_HISTORY_ROWS,
     list_recent_sessions,
+    reconcile_interrupted_sessions,
     record_session_end,
     record_session_start,
     session_history_name_visible,
@@ -87,6 +88,63 @@ def test_deleting_the_account_sets_user_id_null_but_keeps_the_row_and_label(db, 
     assert len(entries) == 1
     assert entries[0].user_id is None
     assert entries[0].username_label == "alice"  # denormalized -- survives the delete
+
+
+# -- reconcile_interrupted_sessions (issue #110) -------------------------
+
+
+def test_reconcile_marks_a_null_row_as_interrupted(db, alice):
+    """The core scenario: a row left NULL/NULL by a process that never
+    reached record_session_end at all (simulating a hard kill/crash, not
+    a call this test itself makes)."""
+    record_session_start(db, alice)
+    reconciled = reconcile_interrupted_sessions(db)
+    assert reconciled == 1
+
+    entry = list_recent_sessions(db)[0]
+    assert entry.disconnected_at is None  # never claim this was a real, clean disconnect moment
+    assert entry.interrupted_at is not None
+
+
+def test_reconcile_never_touches_a_cleanly_ended_session(db, alice):
+    """A row that already has disconnected_at set is a normal, cleanly-
+    ended session -- reconciliation must never touch it, let alone
+    overwrite the real recorded end time."""
+    history_id = record_session_start(db, alice)
+    record_session_end(db, history_id)
+    entry_before = list_recent_sessions(db)[0]
+
+    reconciled = reconcile_interrupted_sessions(db)
+
+    assert reconciled == 0
+    entry_after = list_recent_sessions(db)[0]
+    assert entry_after.disconnected_at == entry_before.disconnected_at
+    assert entry_after.interrupted_at is None
+
+
+def test_reconcile_is_a_no_op_when_nothing_is_open(db):
+    assert reconcile_interrupted_sessions(db) == 0
+
+
+def test_reconcile_only_marks_rows_still_open_at_call_time(db, alice):
+    """A session genuinely still open in the *current* process at the
+    moment reconciliation runs must not be marked interrupted --
+    `netbbs.__main__.run()`'s own placement (before any listener accepts
+    a new session) is what actually guarantees this in production; this
+    test proves reconcile_interrupted_sessions itself only ever acts on
+    rows that are NULL *right now*, regardless of when they were
+    created, which is the property that placement relies on."""
+    still_open_id = record_session_start(db, alice)
+    already_ended_id = record_session_start(db, alice)
+    record_session_end(db, already_ended_id)
+
+    reconciled = reconcile_interrupted_sessions(db)
+
+    assert reconciled == 1
+    entries = {e.id: e for e in list_recent_sessions(db)}
+    assert entries[still_open_id].interrupted_at is not None
+    assert entries[already_ended_id].interrupted_at is None
+    assert entries[already_ended_id].disconnected_at is not None
 
 
 # -- session_history_name_visible --------------------------------------

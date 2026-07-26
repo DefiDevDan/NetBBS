@@ -15,6 +15,7 @@ from netbbs.chat import ChatHub, MessageMailbox, PresenceRegistry
 from netbbs.net.char_input import InputHistory
 from netbbs.net.login_flow import _main_menu
 from netbbs.session_history import (
+    reconcile_interrupted_sessions,
     record_session_start,
     session_history_name_visible,
     set_session_history_name_visible,
@@ -93,6 +94,29 @@ def test_history_screen_shows_still_connected_for_an_open_session(tmp_path):
     asyncio.run(_run_main_menu(session, database, alice))
 
     assert "still connected" in _written_text(session)
+    database.close()
+
+
+def test_history_screen_shows_connection_lost_after_startup_reconciliation(tmp_path):
+    """Issue #110's own acceptance criterion: a row left open by a
+    process that never reached record_session_end (simulated here by a
+    bare record_session_start with no matching end call, then reconciled
+    exactly the way netbbs.__main__.run() does at its own startup) must
+    never be shown as "still connected" -- it cannot possibly still be,
+    across a restart -- but also must not be silently folded into a
+    normal clean disconnect."""
+    database = db_(tmp_path)
+    alice = create_user(database, "alice", password="hunter2", user_level=10)
+    bob = create_user(database, "bob", password="hunter2", user_level=10)
+    record_session_start(database, bob)  # never ended -- simulates a crash/kill
+    reconcile_interrupted_sessions(database)  # what a real restart would run
+
+    session = FakeSession(["h", "l", "y"])
+    asyncio.run(_run_main_menu(session, database, alice))
+
+    text = _written_text(session)
+    assert "still connected" not in text
+    assert "connection lost" in text
     database.close()
 
 

@@ -2203,3 +2203,32 @@ call sites must still never be pointed at the shared helper. A future
 negotiation addition to `negotiate_initial_options` therefore only
 requires updating `_FULL_NEGOTIATION_LEN` in one file; no more grepping
 every integration test file for its own magic number.
+
+**A persisted table using "NULL means still live" as its own liveness
+convention must be reconciled at startup, before any listener can
+create a new ambiguous row (issue #110, `netbbs.session_history`).**
+`session_history.disconnected_at` starts NULL at login and is only ever
+filled in by `record_session_end`, called from `run_authenticated_
+session`'s own `finally:` block. That block never runs across a hard
+kill, power loss, or crash -- exactly the same "a previous process
+instance was interrupted mid-something" gap issue #34 already named for
+`.incoming` upload staging files (`netbbs.files.storage.
+purge_incoming_staging`). The fix follows that exact precedent:
+`netbbs.session_history.reconcile_interrupted_sessions`, called from
+`netbbs.__main__.run()` immediately after `purge_incoming_staging`,
+before any listener starts -- at that exact point, every remaining
+`disconnected_at IS NULL` row is guaranteed to belong to some earlier
+process instance, since this one hasn't accepted a connection yet. A
+dedicated `interrupted_at` column (added via a new migration, not
+by reusing `disconnected_at`) records when reconciliation ran, so the
+caller-facing display can distinguish "ended cleanly at this real
+timestamp," "still genuinely connected in this process," and
+"connection was lost, detected at startup" -- collapsing the third case
+into either of the first two would either fabricate a fake disconnect
+time or keep claiming a session is live that cannot possibly be. Any
+future feature with a similar "row created now, finalized later, only
+reliably finalized while the same process survives" shape should reach
+for the identical two-part fix: a schema field distinguishing "ended
+normally" from "process never got the chance," plus a startup
+reconciliation pass that runs strictly before new instances of that same
+row shape can be created.

@@ -2645,6 +2645,17 @@ async def _last_sessions_screen(session: Session, db: Database, user: User) -> N
     name still appears -- the session itself is never hidden, only the
     name, same "still listed, not suppressed" shape issue #99's opt-out
     already established.
+
+    Issue #110: `interrupted_at` (reconciled once at startup, before any
+    listener could accept a new session -- see `netbbs.session_history.
+    reconcile_interrupted_sessions`'s own docstring) means a row can be
+    NULL/NULL and *not* still connected: this process crashed, was
+    killed, or lost power before it ever reached `record_session_end`.
+    Shown as its own distinct third state, never folded into "still
+    connected" (which cannot possibly still be true across a restart) or
+    silently written as if `interrupted_at` were the real disconnect
+    moment (it's only ever "whenever this node next started up," which
+    could be long after the connection actually dropped).
     """
     entries = list_recent_sessions(db, limit=_SESSION_HISTORY_DISPLAY_LIMIT)
     await session.write_line(colored("\r\nLast sessions:", fg_color=HEADER_COLOR, bold=True))
@@ -2656,10 +2667,12 @@ async def _last_sessions_screen(session: Session, db: Database, user: User) -> N
     for entry in entries:
         name = _session_history_display_name(db, entry, viewer_is_sysop=viewer_is_sysop)
         connected = format_for_display(entry.connected_at, db)
-        if entry.disconnected_at is None:
-            status = "still connected"
-        else:
+        if entry.disconnected_at is not None:
             status = f"until {format_for_display(entry.disconnected_at, db)}"
+        elif entry.interrupted_at is not None:
+            status = "connection lost -- session did not end cleanly"
+        else:
+            status = "still connected"
         line = f"  {sanitize_text(name)} -- connected {connected}, {status}"
         await session.write_line(truncate(line, session.terminal_width))
 

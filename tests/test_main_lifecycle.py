@@ -591,6 +591,35 @@ def test_run_purges_stale_incoming_staging_files_before_accepting_sessions(tmp_p
     assert not stray.exists()
 
 
+def test_run_reconciles_interrupted_sessions_before_accepting_new_ones(tmp_path):
+    """Issue #110: a session_history row left open (disconnected_at
+    still NULL) by a previous, crashed/killed process instance must be
+    reconciled by the time run() actually starts accepting connections --
+    confirms the reconciliation wired into run() itself, not just
+    netbbs.session_history.reconcile_interrupted_sessions in isolation
+    (already covered in test_session_history.py), and mirrors
+    test_run_purges_stale_incoming_staging_files_before_accepting_
+    sessions above for the same class of "previous run" cleanup."""
+    from netbbs.auth.users import create_user
+    from netbbs.session_history import list_recent_sessions, record_session_start
+
+    config = _config(tmp_path)
+    setup_db = Database(config.db_path)
+    stray_user = create_user(setup_db, "alice", password="hunter2", user_level=10)
+    record_session_start(setup_db, stray_user)  # never ended -- simulates a crashed process
+    setup_db.close()
+
+    asyncio.run(_run_until_ready_then_shut_down(config))
+
+    check_db = Database(config.db_path)
+    try:
+        entry = list_recent_sessions(check_db)[0]
+        assert entry.disconnected_at is None  # never claim this was a real disconnect moment
+        assert entry.interrupted_at is not None
+    finally:
+        check_db.close()
+
+
 # -- graceful shutdown --------------------------------------------------------
 
 

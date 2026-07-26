@@ -42,6 +42,7 @@ class SessionHistoryEntry:
     username_label: str
     connected_at: str
     disconnected_at: str | None
+    interrupted_at: str | None
 
 
 def record_session_start(db: Database, user: User) -> int:
@@ -88,7 +89,7 @@ def record_session_end(db: Database, history_id: int) -> None:
 def list_recent_sessions(db: Database, *, limit: int = 20) -> list[SessionHistoryEntry]:
     """Most recent first."""
     rows = db.connection.execute(
-        "SELECT id, user_id, username_label, connected_at, disconnected_at "
+        "SELECT id, user_id, username_label, connected_at, disconnected_at, interrupted_at "
         "FROM session_history ORDER BY id DESC LIMIT ?",
         (limit,),
     ).fetchall()
@@ -96,9 +97,44 @@ def list_recent_sessions(db: Database, *, limit: int = 20) -> list[SessionHistor
         SessionHistoryEntry(
             id=row["id"], user_id=row["user_id"], username_label=row["username_label"],
             connected_at=row["connected_at"], disconnected_at=row["disconnected_at"],
+            interrupted_at=row["interrupted_at"],
         )
         for row in rows
     ]
+
+
+def reconcile_interrupted_sessions(db: Database) -> int:
+    """Issue #110: called once, at node startup (`netbbs.__main__.run`),
+    *before* any listener can accept a new session -- the same "anything
+    already there survived a previous run that was killed, crashed, or
+    lost power" placement issue #34's `netbbs.files.storage.
+    purge_incoming_staging` already established for stale upload staging
+    files.
+
+    Every row with `disconnected_at IS NULL` at this exact point was, by
+    construction, left open by a *previous* process instance: this
+    process's own listeners haven't started yet, so nothing here could
+    have called `record_session_start` this run. `record_session_end`
+    only ever fills `disconnected_at` from `run_authenticated_session`'s
+    own `finally:` block -- a hard kill, power loss, or crash skips that
+    entirely, leaving the row silently claiming "still connected" forever
+    (until it eventually ages out of the row-count cap). Marking
+    `interrupted_at` (never `disconnected_at` itself, which must keep
+    meaning "the actual moment the session cleanly ended" -- this is only
+    ever "the moment this reconciliation ran," typically well after the
+    connection actually dropped) is what lets `netbbs.net.login_flow.
+    _last_sessions_screen` show something honest instead of "still
+    connected" for a session that cannot possibly still exist.
+
+    Returns the number of rows reconciled, purely for the caller's own
+    startup log line (same convention `purge_incoming_staging` returns
+    its own count for)."""
+    cursor = db.connection.execute(
+        "UPDATE session_history SET interrupted_at = ? WHERE disconnected_at IS NULL",
+        (utc_now_iso(),),
+    )
+    db.connection.commit()
+    return cursor.rowcount
 
 
 def session_history_name_visible(db: Database, user: User) -> bool:

@@ -1979,4 +1979,26 @@ MIGRATIONS = [
         CREATE INDEX idx_session_history_connected_at ON session_history(connected_at);
         """,
     ),
+    Migration(
+        description=(
+            "Issue #110: session_history.interrupted_at, distinguishing a "
+            "session that ended cleanly (disconnected_at set, exactly as "
+            "issue #100 already recorded it) from one still NULL only "
+            "because the process that owned it never reached its own "
+            "run_authenticated_session finally: block at all -- a hard "
+            "kill, power loss, or crash, the same class of gap issue #34 "
+            "already named for stale upload-staging files. Every pre-"
+            "existing NULL disconnected_at row predates this column and is "
+            "therefore, by construction, left over from some earlier "
+            "process instance -- netbbs.__main__.run() reconciles exactly "
+            "those (interrupted_at set to this startup's time, "
+            "disconnected_at deliberately left NULL so it's never confused "
+            "with a real recorded disconnect moment) once, at startup, "
+            "before any listener can accept a new session and create a "
+            "genuinely live NULL/NULL row of its own."
+        ),
+        sql="""
+        ALTER TABLE session_history ADD COLUMN interrupted_at TEXT;
+        """,
+    ),
 ]

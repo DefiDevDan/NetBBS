@@ -24,6 +24,7 @@ from netbbs.auth.users import count_sysops
 from netbbs.backup import remove_pid_file, write_pid_file
 from netbbs.chat import ChatHub, MessageMailbox, PresenceRegistry
 from netbbs.files.storage import purge_incoming_staging
+from netbbs.session_history import reconcile_interrupted_sessions
 from netbbs.link.boards import LinkConfigSnapshot, LinkContext
 from netbbs.link.diagnostics import LINK_LOGGER_NAME, LinkDiagnosticLogHandler
 from netbbs.link.node_identity import NodeIdentityError, load_or_bootstrap_node_identity
@@ -407,6 +408,17 @@ async def run(
     purged = purge_incoming_staging(db)
     if purged:
         _logger.info("removed %d stale upload staging file(s) from a previous run", purged)
+
+    # Issue #110: the same "previous run" reasoning as purge_incoming_
+    # staging above, applied to session_history -- any row still
+    # claiming disconnected_at IS NULL at this exact point (before any
+    # listener can accept a new session) was left open by a hard kill,
+    # power loss, or crash, not a genuinely live session. See
+    # netbbs.session_history.reconcile_interrupted_sessions's own
+    # docstring for why this must run here, not later.
+    reconciled = reconcile_interrupted_sessions(db)
+    if reconciled:
+        _logger.info("marked %d interrupted session(s) from a previous run", reconciled)
 
     hub = ChatHub()
     presence = PresenceRegistry()
