@@ -2632,6 +2632,30 @@ never the ordinary "schedule a new one" prompts. A SysOp-created shutdown
 remains fully cancellable/replaceable exactly as this subsection
 originally described.
 
+**`[L]ock & drain` ownership (issue #109).** `[M]aintenance mode` and
+`[D]rain` are deliberately separate, composable primitives; `[L]ock &
+drain` (added after this subsection originally shipped) just composes
+them for the common case a SysOp wants both together. Its own screen
+(`netbbs.net.admin_flow._lock_and_drain_screen`) must not infer whether
+*it* is active from `maintenance.is_lockdown_active()` alone — that bit
+is shared with the plain `[M]` toggle, so a lockdown enabled
+independently would otherwise be misreported as "Lock & drain already
+active," refusing to start the requested drain at all (the concrete
+dogfood-adjacent bug this closes). `MaintenanceMode.enable_lockdown()`
+therefore also records `source` (`"maintenance"` for the plain toggle,
+`"lock_and_drain"` for the composite command — the same provenance
+concept as the scheduler's own `source` above, reused rather than
+inventing a parallel mechanism, exactly as the issue asked), and the
+composite's own drain is tagged `source="lock_and_drain"` on
+`drain_scheduler` too. The screen only ever reports itself "active," or
+offers to undo anything, when it actually owns the lock
+(`lockdown_source() == "lock_and_drain"`) — and even then only cancels
+the drain half if it owns that too, never a drain some other, later,
+independent action scheduled while its own lock was still up. Lockdown
+already on for an unrelated reason is left completely untouched; the
+composite command only ever adds a drain on top of it, never reclaims
+or later disables it.
+
 This one piece of state is what makes the remaining four gaps closable as
 straightforward reads/writes against it, not four separate mechanisms:
 

@@ -40,6 +40,20 @@ The explicit SysOp cancel path remains valid because it first requests
 cancellation of the owning shutdown task and then calls `deactivate()`
 from the admin-session task -- an external caller may release the gate
 once its owner is already cancelling.
+
+Issue #109 adds the analogous ownership concept to *lockdown*, not just
+the hard shutdown gate: `enable_lockdown()` now records who turned it on
+(`source`, e.g. `"maintenance"` for the plain `[M]aintenance mode`
+toggle, `"lock_and_drain"` for the composite `[L]ock & drain` command).
+Unlike the shutdown gate's task-based ownership, this is a plain string
+tag -- lockdown is only ever toggled by discrete, synchronous SysOp
+actions, never something a background task itself later reverses on its
+own cancellation, so there is no analogous race to guard against here.
+The tag exists purely so `netbbs.net.admin_flow._lock_and_drain_screen`
+can tell "lockdown is on because *I* (the composite command) turned it
+on" from "lockdown is on for some other, independent reason" -- and
+therefore never silently claims ownership of (or offers to undo) state
+it didn't create.
 """
 
 from __future__ import annotations
@@ -92,6 +106,7 @@ class MaintenanceMode:
         self._active = False
         self._active_owner_task: asyncio.Task | None = None
         self._lockdown = False
+        self._lockdown_source: str | None = None
 
     def activate(self) -> None:
         self._active = True
@@ -120,11 +135,21 @@ class MaintenanceMode:
     def is_active(self) -> bool:
         return self._active
 
-    def enable_lockdown(self) -> None:
+    def enable_lockdown(self, *, source: str = "maintenance") -> None:
         self._lockdown = True
+        self._lockdown_source = source
 
     def disable_lockdown(self) -> None:
         self._lockdown = False
+        self._lockdown_source = None
 
     def is_lockdown_active(self) -> bool:
         return self._lockdown
+
+    def lockdown_source(self) -> str | None:
+        """Who turned lockdown on (issue #109) -- `None` if it's not
+        currently active at all. Lets a caller like `_lock_and_drain_
+        screen` distinguish lockdown it itself established from lockdown
+        active for some other, independent reason, without needing a
+        second boolean of its own."""
+        return self._lockdown_source if self._lockdown else None

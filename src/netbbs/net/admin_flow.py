@@ -2036,15 +2036,36 @@ async def _lock_and_drain_screen(session: Session, lane: DatabaseLane, actor: Us
     clear out whoever's already connected, in one action. This composes
     the two existing primitives; it adds no new mechanism of its own.
 
-    Keyed off `maintenance.is_lockdown_active()`, not
-    `drain_scheduler.is_scheduled()`: a second press always means "turn
-    this off", whether or not the drain countdown happens to still be
-    running -- `drain_scheduler.cancel()` is a safe no-op (via its own
-    documented `bool` return) once the drain has already finished on its
-    own, so there's no need to branch on that separately.
+    **Issue #109: ownership, not just current state, decides what this
+    screen reports and what a second press may undo.** The original
+    version keyed everything off `maintenance.is_lockdown_active()`
+    alone -- so a SysOp who'd already turned on plain `[M]aintenance
+    mode` independently, then pressed `[L]ock & drain` intending to
+    clear current non-SysOps, was told the composite was "already
+    active" and got no drain at all; a second press could also silently
+    claim ownership of (and later disable) lockdown/drain state this
+    command never created. `lockdown_owned`/`drain_owned` below check
+    not just whether each half is active, but whether *this* command is
+    the one that put it there (`MaintenanceMode.lockdown_source()`,
+    `SequenceScheduler.source()` -- both `"lock_and_drain"` only when set
+    by this function). A known, accepted narrow gap: if this command's
+    own lockdown stays on after its own drain finishes, and a *different*,
+    independent drain then gets scheduled by plain `[D]rain` while that
+    lockdown is still up, this screen's status line won't mention that
+    unrelated drain -- composing arbitrary interleavings of every
+    independent command was never this issue's own scope.
     """
-    if node_controls.maintenance.is_lockdown_active():
-        if node_controls.drain_scheduler.is_scheduled():
+    lockdown_owned = (
+        node_controls.maintenance.is_lockdown_active()
+        and node_controls.maintenance.lockdown_source() == "lock_and_drain"
+    )
+    drain_owned = (
+        node_controls.drain_scheduler.is_scheduled()
+        and node_controls.drain_scheduler.source() == "lock_and_drain"
+    )
+
+    if lockdown_owned:
+        if drain_owned:
             remaining = node_controls.drain_scheduler.remaining_seconds()
             status = f"non-SysOps will be disconnected in {format_remaining_seconds(remaining)}"
         else:
@@ -2053,7 +2074,8 @@ async def _lock_and_drain_screen(session: Session, lane: DatabaseLane, actor: Us
             colored(f"\r\nLock & drain is active -- {status}.", fg_color=ALERT_COLOR, bold=True)
         )
         if await prompt_yes_no(session, "Unlock and cancel the drain (if still running)?", default=False):
-            node_controls.drain_scheduler.cancel()
+            if drain_owned:
+                node_controls.drain_scheduler.cancel()
             node_controls.maintenance.disable_lockdown()
             await lane.run(record_action, actor=actor, action="cancel_lock_and_drain")
             _logger.info("lock & drain cancelled by %s", actor.username)
@@ -2061,6 +2083,19 @@ async def _lock_and_drain_screen(session: Session, lane: DatabaseLane, actor: Us
             return
         await session.write_line(colored("Leaving lock & drain active.", fg_color=MUTED_COLOR))
         return
+
+    # Lockdown may still be on here -- just not because this command put
+    # it there. Never silently claim, re-tag, or later offer to undo
+    # state this command didn't create; only add the drain on top.
+    lockdown_already_independent = node_controls.maintenance.is_lockdown_active()
+    if lockdown_already_independent:
+        await session.write_line(
+            colored(
+                "\r\nMaintenance mode is already on (enabled independently of lock & drain) "
+                "-- this will only add a drain, leaving the existing lock untouched.",
+                fg_color=MUTED_COLOR,
+            )
+        )
 
     if node_controls.drain_scheduler.is_scheduled():
         remaining = node_controls.drain_scheduler.remaining_seconds()
@@ -2113,21 +2148,33 @@ async def _lock_and_drain_screen(session: Session, lane: DatabaseLane, actor: Us
 
     await lane.run(
         record_action, actor=actor, action="trigger_lock_and_drain",
-        detail=f"delay_seconds={delay_seconds}, message={message!r}",
+        detail=(
+            f"delay_seconds={delay_seconds}, message={message!r}, "
+            f"lockdown_pre_existing={lockdown_already_independent}"
+        ),
     )
     _logger.info("lock & drain triggered by %s (delay_seconds=%s)", actor.username, delay_seconds)
-    node_controls.maintenance.enable_lockdown()
+    if not lockdown_already_independent:
+        node_controls.maintenance.enable_lockdown(source="lock_and_drain")
     task = asyncio.create_task(
         run_drain_sequence(
             session_registry=node_controls.session_registry, delay_seconds=delay_seconds, message=message,
         )
     )
     loop = asyncio.get_running_loop()
-    node_controls.drain_scheduler.schedule(task, deadline=loop.time() + delay_seconds, message=message)
-    await session.write_line(
-        f"Locked -- new non-SysOp logins are blocked, and non-SysOp sessions will be "
-        f"disconnected in {int(delay_seconds)}s."
+    node_controls.drain_scheduler.schedule(
+        task, deadline=loop.time() + delay_seconds, message=message, source="lock_and_drain"
     )
+    if lockdown_already_independent:
+        await session.write_line(
+            f"Drain started -- non-SysOp sessions will be disconnected in {int(delay_seconds)}s. "
+            "The existing maintenance lock (enabled independently) was left as-is."
+        )
+    else:
+        await session.write_line(
+            f"Locked -- new non-SysOp logins are blocked, and non-SysOp sessions will be "
+            f"disconnected in {int(delay_seconds)}s."
+        )
 
 
 # -- welcome banner (design doc -- part one of a three-part skinning

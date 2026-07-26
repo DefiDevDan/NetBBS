@@ -1243,10 +1243,12 @@ def test_lock_and_drain_screen_offers_to_cancel_a_bare_already_scheduled_drain(d
 def test_lock_and_drain_screen_cancels_lockdown_and_drain_while_still_counting(db, lane, sysop):
     async def scenario():
         node_controls = _node_controls()
-        node_controls.maintenance.enable_lockdown()
+        node_controls.maintenance.enable_lockdown(source="lock_and_drain")
         loop = asyncio.get_running_loop()
         drain_task = asyncio.create_task(asyncio.Event().wait())
-        node_controls.drain_scheduler.schedule(drain_task, deadline=loop.time() + 60.0, message=None)
+        node_controls.drain_scheduler.schedule(
+            drain_task, deadline=loop.time() + 60.0, message=None, source="lock_and_drain"
+        )
 
         session = FakeSession(["s", "n", "l", "y", "b", "b", "b"])
         await admin_menu(session, lane, sysop, node_controls=node_controls)
@@ -1261,12 +1263,14 @@ def test_lock_and_drain_screen_cancels_lockdown_and_drain_while_still_counting(d
 
 
 def test_lock_and_drain_screen_cancel_after_drain_already_finished(db, lane, sysop):
-    """Keyed off `maintenance.is_lockdown_active()`, not
-    `drain_scheduler.is_scheduled()` -- a second press still offers to
-    unlock even once the drain itself has already finished on its own,
-    per the approved toggle design."""
+    """Issue #109's own acceptance criterion: once *this composite
+    command's own* lockdown is on (`lockdown_source() ==
+    "lock_and_drain"`), a second press still offers to unlock even once
+    the drain itself has already finished on its own (no entry left in
+    `drain_scheduler` at all here) -- ownership of the lock, not the
+    drain's own liveness, is what keeps this "active"."""
     node_controls = _node_controls()
-    node_controls.maintenance.enable_lockdown()
+    node_controls.maintenance.enable_lockdown(source="lock_and_drain")
     session = FakeSession(["s", "n", "l", "y", "b", "b", "b"])
     asyncio.run(admin_menu(session, lane, sysop, node_controls=node_controls))
 
@@ -1279,10 +1283,12 @@ def test_lock_and_drain_screen_cancel_after_drain_already_finished(db, lane, sys
 def test_lock_and_drain_screen_declining_cancel_leaves_it_active(db, lane, sysop):
     async def scenario():
         node_controls = _node_controls()
-        node_controls.maintenance.enable_lockdown()
+        node_controls.maintenance.enable_lockdown(source="lock_and_drain")
         loop = asyncio.get_running_loop()
         drain_task = asyncio.create_task(asyncio.Event().wait())
-        node_controls.drain_scheduler.schedule(drain_task, deadline=loop.time() + 60.0, message=None)
+        node_controls.drain_scheduler.schedule(
+            drain_task, deadline=loop.time() + 60.0, message=None, source="lock_and_drain"
+        )
 
         session = FakeSession(["s", "n", "l", "n", "b", "b", "b"])
         await admin_menu(session, lane, sysop, node_controls=node_controls)
@@ -1294,6 +1300,72 @@ def test_lock_and_drain_screen_declining_cancel_leaves_it_active(db, lane, sysop
 
         drain_task.cancel()
         await asyncio.gather(drain_task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_lock_and_drain_screen_still_starts_a_drain_when_maintenance_was_enabled_independently(db, lane, sysop):
+    """Issue #109's own concrete bug report: a SysOp enables plain
+    `[M]aintenance mode` first, then presses `[L]ock & drain` intending
+    to clear current non-SysOps. The old, `is_lockdown_active()`-only
+    check reported the composite as "already active" and started no
+    drain at all. It must now recognize this lockdown wasn't its own and
+    still start the requested drain."""
+    async def scenario():
+        node_controls = _node_controls()
+        node_controls.maintenance.enable_lockdown()  # plain [M], default source="maintenance"
+
+        session = FakeSession(["s", "n", "l", "0", "", "y", "b", "b", "b"])
+        await admin_menu(session, lane, sysop, node_controls=node_controls)
+
+        text = _written_text(session)
+        assert "already on (enabled independently" in text
+        assert "Drain started" in text
+        assert "left as-is" in text
+        assert "Lock & drain is active" not in text
+        assert "Locked --" not in text
+
+        # The drain was genuinely started and tagged as this command's
+        # own, but the pre-existing lock was never reclaimed.
+        assert node_controls.drain_scheduler.is_scheduled() is True
+        assert node_controls.drain_scheduler.source() == "lock_and_drain"
+        assert node_controls.maintenance.is_lockdown_active() is True
+        assert node_controls.maintenance.lockdown_source() == "maintenance"
+
+    asyncio.run(scenario())
+
+
+def test_lock_and_drain_screen_never_disables_maintenance_that_predates_it(db, lane, sysop):
+    """Issue #109's own acceptance criterion, made explicit: once a
+    drain has been added on top of independently-enabled maintenance
+    (the scenario above), a later visit to this screen must not report
+    itself as "active" (it still doesn't own the lock) and must never
+    offer -- let alone perform -- disabling that pre-existing lock."""
+    async def scenario():
+        node_controls = _node_controls()
+        node_controls.maintenance.enable_lockdown()  # plain [M], pre-dates lock & drain
+        loop = asyncio.get_running_loop()
+        drain_task = asyncio.create_task(asyncio.Event().wait())
+        node_controls.drain_scheduler.schedule(
+            drain_task, deadline=loop.time() + 60.0, message=None, source="lock_and_drain"
+        )
+
+        # Revisiting the screen: not "Lock & drain is active" (it never
+        # owned the lock), but the ordinary "a drain is already
+        # scheduled -- cancel it?" sub-flow, answered yes.
+        session = FakeSession(["s", "n", "l", "y", "b", "b", "b"])
+        await admin_menu(session, lane, sysop, node_controls=node_controls)
+
+        text = _written_text(session)
+        assert "Lock & drain is active" not in text
+        assert "Scheduled drain cancelled." in text
+
+        # The drain this command owned is gone; the independently-
+        # enabled lock it never owned is completely untouched.
+        assert node_controls.drain_scheduler.is_scheduled() is False
+        assert drain_task.cancelled()
+        assert node_controls.maintenance.is_lockdown_active() is True
+        assert node_controls.maintenance.lockdown_source() == "maintenance"
 
     asyncio.run(scenario())
 
