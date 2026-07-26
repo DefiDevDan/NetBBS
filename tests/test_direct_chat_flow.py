@@ -28,7 +28,7 @@ from netbbs.auth.users import create_user
 from netbbs.chat import ChatHub, DirectChatInvites, MessageMailbox, PresenceRegistry
 from netbbs.chat.channels import create_channel
 from netbbs.net import chat_flow, login_flow
-from netbbs.net.char_input import InputHistory
+from netbbs.net.char_input import EditorKey, EditorKeyKind, InputHistory
 from netbbs.net.maintenance import MaintenanceMode
 from netbbs.net.session import Session
 from netbbs.net.session_registry import ActiveSessionRegistry
@@ -78,8 +78,11 @@ class FakeSession(Session):
     async def write_raw(self, data: bytes) -> None:
         raise NotImplementedError
 
-    async def read_editor_key(self):
-        raise NotImplementedError
+    async def read_editor_key(self) -> EditorKey:
+        key = await self._keys.get()
+        if key in ("\r", "\n"):
+            return EditorKey(EditorKeyKind.ENTER)
+        return EditorKey(EditorKeyKind.CHAR, char=key)
 
 
 def _written_text(session: FakeSession) -> str:

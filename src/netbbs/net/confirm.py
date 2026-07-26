@@ -1,26 +1,52 @@
-"""
-`prompt_yes_no` — a yes/no confirmation that actually honors the shown
-default when the user just presses Enter.
-
-Every `[y/N]`/`[Y/n]`-style prompt in the codebase used to read via
-`session.read_key()`, which by design discards CR/LF entirely (see
-`netbbs.net.char_input.read_key`'s own docstring: it's built for
-genuine single-letter menus, where Enter has no meaning to discard in
-the first place). That made every one of those prompts' displayed
-default unreachable -- pressing Enter did nothing, silently waiting for
-an actual `y`/`n` keystroke, no matter what the prompt claimed. Found
-across 38 call sites in four files; fixed once, here, rather than
-per-site, since it was the same bug repeated rather than 38 independent
-ones.
-
-`read_line()` is what makes a real default possible: unlike
-`read_key()`, it returns an empty string for a bare Enter rather than
-swallowing it.
-"""
+"""Shared single-key yes/no confirmations with truthful Enter defaults."""
 
 from __future__ import annotations
 
+from netbbs.net.char_input import EditorKeyKind
 from netbbs.net.session import Session
+
+
+async def read_confirmation_choice(session: Session) -> bool | None:
+    """Read one valid confirmation choice.
+
+    Returns ``True`` for Y, ``False`` for N, and ``None`` for Enter.  The
+    structured editor-key stream is deliberately reused here because it is
+    the narrow transport-neutral input primitive which preserves Enter;
+    generic menu ``read_key()`` must continue discarding CR/LF.  Accepted
+    letters are echoed and every accepted choice ends the input row.  Any
+    other key rings the terminal bell and leaves the prompt active.
+    """
+    read_editor_key = getattr(session, "read_editor_key", None)
+    while True:
+        if read_editor_key is None:
+            # Compatibility for lightweight Session adapters which predate
+            # structured-key input (including a number of narrow test
+            # doubles). Every shipped interactive transport implements
+            # read_editor_key and therefore never takes this line-oriented
+            # fallback; the real Telnet/SSH/web behavior is verified at the
+            # wire boundary. Keeping the fallback prevents this UI helper
+            # from making otherwise-valid non-interactive adapters unusable.
+            while True:
+                answer = (await session.read_line()).strip().lower()
+                if answer == "":
+                    return None
+                if answer in ("y", "n"):
+                    return answer == "y"
+                await session.write("\a")
+        try:
+            key = await read_editor_key()
+        except NotImplementedError:
+            read_editor_key = None
+            continue
+        if key.kind is EditorKeyKind.ENTER:
+            await session.write("\r\n")
+            return None
+        if key.kind is EditorKeyKind.CHAR and key.char is not None:
+            answer = key.char.lower()
+            if answer in ("y", "n"):
+                await session.write(f"{key.char}\r\n")
+                return answer == "y"
+        await session.write("\a")
 
 
 async def prompt_yes_no(session: Session, prompt: str, *, default: bool) -> bool:
@@ -30,19 +56,14 @@ async def prompt_yes_no(session: Session, prompt: str, *, default: bool) -> bool
     prompt's own convention -- computed here so the hint can never
     drift out of sync with the actual `default` a caller passes).
 
-    A bare Enter (`read_line()`'s own empty-string result), or anything
-    that isn't recognizably `y`/`yes`/`n`/`no`, returns `default` --
-    lenient on purpose, so a mistyped answer doesn't strand the user on
-    a prompt that looks like a menu but requires an exact keyword.
+    Y/N returns immediately on that single keypress. A bare Enter selects
+    ``default``. Invalid keys are rejected and the prompt remains active;
+    they can never silently choose the default.
     """
     hint = "Y/n" if default else "y/N"
     await session.write(f"{prompt} [{hint}]: ")
-    answer = (await session.read_line()).strip().lower()
-    if answer in ("y", "yes"):
-        return True
-    if answer in ("n", "no"):
-        return False
-    return default
+    answer = await read_confirmation_choice(session)
+    return default if answer is None else answer
 
 
 async def prompt_yes_no_or_keep(session: Session, prompt: str, *, current: bool) -> bool:
@@ -52,15 +73,10 @@ async def prompt_yes_no_or_keep(session: Session, prompt: str, *, current: bool)
     Enter keeps it unchanged rather than selecting a fixed default --
     the same "blank = keep" convention `_prompt_optional_int`/
     `_prompt_min_age`/`_prompt_name_requirement` already use for
-    non-boolean fields on the very same edit screens. Same underlying
-    fix as `prompt_yes_no`: `read_line()` actually returns on a bare
-    Enter, unlike `read_key()`, which silently discards it.
+    non-boolean fields on the very same edit screens. Y/N returns on one
+    keypress; Enter keeps the current value.
     """
     hint = "y" if current else "N"
     await session.write(f"{prompt} [{hint}]: ")
-    answer = (await session.read_line()).strip().lower()
-    if answer == "y":
-        return True
-    if answer == "n":
-        return False
-    return current
+    answer = await read_confirmation_choice(session)
+    return current if answer is None else answer

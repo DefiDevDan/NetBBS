@@ -872,13 +872,13 @@ unchanged"; cancellation of the overall composition remains a review action.
 
 ### Confirmation and visual interaction primitives
 
-`prompt_yes_no` moved from `read_key()` to `read_line()` because generic
-`read_key()` deliberately swallows CR/LF; otherwise a displayed `[y/N]` or
-`[Y/n]` default cannot be selected with Enter. The reason remains valid, but it
-is not a reason for line-based confirmation UX. Implement single-key
-confirmation through a narrow primitive which returns `Y`, `N`, or Enter;
-never weaken generic menu `read_key()` semantics. Invalid confirmation keys
-must not silently choose the default.
+`read_key()` deliberately swallows CR/LF and must keep doing so for ordinary
+menu hotkeys. Standard yes/no prompts therefore read the already-shared
+structured editor-key vocabulary instead: it preserves Enter on Telnet, SSH,
+web, and local CLI without adding a second transport decoder. The confirmation
+primitive owns accepted-key echo and the terminating CRLF because editor keys
+are intentionally unechoed; invalid keys bell and retry. Keep typed-name
+destructive confirmations separate and stronger.
 
 Current `main` already field-colors every ordinary `pick_item` row, so caller
 and SysOp Who screens share selector/reference/name/metadata roles by

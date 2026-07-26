@@ -21,6 +21,7 @@ import pytest
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from netbbs.auth.users import create_user
+from netbbs.net.confirm import prompt_yes_no
 from netbbs.net.session import Session, SessionClosedError
 from netbbs.net.ssh import SSHServer
 from netbbs.net.throttle import LoginThrottle
@@ -88,6 +89,33 @@ def test_password_auth_succeeds_with_correct_credentials(db):
 
     asyncio.run(scenario())
     assert calls == ["in"]
+
+
+def test_single_key_confirmation_uses_enter_default_and_ends_its_row(db):
+    create_user(db, "alice", password="hunter2", user_level=10)
+    results = []
+
+    async def handler(session: Session):
+        results.append(await prompt_yes_no(session, "Confirm?", default=True))
+        await session.write_line("NEXT")
+
+    async def scenario():
+        server = await _run_server(db, handler)
+        try:
+            async with asyncssh.connect(
+                "127.0.0.1", server.port, username="alice", password="hunter2", known_hosts=None
+            ) as conn:
+                async with conn.create_process(term_type="ansi", term_size=(80, 24), encoding=None) as proc:
+                    prompt = await _read_until(proc.stdout, ": ")
+                    proc.stdin.write(b"\r")
+                    remainder = await _read_until(proc.stdout, "NEXT\r\n")
+                    return prompt + remainder
+        finally:
+            await server.stop()
+
+    output = asyncio.run(scenario())
+    assert results == [True]
+    assert output.endswith("Confirm? [Y/n]: \r\nNEXT\r\n")
 
 
 def test_password_auth_honors_shared_login_throttle(db):

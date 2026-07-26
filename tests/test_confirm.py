@@ -1,18 +1,19 @@
-"""Tests for `netbbs.net.confirm.prompt_yes_no` — the shared yes/no
-prompt that actually honors a shown default on a bare Enter, fixing
-the `read_key()`-swallows-CR/LF defect 38 call sites previously had."""
+"""Tests for the shared single-key yes/no confirmation primitive."""
 
 from __future__ import annotations
 
 import asyncio
 
+import pytest
+
+from netbbs.net.char_input import EditorKey, EditorKeyKind
 from netbbs.net.confirm import prompt_yes_no, prompt_yes_no_or_keep
-from netbbs.net.session import Session
+from netbbs.net.session import Session, SessionClosedError
 
 
 class FakeSession(Session):
-    def __init__(self, lines: list[str]):
-        self._lines = list(lines)
+    def __init__(self, keys: list[EditorKey | BaseException]):
+        self._keys = list(keys)
         self.written: list[str] = []
         self.terminal_width = 80
         self.terminal_height = 24
@@ -22,13 +23,16 @@ class FakeSession(Session):
         self.written.append(text)
 
     async def read_line(self, echo: bool = True, history=None, completer=None) -> str:
-        return self._lines.pop(0)
+        raise AssertionError("single-key confirmation must not call read_line")
 
     async def read_key(self, echo: bool = True) -> str:
         raise NotImplementedError
 
-    async def read_editor_key(self):
-        raise NotImplementedError
+    async def read_editor_key(self) -> EditorKey:
+        item = self._keys.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
 
     async def close(self) -> None:
         pass
@@ -44,50 +48,53 @@ def _written_text(session: FakeSession) -> str:
     return "".join(session.written)
 
 
+def _char(value: str) -> EditorKey:
+    return EditorKey(EditorKeyKind.CHAR, char=value)
+
+
+_ENTER = EditorKey(EditorKeyKind.ENTER)
+
+
 def test_bare_enter_selects_the_default_true():
-    session = FakeSession([""])
+    session = FakeSession([_ENTER])
     result = asyncio.run(prompt_yes_no(session, "Confirm?", default=True))
     assert result is True
 
 
 def test_bare_enter_selects_the_default_false():
-    session = FakeSession([""])
+    session = FakeSession([_ENTER])
     result = asyncio.run(prompt_yes_no(session, "Confirm?", default=False))
     assert result is False
 
 
 def test_explicit_y_is_true_regardless_of_default():
-    session = FakeSession(["y"])
+    session = FakeSession([_char("y")])
     assert asyncio.run(prompt_yes_no(session, "Confirm?", default=False)) is True
 
 
 def test_explicit_n_is_false_regardless_of_default():
-    session = FakeSession(["n"])
+    session = FakeSession([_char("n")])
     assert asyncio.run(prompt_yes_no(session, "Confirm?", default=True)) is False
 
 
-def test_full_words_yes_and_no_are_accepted():
-    assert asyncio.run(prompt_yes_no(FakeSession(["yes"]), "Confirm?", default=False)) is True
-    assert asyncio.run(prompt_yes_no(FakeSession(["no"]), "Confirm?", default=True)) is False
-
-
 def test_case_insensitive():
-    assert asyncio.run(prompt_yes_no(FakeSession(["Y"]), "Confirm?", default=False)) is True
-    assert asyncio.run(prompt_yes_no(FakeSession(["N"]), "Confirm?", default=True)) is False
+    assert asyncio.run(prompt_yes_no(FakeSession([_char("Y")]), "Confirm?", default=False)) is True
+    assert asyncio.run(prompt_yes_no(FakeSession([_char("N")]), "Confirm?", default=True)) is False
 
 
-def test_garbage_input_falls_back_to_default():
-    session = FakeSession(["maybe"])
+def test_invalid_keys_bell_and_retry_without_selecting_default():
+    session = FakeSession([_char("x"), EditorKey(EditorKeyKind.LEFT), _char("n")])
     result = asyncio.run(prompt_yes_no(session, "Confirm?", default=True))
-    assert result is True
+    assert result is False
+    assert _written_text(session).count("\a") == 2
 
 
 def test_hint_reflects_the_default():
-    session = FakeSession([""])
+    session = FakeSession([_ENTER])
     asyncio.run(prompt_yes_no(session, "Confirm?", default=True))
     assert "[Y/n]" in _written_text(session)
 
-    session2 = FakeSession([""])
+    session2 = FakeSession([_ENTER])
     asyncio.run(prompt_yes_no(session2, "Confirm?", default=False))
     assert "[y/N]" in _written_text(session2)
 
@@ -96,35 +103,65 @@ def test_hint_reflects_the_default():
 
 
 def test_bare_enter_keeps_current_true():
-    session = FakeSession([""])
+    session = FakeSession([_ENTER])
     assert asyncio.run(prompt_yes_no_or_keep(session, "Pinned?", current=True)) is True
 
 
 def test_bare_enter_keeps_current_false():
-    session = FakeSession([""])
+    session = FakeSession([_ENTER])
     assert asyncio.run(prompt_yes_no_or_keep(session, "Pinned?", current=False)) is False
 
 
 def test_explicit_y_overrides_current_false():
-    session = FakeSession(["y"])
+    session = FakeSession([_char("y")])
     assert asyncio.run(prompt_yes_no_or_keep(session, "Pinned?", current=False)) is True
 
 
 def test_explicit_n_overrides_current_true():
-    session = FakeSession(["n"])
+    session = FakeSession([_char("n")])
     assert asyncio.run(prompt_yes_no_or_keep(session, "Pinned?", current=True)) is False
 
 
-def test_garbage_input_keeps_current():
-    session = FakeSession(["maybe"])
-    assert asyncio.run(prompt_yes_no_or_keep(session, "Pinned?", current=True)) is True
+def test_invalid_key_cannot_keep_current():
+    session = FakeSession([_char("x"), _char("n")])
+    assert asyncio.run(prompt_yes_no_or_keep(session, "Pinned?", current=True)) is False
+    assert "\a" in _written_text(session)
 
 
 def test_keep_hint_shows_only_the_current_value():
-    session = FakeSession([""])
+    session = FakeSession([_ENTER])
     asyncio.run(prompt_yes_no_or_keep(session, "Pinned?", current=True))
     assert "[y]" in _written_text(session)
 
-    session2 = FakeSession([""])
+    session2 = FakeSession([_ENTER])
     asyncio.run(prompt_yes_no_or_keep(session2, "Pinned?", current=False))
     assert "[N]" in _written_text(session2)
+
+
+def test_accepted_choice_is_echoed_and_ends_the_input_row():
+    session = FakeSession([_char("Y")])
+    asyncio.run(prompt_yes_no(session, "Confirm?", default=False))
+    assert _written_text(session).endswith("Y\r\n")
+
+
+def test_disconnect_propagates_without_choosing_a_default():
+    session = FakeSession([SessionClosedError("gone")])
+    with pytest.raises(SessionClosedError, match="gone"):
+        asyncio.run(prompt_yes_no(session, "Confirm?", default=True))
+
+
+def test_line_only_adapter_retries_invalid_input_for_compatibility():
+    class LineOnlySession:
+        def __init__(self):
+            self.lines = iter(["maybe", "n"])
+            self.written: list[str] = []
+
+        async def write(self, text: str) -> None:
+            self.written.append(text)
+
+        async def read_line(self) -> str:
+            return next(self.lines)
+
+    session = LineOnlySession()
+    assert asyncio.run(prompt_yes_no(session, "Confirm?", default=True)) is False
+    assert "\a" in "".join(session.written)

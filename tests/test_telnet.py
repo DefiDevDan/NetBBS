@@ -17,6 +17,7 @@ import asyncio
 import socket
 import time
 
+from netbbs.net.confirm import prompt_yes_no
 from netbbs.net.session import Session
 from netbbs.net.telnet import (
     DO,
@@ -76,6 +77,35 @@ async def _run_server(session_handler):
     server = TelnetServer(host="127.0.0.1", port=0, session_handler=session_handler)
     await server.start()
     return server
+
+
+def test_single_key_confirmation_rejects_invalid_input_and_ends_its_row():
+    """The Telnet byte decoder preserves Enter through the structured-key
+    path while the confirmation helper owns echo/newline rendering."""
+    results = []
+
+    async def handler(session: Session):
+        results.append(await prompt_yes_no(session, "Confirm?", default=False))
+        await session.write_line("NEXT")
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await skip_initial_negotiation(reader)
+            prompt = await reader.readuntil(b": ")
+            writer.write(b"xY")
+            await writer.drain()
+            remainder = await reader.readuntil(b"NEXT\r\n")
+            writer.close()
+            await writer.wait_closed()
+            return prompt + remainder
+        finally:
+            await server.stop()
+
+    output = asyncio.run(scenario())
+    assert results == [True]
+    assert output == b"Confirm? [y/N]: \x07Y\r\nNEXT\r\n"
 
 
 # -- initial negotiation -----------------------------------------------

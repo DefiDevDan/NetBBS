@@ -79,6 +79,8 @@ class FakeSession(Session):
             return EditorKey(_EDITOR_KEY_SENTINELS[raw])
         if raw.startswith("CTRL+"):
             return EditorKey(EditorKeyKind.CTRL, char=raw[len("CTRL+") :].lower())
+        if raw == "":
+            return EditorKey(EditorKeyKind.ENTER)
         return EditorKey(EditorKeyKind.CHAR, char=raw)
 
     async def close(self) -> None:

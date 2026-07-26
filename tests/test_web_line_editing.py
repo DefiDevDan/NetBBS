@@ -19,6 +19,7 @@ import asyncio
 import aiohttp
 
 from netbbs.net.char_input import InputHistory
+from netbbs.net.confirm import prompt_yes_no
 from netbbs.net.session import Session
 from netbbs.net.web import WebServer
 
@@ -36,6 +37,31 @@ async def _run_server(session_handler):
     server = WebServer(host="127.0.0.1", port=0, session_handler=session_handler)
     await server.start()
     return server
+
+
+def test_single_key_confirmation_echoes_uppercase_and_ends_its_row():
+    results = []
+
+    async def handler(session: Session):
+        results.append(await prompt_yes_no(session, "Confirm?", default=False))
+        await session.write_line("NEXT")
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            async with aiohttp.ClientSession() as client:
+                async with client.ws_connect(f"http://127.0.0.1:{server.port}/ws") as ws:
+                    prompt = await ws.receive_json(timeout=2)
+                    await ws.send_json({"type": "key", "data": "Y"})
+                    accepted = await ws.receive_json(timeout=2)
+                    next_row = await ws.receive_json(timeout=2)
+                    return [prompt["data"], accepted["data"], next_row["data"]]
+        finally:
+            await server.stop()
+
+    output = asyncio.run(scenario())
+    assert results == [True]
+    assert output == ["Confirm? [y/N]: ", "Y\r\n", "NEXT\r\n"]
 
 
 def _read_line_result(data: str, *, history: InputHistory | None = None) -> str:

@@ -1237,10 +1237,7 @@ async def _handle_incoming_invite(
             fg_color=ALERT_COLOR, bold=True,
         )
     )
-    await session.write("Accept? [y/N]: ")
-    answer = (await session.read_key()).lower()
-    await session.write_line("")
-    accepted = answer == "y"
+    accepted = await prompt_yes_no(session, "Accept?", default=False)
     if not direct_invites.respond(session, accepted=accepted):
         # Expired/cancelled between the prompt being shown and this
         # answer -- same "no longer valid" tolerance as everywhere else
