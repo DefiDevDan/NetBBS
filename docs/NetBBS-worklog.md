@@ -1223,15 +1223,14 @@ requester already knows what to ask about."
 
 ### WAN reachability and relay selection
 
-**§6's "reuse the existing local-reputation mechanism" had nothing to reuse --
-a real gap found while implementing issue #58, not anticipated by the design
-doc's own wording.** No data model or table for §6's reputation/trust system
-exists anywhere in this codebase; it is design-only. `netbbs.link.reliability`
-is a genuinely new, minimal, direct-observation-only tracker (attempts/
-successes per fingerprint, neutral prior for the unobserved) fed by every
-fallback and relay-selection dial. Before reusing a design doc's stated
-mechanism for a new feature, confirm it actually exists in code -- do not
-assume a cross-reference is still accurate.
+**The trust model and dial reliability are deliberately separate.** No Phase-4
+trust-signal, probation, trust-domain, or quarantine data model currently
+exists in code; design doc §12 specifies it, but implementation remains future
+work. `netbbs.link.reliability` is only a minimal direct-observation tracker
+(dial attempts/successes per fingerprint, neutral prior when unobserved) for
+fallback and relay selection. Its score must never become a security or content
+reputation input. Before reusing a documented mechanism, confirm its code and
+persistence actually exist rather than relying on a design cross-reference.
 
 **Relay consent needed a synchronous route, not a gossiped event pair.** Every
 other mutual-consent exchange in this codebase (origin transfer, channel
@@ -1959,8 +1958,9 @@ Near-term Phase 3 work includes:
   done, see §6 below);
 - sustained multi-node dogfood, including restart and partition recovery
   (issue #83);
-- the trust, reputation, and quarantine model required before public
-  federation.
+- implementing §12's trust signals, explicit reporter domains, probation,
+  local quarantine policy, explanation UI, and validation required before
+  public federation.
 
 Later work includes Link chat, advanced governance and Link Communities,
 door-game sandboxing/API versioning, and other roadmap phases defined in the

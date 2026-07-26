@@ -89,9 +89,10 @@ below — every step is also exercised automatically by
 so a future change that breaks this flow fails a script instead of
 just rotting this document.
 
-**What Link does not yet do** — no public federation or trust/
-reputation model (Phase 3 is explicitly a private, invite-your-friends
-federation for now; see [issue #55](https://github.com/Thiesi/NetBBS/issues/55));
+**What Link does not yet do** — no public federation or implemented trust/
+quarantine enforcement (Phase 3 is explicitly a private, invite-your-friends
+federation for now; issue #55's threat model is specified in the design doc,
+but Phase-4 implementation remains);
 no tier-2 Link-message routing or client-side decryption; no real-time
 Link-wide chat (local direct chat is a separate feature); and no linked
 channel/file-area origin succession, delegated Link moderation, or Link
@@ -555,9 +556,10 @@ address — fine for a local loopback demo (and needed for it: the mail
 acknowledgement round trip in step 6 requires both sides reachable),
 but each will log a startup warning about it. Prefer `outgoing_only =
 true` (the default) for anything you actually run persistently: Phase 3
-still has no public trust/reputation or quarantine model (issue #55),
-so an externally reachable full peer accepts a hello from any node
-that dials it.
+still has no implemented public trust/quarantine enforcement, so an externally
+reachable full peer accepts a hello from any node that dials it. Issue #55's
+threat model is design only until the Phase-4 persistence and enforcement
+slices ship.
 
 **2. Create a SysOp on each** (`create_test_user.py <db> <username>
 <password> <level>` — 255 is the SysOp level), then start both from

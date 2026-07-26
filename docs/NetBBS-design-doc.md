@@ -2150,57 +2150,258 @@ branch needed" reasoning issue #89 already documented for descriptors.
 
 ## 12. Trust, reputation, probation, and quarantine
 
-Phase 4 defines the public-network security model. The design direction is
-settled; the precise threat model remains issue #55.
+Phase 4 defines the public-network security model. This section is the
+normative threat model and policy contract. It does not make a Phase-3 build
+safe for public federation by documentation alone; the persistence,
+enforcement, operator UI, and tests described here must exist first.
 
-### 12.1 Local trust view
+### 12.1 Security goals and attackers
 
-There is no global reputation ledger or authoritative network vote. Each node
-computes its own trust view from:
+The model protects a node's availability, storage, users, and local policy
+without creating a network-wide authority. It must remain safe when facing:
 
-- direct observation;
-- optional signed signals from identities it already trusts.
+- a malicious user acting through an honest home node;
+- a malicious node which signs abuse, lies, selectively relays, or vouches for
+  abusive users;
+- Sybil identities and colluding nodes;
+- a compromised established node or configured trust reporter;
+- replaying, withholding, reordering, or selectively forwarding intermediaries;
+- partitions, clock skew, stale observations, and compromise recovery.
 
-Node reputation provides a baseline; user reputation may refine it.
+A signature proves key control, not honesty or independence. A successful dial
+proves reachability, not trust. Seeds, discovery, peer introduction, relay
+consent, and carrying the same resource confer no reputation.
 
-### 12.2 Probation
+Every enforcement decision remains local. Nodes may disagree and may override
+automatic policy. No signal can force another operator to hide, delete, relay,
+or accept anything.
 
-New nodes and users begin with restricted capability, normally read-only.
-Graduation combines elapsed time and vouching by already-established identities.
-Exact thresholds and what qualifies as established remain to be specified.
+### 12.2 Separate trust dimensions
 
-### 12.3 Objective and subjective reports
+NetBBS does not compute one scalar reputation score. A local trust view keeps
+these dimensions separate:
 
-The protocol must distinguish:
+- **identity and protocol integrity:** signatures, key lifecycle,
+  canonicalization, equivocation, and authorization;
+- **resource behavior:** flooding, quota evasion, retries, availability claims,
+  and relay/storage use;
+- **content conduct:** spam, harassment, illegality, off-topic behavior, and
+  other moderation judgments;
+- **operational reachability:** this node's own dial outcomes.
 
-- objectively verifiable abuse, such as invalid signatures, malformed events,
-  conflicting claims, or measurable flooding;
-- subjective moderation judgments, such as spam, harassment, illegality, or
-  off-topic content.
+Operational reachability is routing data only. `netbbs.link.reliability` may
+rank dial or relay candidates but must never affect security or content trust.
 
-Objective reports may carry evidence which another node can verify. Subjective
-reports remain local opinions and must not become a disguised network-wide
-verdict.
+Node and user trust are separate. Establishing a home node does not establish
+every user on it; one abusive user does not quarantine an otherwise honest home
+node. A password-only `node_vouched_user` is evaluated as the stable pair
+`(home_node_fingerprint, opaque_local_user_id)`, never by display label.
 
-### 12.4 Quarantine
+Remote identity attestations have a separate local trust list. Trust-report
+authority does not grant age/name-attestation authority, or vice versa.
 
-Quarantine is a local circuit-breaker decision based on signed observations and
-the receiving node’s own policy. No node objectively “enters quarantine” for
-the entire network.
+### 12.3 Local roles, states, and precedence
 
-The eventual mechanism must define:
+Establishment and authority to influence policy are different roles:
 
-- report categories and evidence;
-- expiry, revocation, and replay protection;
-- independent-flagger rules;
-- Sybil/collusion resistance;
-- reputation weighting;
-- bounded signal propagation;
-- reversible recovery.
+- a **trust anchor** is explicitly configured by the SysOp;
+- an **established identity** has graduated or was established manually;
+- a **trusted reporter** is explicitly configured for named dimensions and
+  categories;
+- a **trust domain** locally groups reporters which may share control or
+  incentives.
 
-A node may locally give an external jurisdictional authority key unusually high
-weight, but this is an operator opt-in policy and has no effect on nodes which
-do not configure it.
+No role is inferred transitively. A vouch may help probation graduation but
+cannot create a trust anchor, reporter, attestation authority, or trust domain.
+
+Per identity and trust dimension, local state is `probationary`, `established`,
+`quarantined`, or `blocked`. Manual block has highest precedence, followed by
+explicit SysOp overrides, automatic quarantine, then ordinary probation or
+establishment. Overrides are scoped, reasoned, timestamped, and audited. Node
+sovereignty permits overriding even self-verifying evidence, but the UI must
+keep the evidence and risk visible.
+
+### 12.4 Probation and vouching
+
+A remote node starts probationary. Default automatic graduation requires:
+
+- 30 elapsed days since the first verified hello;
+- verified direct interaction on three distinct UTC dates;
+- no active local integrity or resource trigger;
+- active vouches from two trusted reporters in two trust domains.
+
+A remote user starts probationary independently. Default graduation requires:
+
+- 14 elapsed days since first accepting that stable user identity;
+- accepted activity on three distinct UTC dates;
+- no active trigger in any applicable dimension;
+- one authorized user vouch, or explicit SysOp establishment.
+
+A home node's identity vouch binds an opaque user ID to that node; it is not a
+behavioral vouch. Probation does not follow a changed home node or signing
+identity without a future signed identity-transition protocol.
+
+By default, probation is read-only from the subject's perspective. A
+probationary node may complete hello/key-lifecycle exchanges and make bounded
+inventory pulls at one quarter of the established-peer request budget. This
+node may accept through it content independently signed by an established
+author, but refuses or holds for explicit local approval new content authored
+or node-vouched by the probationary identity. A probationary node contributes
+no trust-signal weight and is not selected to serve as a relay. A probationary
+user's posts/uploads enter applicable local approval flow and Link messages are
+refused or bounced rather than silently delivered. Private operators may
+establish a known node manually instead of waiting for automatic graduation.
+
+Configuration may make these defaults stricter. Relaxing them is an explicit,
+audited SysOp safety deviation. Vouches are signed, scoped, expire after at
+most 180 days, and may be renewed or revoked. Revocation removes current
+support but neither erases history nor accuses the subject of abuse.
+
+### 12.5 Evidence classes and attribution
+
+“Objective” has two classes because not every receiver measurement is
+independently provable:
+
+1. **Self-verifying protocol evidence** includes the signed objects needed to
+   reproduce the violation, such as conflicting valid extensions of one head.
+2. **Observer-attested protocol/resource evidence** records measurements a
+   third party cannot reconstruct, such as flooding, malformed requests,
+   timeouts, non-delivery, or receipt of an invalid signature.
+3. **Subjective content reports** express moderation judgments. Signed content
+   may be referenced, but the judgment is still opinion.
+
+Protocol-integrity categories are `signed_equivocation`, `revoked_key_use`,
+`invalid_authority`, and `invalid_signature_delivery`. Resource categories are
+`malformed_traffic`, `request_flood`, `quota_evasion`, `inventory_nondelivery`,
+and `relay_abuse`. Content categories are `spam`, `harassment`,
+`illegal_content`, `off_topic`, and `other`. The object version may add
+categories later; an unknown category may be retained for diagnostics but has
+no automatic policy effect until local software/configuration understands it.
+
+An invalid signature does not prove that its claimed signer created or sent
+it. Locally it may justify action against the direct delivery peer; remotely it
+remains that observer's claim about the delivery peer. Unsigned malformed
+traffic is attributable only to the connection identity available at receipt.
+
+Subjective reports affect only content conduct and can never automatically
+trigger transport quarantine. Resource reports affect resource policy;
+self-verifying integrity evidence affects integrity policy. UI code must not
+collapse these dimensions.
+
+### 12.6 Signed trust signals
+
+A trust signal is an immutable signed object containing protocol/object
+version, issuer, stable signal ID, canonical node/user subject, dimension,
+category, evidence class, embedded evidence or digest plus locator, observation
+and issuance times, expiry, optional explanation, and—when revoking—the exact
+signal content ID.
+
+Revocation is a new signed object and never deletes the original. Receivers
+reject invalid category/evidence combinations, expiry before issuance, and
+issue times over five minutes in the future. Receipt time is retained
+independently. Content IDs provide replay deduplication.
+
+Receivers clamp active lifetimes:
+
+- self-verifying protocol evidence: 90 days;
+- observer-attested protocol/resource evidence: 7 days;
+- subjective content reports: 30 days;
+- vouches: 180 days.
+
+Renewal requires a fresh signal. Expired/revoked signals leave automatic policy
+but remain under bounded audit retention. Digest-only evidence is not
+self-verifying until fetched, size-checked, hashed, parsed, and reproduced;
+failure to fetch is not evidence against the subject.
+
+Successfully reproduced self-verifying evidence becomes this receiver's own
+local observation. The remote signal's later expiry or revocation removes that
+issuer's support but does not un-verify the local observation; its recovery
+rule applies independently. Inactive signals and evidence are retained for 365
+days by default, unless an active decision or explicit legal/diagnostic hold
+still references them. Later pruning preserves the content digest and decision
+audit so historical enforcement remains explainable without unbounded blobs.
+
+### 12.7 Propagation, independence, and Sybil resistance
+
+Trust signals are not flood-gossiped with content events. A node explicitly
+subscribes to selected reporters and pulls their issuer-signed signals. A
+carrier may serve an unchanged signal, but the receiver verifies the issuer
+and ignores unconfigured issuers.
+
+Distinct fingerprints do not prove independence. Automatic policy counts
+locally assigned trust domains:
+
+- reporters in one domain contribute at most that domain's weight;
+- default and normal maximum domain weight is `1.0`;
+- remote-signal quarantine requires two domains and total weight `>= 2.0`;
+- vouch/reputation paths never multiply weight;
+- reporter, domain, weight, and category changes are audited SysOp actions.
+
+An operator may configure a jurisdictional/emergency key as sole authority for
+named categories. This explicit local exception is displayed as such; weight
+alone never bypasses the two-domain rule.
+
+Default trust-ingress bounds are 100 signals or 1 MiB per response, 1,000
+active signals per issuer, 10 active signals per issuer/subject/category, 256
+KiB embedded evidence per signal, and a separate ingestion budget in addition
+to the ordinary request throttle. Over-limit input is rejected or deferred
+visibly, never converted into evidence.
+
+### 12.8 Quarantine effects
+
+Direct local self-verifying integrity evidence may quarantine immediately.
+Remote signals must satisfy their configured category rule and the independence
+threshold. Observer reports normally tighten limits or extend probation before
+quarantine. Subjective reports may hide or moderate named user/content
+projections but never quarantine transport automatically.
+
+Node quarantine stops ordinary outbound sync; rejects ordinary events,
+inventory, Link messages, files, relays, and peer introductions before new
+remote state is persisted; removes the node from relay/candidate selection;
+and suppresses applicable locally displayed content. Previously accepted
+events, content, identity history, and audits are preserved, not deleted.
+
+A narrow, separately rate-limited containment path may accept verified hello,
+key transitions, signal revocations, and recovery metadata. It cannot carry
+ordinary content or services. User quarantine affects that user, not unrelated
+users, the whole home node, or content merely relayed by the node.
+
+Manual block is harder: it denies even containment until removed. Existing
+bytes still are not deleted. Rejections and suppression use stable reason codes
+for protocol, diagnostics, and SysOp UI while keeping private reporters, notes,
+and policy configuration undisclosed.
+
+### 12.9 Recovery, partitions, and explainability
+
+Absence, failed dials, and partitions are never evidence. Partitions create no
+reports and do not multiply old signals. Signal expiry continues on local time
+so an accusation cannot become permanent through disconnection.
+
+Automatic quarantine ends only after every trigger is cleared, expired, or
+revoked and a 24-hour recovery hold passes without a fresh trigger. Recovery
+returns to probationary, not established. Self-verifying equivocation or
+confirmed key compromise also requires SysOp review or verified root-key
+recovery; scoped resource/content restrictions may recover automatically.
+
+Effective state is a persisted projection recomputed transactionally on input
+changes and startup. For every restriction the SysOp can inspect the subject,
+dimension, effects, rule/threshold, evidence, counted domains/weights, times,
+overrides, audit history, and requirements for release. Caller-facing behavior
+states that local policy restricted content/delivery without claiming a
+network-wide verdict or leaking private evidence.
+
+### 12.10 Required validation
+
+Phase-4 implementation must test Sybils in one domain, colluding domains below
+and above threshold, compromised reporters, expiry/revocation, replay/stale/
+future/oversized signals, reproducible and false evidence, invalid-signature
+attribution, subjective-report isolation, partitions and recovery, restart
+reconstruction, overrides, preservation without deletion, user/node scoping,
+containment recovery, and real SQLite/transport resource bounds.
+
+Public readiness additionally requires a SysOp trust/explanation surface,
+manual block/quarantine/recovery workflows, and dogfood with independently
+administered nodes. Unit tests alone are not a public-network claim.
 
 ---
 
@@ -3349,11 +3550,13 @@ The gate is met when all of the following hold:
 Meeting this gate does not imply public federation. Phase 4 remains the
 public-readiness security gate regardless of Phase 3 stabilization, and
 completing this gate does not by itself authorize starting Phase 4
-implementation — Phase 4 additionally requires the issue #55 threat model.
+implementation. The issue #55 threat model is now specified in §12, but its
+required persistence, protocol, enforcement, UI, and validation remain Phase-4
+implementation work subject to this stabilization gate.
 
 ### Phase 4 — Trust, reputation, and public readiness
 
-- formal threat model from issue #55;
+- formal threat model from issue #55 — specified in §12;
 - node/user reputation;
 - probation and vouching;
 - objective evidence and subjective moderation separation;
@@ -3838,11 +4041,13 @@ unqueried. Chunk bytes remain outside inventory entirely and unchanged by
 this issue, confirmed by both tests: a recovered catalogue entry lands
 with `fetched_file_id` still `NULL`.
 
-### Issue #55 — trust and quarantine
+### Issue #55 — trust and quarantine — design specified
 
-Define the Phase-4 threat model, evidence types, independence and Sybil rules,
-signal rate limits, quarantine thresholds, reversibility, and local policy
-semantics.
+§12 specifies the Phase-4 attacker model, evidence classes, explicit reporter
+trust domains, Sybil/weight rules, signal bounds and lifetimes, probation,
+quarantine, reversibility, explainability, and required validation. Phase-4
+implementation remains separate roadmap work; completing the design issue does
+not itself make public federation safe.
 
 ### Issue #63 — door isolation
 

@@ -14,9 +14,10 @@ is a separate, ongoing activity.
 
 **Explicitly not the goal:** this does not establish public-federation
 readiness. Phase 3 remains private/experimental federation regardless
-of how this goes; Phase 4's trust/quarantine model (issue #55) is the
-actual public-readiness gate. This dogfood run only proves Phase 3's
-existing behavior holds up under sustained real operation.
+of how this goes; implementing and validating design doc §12's Phase-4
+trust/quarantine model is the actual public-readiness gate. This dogfood run
+only proves Phase 3's existing behavior holds up under sustained real
+operation.
 
 ## 1. Topology (at least three nodes)
 
