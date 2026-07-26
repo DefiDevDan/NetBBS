@@ -16,6 +16,7 @@ import re
 from netbbs.net.session import Session
 from netbbs.net.telnet import IAC, NAWS, SB, SE, WILL, TelnetServer
 from netbbs.net.picker import pick_item
+from netbbs.rendering import ERROR_COLOR, MUTED_COLOR, fg
 from tests.test_telnet import skip_initial_negotiation
 
 _ANSI_ESCAPE_RE = re.compile(rb"\x1b\[[0-9;]*[A-Za-z]")
@@ -86,6 +87,7 @@ def test_empty_list_shows_message_and_returns_none():
             await skip_initial_negotiation(reader)
             data = await _read_until_quiet(reader)
             assert b"Nothing here." in data
+            assert fg(MUTED_COLOR).encode() in data
             writer.close()
             await writer.wait_closed()
         finally:
@@ -392,6 +394,7 @@ def test_search_no_matches_reports_and_stays_in_picker():
             await writer.drain()
             data = await _read_until_quiet(reader)
             assert b"No matches." in data
+            assert fg(ERROR_COLOR).encode() in data
             writer.write(b"b")
             await writer.drain()
             await _read_until_quiet(reader)

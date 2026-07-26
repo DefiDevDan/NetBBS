@@ -99,6 +99,9 @@ class TelnetSession(Session):
         # resolves approach, via NEW-ENVIRON/COLORTERM instead of NAWS —
         # see negotiate_initial_options and _handle_subnegotiation.
         self.supports_truecolor = False
+        self.truecolor_diagnostic = (
+            "Telnet NEW-ENVIRON/COLORTERM negotiation pending; initial banner uses 256-color"
+        )
         self.peer_address = peer_address
 
     async def negotiate_initial_options(self) -> None:
@@ -352,6 +355,17 @@ class TelnetSession(Session):
             colorterm = variables.get("COLORTERM")
             if colorterm in ("truecolor", "24bit"):
                 self.supports_truecolor = True
+                self.truecolor_diagnostic = (
+                    f"Telnet NEW-ENVIRON reported COLORTERM={colorterm}; truecolor available"
+                )
+            elif colorterm:
+                self.truecolor_diagnostic = (
+                    f"Telnet NEW-ENVIRON reported COLORTERM={colorterm}; using 256-color"
+                )
+            else:
+                self.truecolor_diagnostic = (
+                    "Telnet NEW-ENVIRON did not report COLORTERM; using 256-color"
+                )
 
     async def _read_subnegotiation(self) -> tuple[int, bytes]:
         option = (await self._reader.readexactly(1))[0]

@@ -65,8 +65,11 @@ def _default_welcome_banner(*, truecolor: bool) -> str:
     this banner isn't a segment list."""
     if not truecolor:
         return DEFAULT_WELCOME_BANNER
-    border = colored(
-        "================================================", fg_color=HEADER_COLOR, bold=True
+    # The full-width border makes negotiated truecolor unmistakable at a
+    # glance instead of confining the showcase to six subtly shaded letters.
+    # The 256-color fallback above intentionally remains one flat cyan span.
+    border = gradient_text(
+        "================================================", "blue", bold=True, truecolor=True
     )
     welcome_line = colored("  Welcome to ", fg_color=HEADER_COLOR, bold=True) + gradient_text(
         "NetBBS", "blue", bold=True, truecolor=True

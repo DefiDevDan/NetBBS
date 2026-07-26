@@ -515,7 +515,7 @@ def _colorterm_scenario(db, colorterm: str | None):
     results = []
 
     async def handler(session: Session):
-        results.append(session.supports_truecolor)
+        results.append((session.supports_truecolor, session.truecolor_diagnostic))
 
     async def scenario():
         server = await _run_server(db, handler)
@@ -536,19 +536,27 @@ def _colorterm_scenario(db, colorterm: str | None):
 
 
 def test_session_supports_truecolor_when_colorterm_is_truecolor(db):
-    assert _colorterm_scenario(db, "truecolor") == [True]
+    assert _colorterm_scenario(db, "truecolor") == [
+        (True, "SSH environment reported COLORTERM=truecolor; truecolor available")
+    ]
 
 
 def test_session_supports_truecolor_when_colorterm_is_24bit(db):
-    assert _colorterm_scenario(db, "24bit") == [True]
+    assert _colorterm_scenario(db, "24bit") == [
+        (True, "SSH environment reported COLORTERM=24bit; truecolor available")
+    ]
 
 
 def test_session_does_not_support_truecolor_without_colorterm(db):
-    assert _colorterm_scenario(db, None) == [False]
+    assert _colorterm_scenario(db, None) == [
+        (False, "SSH client did not forward COLORTERM; using 256-color")
+    ]
 
 
 def test_session_does_not_support_truecolor_for_other_colorterm_values(db):
-    assert _colorterm_scenario(db, "256color") == [False]
+    assert _colorterm_scenario(db, "256color") == [
+        (False, "SSH environment reported COLORTERM=256color; using 256-color")
+    ]
 
 
 def test_terminal_resize_mid_session_updates_session_size(db):

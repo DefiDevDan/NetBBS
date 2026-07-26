@@ -3598,7 +3598,17 @@ from issue #83's real-user dogfood feedback before foundation issue #127:
   implemented through one shared structured-key primitive without weakening
   generic menu hotkeys; invalid keys retry and accepted choices end their row;
 - current-build visual/capability verification plus bounded semantic-color
-  polish on named mature surfaces (#136).
+  polish on named mature surfaces (#136) — implemented: caller and SysOp Who
+  share one picker palette; Who, mail, vCards, Last sessions, profile fields,
+  picker feedback, and welcome-banner administration distinguish labels,
+  values, metadata, success, and failure through shared theme roles; colored
+  narrow output is truncated by visible width rather than raw ANSI length.
+  The default SSH and web login banner visibly exercises truecolor while the
+  256-color rendering remains equivalent and readable. Profile and banner-
+  preview diagnostics state the transport's detected capability or limitation;
+  a custom SysOp banner explicitly bypasses the generated showcase. Telnet's
+  initial banner can precede completion of NEW-ENVIRON negotiation, so it uses
+  the safe fallback while the later profile diagnostic reports the result.
 
 This interleave does not change Phase 4's security dependencies or public-
 readiness gate. It applies the standing cadence between meaningful foundation

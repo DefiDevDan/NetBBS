@@ -22,6 +22,7 @@ from netbbs.net.maintenance import MaintenanceMode
 from netbbs.net.session import Session
 from netbbs.net.session_registry import ActiveSessionRegistry
 from netbbs.net.shutdown import NodeControls
+from netbbs.rendering import ACCENT_COLOR, MENU_KEY_COLOR, METADATA_COLOR, colored
 from netbbs.storage.database import Database
 
 
@@ -138,6 +139,11 @@ def test_who_screen_lists_other_online_users_and_excludes_self(tmp_path):
         text = _written_text(session)
         assert "bob" in text
         assert "alice" not in text.split("Who's online")[1].split("Choice: ")[0]
+        # Caller Who uses the same pick_item field roles as SysOp Who:
+        # selector, identity, and connected-since metadata.
+        assert colored("  01. ", fg_color=MENU_KEY_COLOR) in text
+        assert colored("bob", fg_color=ACCENT_COLOR) in text
+        assert f"\x1b[38;5;{METADATA_COLOR}m - connected since " in text
 
     asyncio.run(scenario())
     database.close()

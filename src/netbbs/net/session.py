@@ -101,6 +101,12 @@ class Session(ABC):
     #: `netbbs.net.color_depth_preference.effective_truecolor`.
     supports_truecolor: bool = False
 
+    #: Human-readable provenance for ``supports_truecolor``. Shown in the
+    #: caller profile so a failed/missing capability report is diagnosable
+    #: rather than inferred from appearance. Transport implementations replace
+    #: this conservative default with their own exact negotiation path.
+    truecolor_diagnostic: str = "transport did not report truecolor capability; using 256-color"
+
     #: Best-known remote address (host only, no port) for this
     #: connection, or `None` if a transport genuinely has no such
     #: concept. Used for per-source login throttling (see

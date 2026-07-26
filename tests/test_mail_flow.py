@@ -32,6 +32,15 @@ from netbbs.mail import list_inbox, list_sent, send_mail
 from netbbs.net.char_input import InputHistory
 from netbbs.net.login_flow import _main_menu
 from netbbs.net.mail_flow import browse_mail
+from netbbs.rendering import (
+    ACCENT_COLOR,
+    ERROR_COLOR,
+    LABEL_COLOR,
+    METADATA_COLOR,
+    SUCCESS_COLOR,
+    VALUE_COLOR,
+    colored,
+)
 from netbbs.storage.database import Database
 from netbbs.storage.execution import DatabaseLane
 
@@ -168,6 +177,13 @@ def test_inbox_shows_unread_marker_and_opening_marks_read(tmp_path):
     text = _written_text(session)
     assert "* Hello" in text  # unread marker on the inbox listing
     assert "How are you?" in text
+    assert colored("\r\nSubject: ", fg_color=LABEL_COLOR, bold=True) in text
+    assert colored("Hello", fg_color=ACCENT_COLOR, bold=True) in text
+    assert colored("From: ", fg_color=LABEL_COLOR) in text
+    assert colored("alice", fg_color=ACCENT_COLOR) in text
+    assert colored("Date: ", fg_color=LABEL_COLOR) in text
+    assert f"\x1b[38;5;{METADATA_COLOR}m" in text
+    assert colored("How are you?", fg_color=VALUE_COLOR) in text
     assert list_inbox(db, bob)[0].is_read is True
     lane.close()
     db.close()
@@ -185,6 +201,7 @@ def test_inbox_delete_removes_message(tmp_path):
     asyncio.run(browse_mail(session, lane, bob))
 
     assert "Message deleted." in _written_text(session)
+    assert colored("Message deleted.", fg_color=SUCCESS_COLOR) in _written_text(session)
     assert list_inbox(db, bob) == []
     lane.close()
     db.close()
@@ -281,6 +298,7 @@ def test_compose_rejects_unknown_recipient(tmp_path):
     asyncio.run(browse_mail(session, lane, alice))
 
     assert "No such user" in _written_text(session)
+    assert f"\x1b[38;5;{ERROR_COLOR}m" in _written_text(session)
     lane.close()
     db.close()
 

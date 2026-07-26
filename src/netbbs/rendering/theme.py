@@ -22,6 +22,14 @@ HEADER_COLOR = 51  # bright cyan — section headers, banners; also the chat sta
                    # for the numbers would make two unrelated fields look like one
 ACCENT_COLOR = 220  # gold — navigable items: board/channel names, other users' names
 MUTED_COLOR = 244  # gray — system/meta messages (join/leave notices, etc.)
+LABEL_COLOR = 75  # light blue — field names such as "From:"/"Date:";
+                  # distinct from the value beside them and from HEADER_COLOR
+VALUE_COLOR = 252  # soft white — ordinary field values and prose content
+METADATA_COLOR = 244  # gray — timestamps, counts, and secondary context;
+                      # deliberately the same shade as MUTED_COLOR but a
+                      # separate semantic role for future palette changes
+SUCCESS_COLOR = 82  # vivid green — completed user actions and healthy states
+ERROR_COLOR = 196  # red — failed actions and unavailable/error states
 MENU_KEY_COLOR = 46  # bright green — the actual valid keystroke in a menu option
 SELF_COLOR = 201  # bright magenta — the user's own name/messages in chat, distinct
                   # from ACCENT_COLOR (used for everyone else's), so a user's own
