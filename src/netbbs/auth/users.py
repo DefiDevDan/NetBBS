@@ -750,7 +750,13 @@ def delete_user(db: Database, target: User, *, deleted_by: User) -> None:
     active SysOp.
 
     Content authorship (posts/files) survives via each row's already-
-    denormalized author/uploader label; moderator grants, channel
+    denormalized author/uploader label; `session_history` rows (issue
+    #100) similarly survive via their own denormalized `username_label`,
+    but whether that label is actually *shown* to an ordinary caller
+    keeps whatever `session_history_name_visible` opt-out was in effect
+    immediately before deletion (`name_visible_fallback`, issue #111) --
+    deleting the account must never silently reveal a name a user had
+    already chosen to hide; moderator grants, channel
     membership/invitations, preferences, and blocklist entries tied to
     the account are cascade-removed; audit-log rows are preserved with
     their actor/target references set to NULL (see the migration that

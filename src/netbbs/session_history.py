@@ -43,15 +43,32 @@ class SessionHistoryEntry:
     connected_at: str
     disconnected_at: str | None
     interrupted_at: str | None
+    name_visible_fallback: bool
 
 
 def record_session_start(db: Database, user: User) -> int:
     """Called once, at the top of `run_authenticated_session` -- returns
     the new row's id, which the caller holds onto for the matching
-    `record_session_end` call when that same session ends."""
+    `record_session_end` call when that same session ends.
+
+    Issue #111: also records `user`'s current `session_history_name_
+    visible` preference into `name_visible_fallback`. While the account
+    still exists, `_session_history_display_name` (`netbbs.net.
+    login_flow`) keeps re-checking the *live* preference, exactly as
+    issue #100 already established (a later opt-out/opt-in takes effect
+    retroactively for every existing row); `name_visible_fallback` only
+    ever becomes the thing actually consulted once the account is
+    deleted and there is no longer a live preference to re-check. It
+    isn't frozen at this initial value forever, though --
+    `set_session_history_name_visible` below keeps it in sync across
+    every one of a user's existing rows for as long as the account
+    exists, so whatever it holds at deletion time is exactly the value
+    that was in effect immediately before deletion, not whatever
+    happened to be true back when a given row first connected."""
     db.connection.execute(
-        "INSERT INTO session_history (user_id, username_label, connected_at) VALUES (?, ?, ?)",
-        (user.id, user.username, utc_now_iso()),
+        "INSERT INTO session_history (user_id, username_label, connected_at, name_visible_fallback) "
+        "VALUES (?, ?, ?, ?)",
+        (user.id, user.username, utc_now_iso(), int(session_history_name_visible(db, user))),
     )
     row_id = db.connection.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
     # Pruning happens alongside the insert that could have grown the
@@ -89,8 +106,8 @@ def record_session_end(db: Database, history_id: int) -> None:
 def list_recent_sessions(db: Database, *, limit: int = 20) -> list[SessionHistoryEntry]:
     """Most recent first."""
     rows = db.connection.execute(
-        "SELECT id, user_id, username_label, connected_at, disconnected_at, interrupted_at "
-        "FROM session_history ORDER BY id DESC LIMIT ?",
+        "SELECT id, user_id, username_label, connected_at, disconnected_at, interrupted_at, "
+        "name_visible_fallback FROM session_history ORDER BY id DESC LIMIT ?",
         (limit,),
     ).fetchall()
     return [
@@ -98,6 +115,7 @@ def list_recent_sessions(db: Database, *, limit: int = 20) -> list[SessionHistor
             id=row["id"], user_id=row["user_id"], username_label=row["username_label"],
             connected_at=row["connected_at"], disconnected_at=row["disconnected_at"],
             interrupted_at=row["interrupted_at"],
+            name_visible_fallback=bool(row["name_visible_fallback"]),
         )
         for row in rows
     ]
@@ -148,4 +166,19 @@ def session_history_name_visible(db: Database, user: User) -> bool:
 
 
 def set_session_history_name_visible(db: Database, user: User, visible: bool) -> None:
+    """Issue #111: also updates `name_visible_fallback` across every one
+    of `user`'s existing `session_history` rows, not only the preference
+    itself. While the account exists this has no visible effect on its
+    own (`_session_history_display_name` re-checks the live preference,
+    never this column, for an existing account) -- it exists purely so
+    that if this account is deleted at any point afterward, the fallback
+    every one of its rows falls back to is the value that was actually
+    in effect right up until deletion, matching what an ordinary caller
+    was already seeing, rather than reverting to whatever was true back
+    when each row happened to first connect."""
     set_user_preference(db, user, _NAME_VISIBLE_KEY, "1" if visible else "0")
+    db.connection.execute(
+        "UPDATE session_history SET name_visible_fallback = ? WHERE user_id = ?",
+        (int(visible), user.id),
+    )
+    db.connection.commit()

@@ -454,6 +454,19 @@ def test_delete_with_blank_confirmation_does_not_delete(db, lane, sysop):
     assert any(u.username == "alice" for u in list_users(db))
 
 
+def test_delete_warning_describes_retained_session_history_identity_data(db, lane, sysop):
+    """Issue #111's own acceptance criterion: the deletion confirmation
+    must accurately describe what happens to Last sessions identity data
+    -- it survives, honoring whatever name-visibility choice was already
+    in effect, not silently revealed or silently erased."""
+    create_user(db, "alice", password="hunter2", user_level=10)
+    session = FakeSession(["u", "d", "0", "1", "d", "not-alice", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "Last sessions" in text
+    assert "name-visibility" in text or "visibility choice" in text
+
+
 # -- GitHub issue #29: disable/delete revoke live sessions -----------------
 
 

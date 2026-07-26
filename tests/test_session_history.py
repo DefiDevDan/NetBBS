@@ -90,6 +90,70 @@ def test_deleting_the_account_sets_user_id_null_but_keeps_the_row_and_label(db, 
     assert entries[0].username_label == "alice"  # denormalized -- survives the delete
 
 
+# -- name_visible_fallback (issue #111) -----------------------------------
+
+
+def test_new_row_defaults_fallback_to_visible(db, alice):
+    record_session_start(db, alice)
+    assert list_recent_sessions(db)[0].name_visible_fallback is True
+
+
+def test_new_row_records_current_opt_out_as_fallback(db, alice):
+    set_session_history_name_visible(db, alice, False)
+    record_session_start(db, alice)
+    assert list_recent_sessions(db)[0].name_visible_fallback is False
+
+
+def test_toggling_the_preference_updates_the_fallback_on_existing_rows(db, alice):
+    """The core mechanism issue #111 relies on: the fallback isn't
+    frozen at each row's own connect time -- it tracks the live
+    preference for as long as the account exists, so whatever it holds
+    at deletion time matches what was actually in effect right up until
+    then, not whatever was true back when the row was first created."""
+    record_session_start(db, alice)  # connects while still visible (default)
+    assert list_recent_sessions(db)[0].name_visible_fallback is True
+
+    set_session_history_name_visible(db, alice, False)  # opts out afterward
+
+    assert list_recent_sessions(db)[0].name_visible_fallback is False
+
+
+def test_toggling_back_to_visible_also_updates_existing_rows(db, alice):
+    record_session_start(db, alice)
+    set_session_history_name_visible(db, alice, False)
+    set_session_history_name_visible(db, alice, True)
+    assert list_recent_sessions(db)[0].name_visible_fallback is True
+
+
+def test_toggling_never_touches_a_different_users_rows(db, alice):
+    bob = create_user(db, "bob", password="hunter2", user_level=10)
+    record_session_start(db, bob)
+    set_session_history_name_visible(db, alice, False)  # alice, not bob
+    assert list_recent_sessions(db)[0].name_visible_fallback is True
+
+
+def test_deleted_account_that_opted_out_stays_hidden_via_fallback(db, alice, sysop):
+    """Issue #111's own acceptance criterion, reproduced exactly: opt
+    out, then delete -- the name must not come back once the live
+    preference row is gone with the account."""
+    record_session_start(db, alice)
+    set_session_history_name_visible(db, alice, False)
+    delete_user(db, alice, deleted_by=sysop)
+
+    entry = list_recent_sessions(db)[0]
+    assert entry.user_id is None
+    assert entry.name_visible_fallback is False
+
+
+def test_deleted_account_that_never_opted_out_still_shows_via_fallback(db, alice, sysop):
+    record_session_start(db, alice)
+    delete_user(db, alice, deleted_by=sysop)
+
+    entry = list_recent_sessions(db)[0]
+    assert entry.user_id is None
+    assert entry.name_visible_fallback is True
+
+
 # -- reconcile_interrupted_sessions (issue #110) -------------------------
 
 

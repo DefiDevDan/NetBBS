@@ -2621,15 +2621,31 @@ def _session_history_display_name(
     db: Database, entry: SessionHistoryEntry, *, viewer_is_sysop: bool
 ) -> str:
     """The denormalized `username_label` survives account deletion (see
-    the migration's own docstring) -- shown as-is once `user_id` is
-    `None`, since there's no longer an account to have exercised (or
-    changed) an opt-out preference. Otherwise: a SysOp always sees the
-    real name (mirrors `netbbs.net.admin_flow`'s existing SysOp-sees-
-    everything convention); an ordinary caller sees it only if the
-    account's own current `session_history_name_visible` preference
-    (re-checked live, not frozen at connect time) allows it."""
-    if entry.user_id is None or viewer_is_sysop:
+    the migration's own docstring), but showing it is not automatic. A
+    SysOp always sees the real name unconditionally (mirrors `netbbs.
+    net.admin_flow`'s existing SysOp-sees-everything convention) --
+    administrative visibility is the deliberately chosen policy here,
+    same as it already was before issue #111.
+
+    For an ordinary caller: while the account still exists, its *current*
+    `session_history_name_visible` preference is re-checked live, not
+    frozen at connect time -- issue #100's own choice, preserved
+    unchanged, so a later opt-out/opt-in takes effect retroactively for
+    every one of that account's existing rows. Once the account is
+    deleted, there is no longer a live preference to re-check at all --
+    falling back to unconditionally showing `username_label` in that case
+    (the pre-#111 behavior) silently reversed a user's own prior opt-out
+    the moment their account was deleted. `entry.name_visible_fallback`
+    (kept in sync with the live preference for as long as the account
+    exists -- see `set_session_history_name_visible`'s own docstring) is
+    the fallback issue #111 adds specifically for this case: whatever the
+    account's preference genuinely was immediately before deletion is
+    what a now-deleted account's history keeps showing, permanently,
+    since there is no "current" value left to ask."""
+    if viewer_is_sysop:
         return entry.username_label
+    if entry.user_id is None:
+        return entry.username_label if entry.name_visible_fallback else "(name hidden)"
     target = get_user_by_id(db, entry.user_id)
     if target is None or session_history_name_visible(db, target):
         return entry.username_label

@@ -2001,4 +2001,39 @@ MIGRATIONS = [
         ALTER TABLE session_history ADD COLUMN interrupted_at TEXT;
         """,
     ),
+    Migration(
+        description=(
+            "Issue #111: session_history.name_visible_fallback, closing a "
+            "privacy reversal issue #100's own denormalization otherwise "
+            "left open. _session_history_display_name re-checks the "
+            "account's *current* session_history_name_visible preference "
+            "live, which is exactly right while the account still exists "
+            "(an opt-out takes effect immediately, retroactively, for "
+            "every one of that user's still-existing rows) -- but once "
+            "the account is deleted, that preference row is gone too, "
+            "and the pre-#111 code unconditionally fell back to showing "
+            "the denormalized username_label regardless of what the user "
+            "had chosen. A user who opted out, then had their account "
+            "deleted, would have that hidden name revealed in every "
+            "historical row the moment deletion completed. This column "
+            "is kept in sync with the account's session_history_name_"
+            "visible preference for as long as the account exists -- set "
+            "from that same current preference on every new row "
+            "(default 1, matching that preference's own opt-out-not-opt-"
+            "in default) and updated across every one of that user's "
+            "existing rows whenever the preference itself changes "
+            "(netbbs.session_history.set_session_history_name_visible) -- "
+            "so it always reflects the exact value that was in effect "
+            "immediately before deletion, not whatever happened to be "
+            "true back when a given row was first created. Consulted "
+            "only as the fallback once user_id is NULL and there is no "
+            "longer a live preference to re-check at all; while the "
+            "account exists, the live re-check in _session_history_"
+            "display_name remains the source of truth exactly as issue "
+            "#100 already established."
+        ),
+        sql="""
+        ALTER TABLE session_history ADD COLUMN name_visible_fallback INTEGER NOT NULL DEFAULT 1;
+        """,
+    ),
 ]

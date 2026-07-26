@@ -155,6 +155,11 @@ def test_history_screen_sysop_always_sees_real_names(tmp_path):
 
 
 def test_history_screen_shows_denormalized_label_for_a_deleted_account(tmp_path):
+    """bob never opted out, so the persisted `name_visible_fallback`
+    (issue #111) this row was recorded with is `True` -- the label is
+    shown as-is once the account is gone, same observable result as
+    before #111, just now via the persisted fallback rather than an
+    unconditional "no account, no opt-out possible" shortcut."""
     from netbbs.auth.users import delete_user
 
     database = db_(tmp_path)
@@ -167,10 +172,55 @@ def test_history_screen_shows_denormalized_label_for_a_deleted_account(tmp_path)
     session = FakeSession(["h", "l", "y"])
     asyncio.run(_run_main_menu(session, database, alice))
 
-    # Never anonymized once the account itself is gone -- there's no
-    # longer an account to have exercised (or continue exercising) the
-    # opt-out, so the denormalized label is shown as-is.
     assert "bob" in _written_text(session)
+    database.close()
+
+
+def test_history_screen_keeps_a_deleted_accounts_opted_out_name_hidden(tmp_path):
+    """Issue #111's own concrete privacy-reversal scenario, reproduced
+    end to end through the real screen: bob opts out, a session is
+    recorded, the account is deleted -- an ordinary caller must still
+    see "(name hidden)", never "bob", in the exact same historical
+    entry."""
+    from netbbs.auth.users import delete_user
+
+    database = db_(tmp_path)
+    alice = create_user(database, "alice", password="hunter2", user_level=10)
+    sysop = create_user(database, "sysop", password="hunter2", user_level=SYSOP_LEVEL)
+    bob = create_user(database, "bob", password="hunter2", user_level=10)
+    set_session_history_name_visible(database, bob, False)
+    record_session_start(database, bob)
+    delete_user(database, bob, deleted_by=sysop)
+
+    session = FakeSession(["h", "l", "y"])
+    asyncio.run(_run_main_menu(session, database, alice))
+
+    text = _written_text(session)
+    assert "(name hidden)" in text
+    assert "bob" not in text
+    database.close()
+
+
+def test_history_screen_sysop_sees_real_name_even_for_a_deleted_opted_out_account(tmp_path):
+    """SysOp administrative visibility (issue #100) is unconditional --
+    unaffected by both the target's opt-out and the account's own
+    deletion (issue #111 must not accidentally hide names from SysOps
+    too, only from ordinary callers)."""
+    from netbbs.auth.users import delete_user
+
+    database = db_(tmp_path)
+    sysop = create_user(database, "sysop", password="hunter2", user_level=SYSOP_LEVEL)
+    bob = create_user(database, "bob", password="hunter2", user_level=10)
+    set_session_history_name_visible(database, bob, False)
+    record_session_start(database, bob)
+    delete_user(database, bob, deleted_by=sysop)
+
+    session = FakeSession(["h", "l", "y"])
+    asyncio.run(_run_main_menu(session, database, sysop))
+
+    text = _written_text(session)
+    assert "bob" in text
+    assert "(name hidden)" not in text
     database.close()
 
 

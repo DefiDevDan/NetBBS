@@ -2232,3 +2232,26 @@ for the identical two-part fix: a schema field distinguishing "ended
 normally" from "process never got the chance," plus a startup
 reconciliation pass that runs strictly before new instances of that same
 row shape can be created.
+
+**A denormalized label preserved across account deletion must not also
+resurrect a privacy choice the deletion erased (issue #111,
+`netbbs.session_history`).** `session_history.username_label` is
+deliberately denormalized so a historical row survives `delete_user`'s
+cascade (issue #100) -- but `_session_history_display_name` decided
+whether to actually *show* that label by re-checking the account's live
+`session_history_name_visible` preference, which is also removed by the
+same cascade. The naive fallback ("no account left, so show the label
+unconditionally") silently reveals a name the user had explicitly opted
+to hide, the instant their account is deleted. The fix is a persisted
+`name_visible_fallback` column that tracks the *live* preference for as
+long as the account exists (updated across every one of that user's
+rows on every `set_session_history_name_visible` call, not merely
+recorded once at each row's own connect time -- a row can predate a
+later opt-out and must still honor it), consulted only once `user_id`
+is `None`. The general shape: whenever a denormalized field is kept
+specifically to survive a foreign-key cascade, check whether any *other*
+row elsewhere (a preference, a permission, a visibility flag) governed
+how that field was actually presented -- if so, that governing decision
+needs its own persisted, cascade-surviving snapshot too, kept in sync
+with the live value up until the moment survival becomes necessary, not
+just the denormalized data itself.
