@@ -1666,6 +1666,14 @@ async def _node_menu(session: Session, lane: DatabaseLane, actor: User, node_con
             await session.write(reject_unhandled_key(choice))
 
 
+def _shutdown_source_label(source: str | None) -> str:
+    """Human-readable provenance for `SequenceScheduler.source()` (issue
+    #108) -- `"sysop"` never reaches display (a SysOp-created shutdown's
+    own status lines don't need to say so), so this only ever needs to
+    spell out the two signal names."""
+    return {"sigterm": "SIGTERM", "sigint": "SIGINT"}.get(source or "", source or "signal")
+
+
 async def _draw_node_menu(session: Session, node_controls: NodeControls) -> None:
     """
     Design doc -- node management, Thiesi's own dogfood-testing report:
@@ -1694,7 +1702,10 @@ async def _draw_node_menu(session: Session, node_controls: NodeControls) -> None
         status_lines.append(f"Drain scheduled -- disconnecting non-SysOps in {format_remaining_seconds(remaining)}")
     if node_controls.shutdown_scheduler.is_scheduled():
         remaining = node_controls.shutdown_scheduler.remaining_seconds()
-        status_lines.append(f"Shutdown scheduled -- going down in {format_remaining_seconds(remaining)}")
+        line = f"Shutdown scheduled -- going down in {format_remaining_seconds(remaining)}"
+        if not node_controls.shutdown_scheduler.is_cancellable():
+            line += f" (triggered by {_shutdown_source_label(node_controls.shutdown_scheduler.source())}, cannot be cancelled)"
+        status_lines.append(line)
     await session.write_line(colored("  ".join(status_lines), fg_color=ALERT_COLOR, bold=True))
     await session.write("Choice: ")
 
@@ -1791,9 +1802,33 @@ async def _shutdown_screen(session: Session, lane: DatabaseLane, actor: User, no
     of a fixed config value with no override, and the same "already
     scheduled? offer to cancel" check `_drain_screen` has, backed by the
     same `SequenceScheduler` mechanism.
+
+    Issue #108: an externally triggered shutdown (SIGTERM/SIGINT,
+    `node_controls.shutdown_scheduler.is_cancellable()` is `False`) gets
+    a status-only message and returns immediately here -- no "Cancel
+    it?" prompt, and critically no fall-through to the "schedule a new
+    one" flow below either. Letting a SysOp schedule a *replacement*
+    while one is already in flight would silently achieve the same
+    authority-overriding effect `SequenceScheduler.cancel()` itself
+    already refuses (`schedule()` unconditionally cancels-and-replaces
+    whatever was there) -- so this function, not the scheduler, is
+    responsible for never reaching its own `schedule()` call in that
+    case. A SysOp-created shutdown remains fully cancellable/replaceable
+    exactly as before.
     """
     if node_controls.shutdown_scheduler.is_scheduled():
         remaining = node_controls.shutdown_scheduler.remaining_seconds()
+        if not node_controls.shutdown_scheduler.is_cancellable():
+            source_label = _shutdown_source_label(node_controls.shutdown_scheduler.source())
+            await session.write_line(
+                colored(
+                    f"\r\nA shutdown was triggered externally ({source_label}) and is already "
+                    f"in progress -- going down in {format_remaining_seconds(remaining)}. It "
+                    "cannot be cancelled or replaced from here.",
+                    fg_color=ALERT_COLOR, bold=True,
+                )
+            )
+            return
         await session.write_line(
             colored(
                 f"\r\nA shutdown is already scheduled -- going down in "

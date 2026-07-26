@@ -1067,6 +1067,49 @@ def test_shutdown_screen_offers_to_cancel_an_already_scheduled_shutdown(db, lane
     asyncio.run(scenario())
 
 
+def test_shutdown_screen_refuses_to_cancel_a_signal_triggered_shutdown(db, lane, sysop):
+    """Issue #108: a SIGTERM/SIGINT-triggered shutdown (`cancellable=
+    False`, matching what `netbbs.__main__._install_signal_handlers`
+    actually registers) must not be cancellable -- or silently
+    replaceable -- from the in-BBS node menu. Contrast with
+    `test_shutdown_screen_offers_to_cancel_an_already_scheduled_
+    shutdown` above, the SysOp-created case, which remains fully
+    cancellable."""
+    async def scenario():
+        node_controls = _node_controls()
+        node_controls.maintenance.activate()  # a real triggered shutdown would have done this
+        loop = asyncio.get_running_loop()
+        first_task = asyncio.create_task(asyncio.Event().wait())
+        node_controls.shutdown_scheduler.schedule(
+            first_task, deadline=loop.time() + 60.0, message=None, source="sigterm", cancellable=False
+        )
+
+        # No "y" in this script at all -- the "Cancel it?" prompt must
+        # never be reached, so there is nothing here to answer.
+        admin_session = FakeSession(["s", "n", "s", "b", "b", "b"])
+        node_controls.session_registry.enter(admin_session)
+        try:
+            await admin_menu(admin_session, lane, sysop, node_controls=node_controls)
+        finally:
+            node_controls.session_registry.leave(admin_session)
+
+        text = _written_text(admin_session)
+        assert "triggered externally" in text
+        assert "SIGTERM" in text
+        assert "cannot be cancelled or replaced" in text
+        assert "Cancel it?" not in text
+        assert "Scheduled shutdown cancelled." not in text
+        # Nothing was touched: still scheduled, task still alive, maintenance untouched.
+        assert node_controls.shutdown_scheduler.is_scheduled() is True
+        assert not first_task.cancelled()
+        assert node_controls.maintenance.is_active() is True
+
+        first_task.cancel()
+        await asyncio.gather(first_task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
 def test_node_menu_shows_maintenance_and_schedule_status(db, lane, sysop):
     async def scenario():
         node_controls = _node_controls()
@@ -1084,6 +1127,34 @@ def test_node_menu_shows_maintenance_and_schedule_status(db, lane, sysop):
 
         drain_task.cancel()
         await asyncio.gather(drain_task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_node_menu_status_line_notes_a_signal_triggered_shutdown_cannot_be_cancelled(db, lane, sysop):
+    """Issue #108: the `[N]ode` menu's own status line (distinct from
+    `_shutdown_screen`'s message, checked above) must also surface *why*
+    a scheduled shutdown can't be cancelled here, not just that one is
+    scheduled -- a SysOp glancing at this screen shouldn't need to enter
+    `[S]hutdown` at all to learn that."""
+    async def scenario():
+        node_controls = _node_controls()
+        loop = asyncio.get_running_loop()
+        shutdown_task = asyncio.create_task(asyncio.Event().wait())
+        node_controls.shutdown_scheduler.schedule(
+            shutdown_task, deadline=loop.time() + 30.0, message=None, source="sigint", cancellable=False
+        )
+
+        session = FakeSession(["s", "n", "b", "b", "b"])
+        await admin_menu(session, lane, sysop, node_controls=node_controls)
+
+        text = _written_text(session)
+        assert "Shutdown scheduled" in text
+        assert "SIGINT" in text
+        assert "cannot be cancelled" in text
+
+        shutdown_task.cancel()
+        await asyncio.gather(shutdown_task, return_exceptions=True)
 
     asyncio.run(scenario())
 

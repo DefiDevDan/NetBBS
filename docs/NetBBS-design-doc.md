@@ -2609,16 +2609,39 @@ process-local); nothing here needs to survive a restart or be compared
 across processes. A signal-triggered shutdown (SIGTERM/SIGINT) registers
 with the same `shutdown_scheduler` a live SysOp session's `[S]hutdown`
 command would use — one shared source of truth regardless of what
-triggered it, so a connected SysOp sees accurate status (and could even
-cancel it) either way.
+triggered it, so a connected SysOp sees accurate status either way.
+
+**Provenance and cancellability (issue #108, revised after this
+subsection originally shipped).** Each tracked sequence also records
+`source` (`"sysop"`, `"sigterm"`, `"sigint"`) and `cancellable`, both
+defaulting to the SysOp-created shape every pre-existing caller already
+had. `netbbs.__main__._install_signal_handlers` is the only caller that
+passes `cancellable=False` — a service supervisor's SIGTERM/SIGINT
+outranks an in-BBS choice to keep the node running, so a connected SysOp
+must never be able to cancel (or, equivalently, silently *replace*) a
+shutdown that supervisor triggered; escalating to SIGKILL if NetBBS kept
+running anyway would defeat the whole point of a graceful stop.
+`SequenceScheduler.cancel()` — the explicit "cancel it?" action — refuses
+outright for a non-cancellable sequence; `schedule()` itself stays
+unconditional regardless (a second real SIGTERM must still be able to
+reset an in-flight SIGTERM countdown), so `netbbs.net.admin_flow.
+_shutdown_screen` is the one responsible for never reaching its own
+`schedule()` call in that case either — a non-cancellable, already-
+scheduled shutdown gets a status-only message and returns immediately,
+never the ordinary "schedule a new one" prompts. A SysOp-created shutdown
+remains fully cancellable/replaceable exactly as this subsection
+originally described.
 
 This one piece of state is what makes the remaining four gaps closable as
 straightforward reads/writes against it, not four separate mechanisms:
 
 **1. Explicit cancel-or-replace, not silent stacking.** Re-running
 `[D]rain`/`[S]hutdown` while one is already scheduled now shows its
-remaining time and offers "Cancel it?" before proceeding — answering yes
-cancels cleanly and stops; answering no continues into the ordinary
+remaining time and offers "Cancel it?" before proceeding (unless it's a
+non-cancellable signal-triggered shutdown — see the provenance paragraph
+above, which gets a status-only message and an immediate return instead)
+— answering yes cancels cleanly and stops; answering no continues into
+the ordinary
 prompts, and the resulting new schedule replaces the old one via
 `schedule()`. `[S]hutdown` also gained a per-invocation delay prompt for
 the first time (previously a fixed `graceful_delay_seconds` config value

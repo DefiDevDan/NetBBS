@@ -813,8 +813,8 @@ def _install_signal_handlers(
     shutdown_scheduler: SequenceScheduler,
     graceful_delay_seconds: float,
 ) -> None:
-    def _request_shutdown(graceful: bool) -> None:
-        _logger.info("shutdown requested (%s)", "graceful" if graceful else "immediate")
+    def _request_shutdown(graceful: bool, source: str) -> None:
+        _logger.info("shutdown requested (%s, %s)", "graceful" if graceful else "immediate", source)
         task = loop.create_task(
             run_shutdown_sequence(
                 graceful=graceful,
@@ -827,11 +827,19 @@ def _install_signal_handlers(
         # Design doc -- node management: registering a signal-triggered
         # shutdown with the same scheduler an in-session [S]hutdown
         # command uses means a connected SysOp sees accurate remaining-
-        # time status (the [N]ode menu, the main-menu prompt tag) and
-        # could even cancel it from there -- one shared source of truth
-        # rather than the signal path silently bypassing it.
+        # time status (the [N]ode menu, the main-menu prompt tag) --
+        # one shared source of truth rather than the signal path
+        # silently bypassing it.
+        #
+        # Issue #108: cancellable=False. The service supervisor that
+        # sent this signal outranks an in-BBS SysOp choice to keep the
+        # node running -- `netbbs.net.admin_flow._shutdown_screen`
+        # refuses to offer "Cancel it?" (or to schedule a replacement)
+        # for a sequence registered this way; see
+        # `SequenceScheduler.is_cancellable()`'s own docstring.
         shutdown_scheduler.schedule(
-            task, deadline=loop.time() + (graceful_delay_seconds if graceful else 0.0), message=None
+            task, deadline=loop.time() + (graceful_delay_seconds if graceful else 0.0), message=None,
+            source=source, cancellable=False,
         )
 
     # SIGTERM is the conventional "please shut down properly" signal
@@ -839,9 +847,11 @@ def _install_signal_handlers(
     # graceful (warn, wait, then disconnect) path. SIGINT -- Ctrl+C in
     # an attended terminal -- is immediate: warn, then disconnect right
     # away, no wait.
-    for sig, graceful in ((signal.SIGTERM, True), (signal.SIGINT, False)):
+    for sig, graceful, source in ((signal.SIGTERM, True, "sigterm"), (signal.SIGINT, False, "sigint")):
         try:
-            loop.add_signal_handler(sig, lambda graceful=graceful: _request_shutdown(graceful))
+            loop.add_signal_handler(
+                sig, lambda graceful=graceful, source=source: _request_shutdown(graceful, source)
+            )
         except NotImplementedError:
             # add_signal_handler is Unix-only (see the stdlib asyncio
             # docs); the intended deployment target is NetBSD (see
@@ -852,7 +862,9 @@ def _install_signal_handlers(
             # the loop instead.
             signal.signal(
                 sig,
-                lambda *_, graceful=graceful: loop.call_soon_threadsafe(_request_shutdown, graceful),
+                lambda *_, graceful=graceful, source=source: loop.call_soon_threadsafe(
+                    _request_shutdown, graceful, source
+                ),
             )
 
 

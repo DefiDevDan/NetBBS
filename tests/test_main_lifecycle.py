@@ -941,6 +941,56 @@ def test_signal_handler_registration_triggers_shutdown_event():
     asyncio.run(scenario())
 
 
+def test_signal_triggered_shutdown_is_registered_as_non_cancellable():
+    """Issue #108, closing the loop end to end: a real raised SIGTERM,
+    through the actual `_install_signal_handlers` dispatch (not a
+    hand-constructed `SequenceScheduler.schedule()` call, which
+    `test_shutdown.py`'s own unit tests already cover), must show up
+    tracked as non-cancellable -- and `cancel()` must actually refuse
+    it, exactly as `netbbs.net.admin_flow._shutdown_screen` relies on."""
+    shutdown_event = asyncio.Event()
+    shutdown_scheduler = SequenceScheduler()
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        _install_signal_handlers(
+            loop,
+            shutdown_event=shutdown_event,
+            session_registry=ActiveSessionRegistry(),
+            maintenance=MaintenanceMode(),
+            shutdown_scheduler=shutdown_scheduler,
+            # Long enough that every assertion below runs well before
+            # the countdown would actually fire and disconnect anything.
+            graceful_delay_seconds=5.0,
+        )
+        signal.raise_signal(signal.SIGTERM)
+        for _ in range(50):
+            if shutdown_scheduler.is_scheduled():
+                break
+            await asyncio.sleep(0.01)
+
+        assert shutdown_scheduler.is_scheduled() is True
+        assert shutdown_scheduler.source() == "sigterm"
+        assert shutdown_scheduler.is_cancellable() is False
+
+        original_task = shutdown_scheduler._current.task
+        assert shutdown_scheduler.cancel() is False  # refused -- the actual enforcement point
+        assert shutdown_scheduler.is_scheduled() is True
+
+        # schedule() itself stays unconditional regardless of the
+        # outgoing sequence's own cancellability (see its own
+        # docstring) -- used here only to tear the real signal-
+        # triggered task down cleanly instead of waiting out the full
+        # 5s countdown.
+        replacement = asyncio.create_task(asyncio.Event().wait())
+        shutdown_scheduler.schedule(replacement, deadline=loop.time() + 60.0, message=None)
+        await asyncio.gather(original_task, return_exceptions=True)
+        replacement.cancel()
+        await asyncio.gather(replacement, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
 def test_default_log_file_rotates_instead_of_growing_without_bound(tmp_path):
     """Issue #114: the default `netbbs.log` (issue #98) must be
     self-bounding. `_create_log_file_handler` is exercised directly with

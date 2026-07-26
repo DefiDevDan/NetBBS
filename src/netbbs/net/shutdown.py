@@ -164,6 +164,13 @@ class _ScheduledSequence:
     task: asyncio.Task
     deadline: float
     message: str | None
+    # Issue #108: which authority created this sequence, and whether the
+    # in-BBS SysOp UI may cancel/replace it. Both default to the shape
+    # every existing caller (SysOp `[D]rain`/`[S]hutdown`) already had --
+    # only `netbbs.__main__._install_signal_handlers` passes anything
+    # else, for a signal-triggered shutdown.
+    source: str = "sysop"
+    cancellable: bool = True
 
 
 class SequenceScheduler:
@@ -194,6 +201,22 @@ class SequenceScheduler:
     `cancel()` are plain synchronous methods -- `Task.cancel()` only
     *requests* cancellation, it doesn't block waiting for it to take
     effect, so nothing here needs to be a coroutine itself.
+
+    **Issue #108: `schedule()` and `cancel()` are deliberately asymmetric
+    about cancellability.** `schedule()` stays unconditional -- it always
+    cancels-and-replaces whatever is currently tracked, regardless of
+    that existing sequence's own `cancellable` flag, because the *signal
+    handler* path needs to keep working exactly this way too (a second
+    SIGTERM must still be able to reset an in-flight SIGTERM countdown).
+    `cancel()`, by contrast, is specifically the SysOp-facing "cancel it?"
+    action (see its own docstring) and refuses outright for a non-
+    cancellable sequence. Closing the loophole this leaves -- a SysOp
+    who can't explicitly cancel a signal-triggered shutdown otherwise
+    silently *replacing* it by scheduling a new one -- is therefore the
+    caller's job: `netbbs.net.admin_flow._shutdown_screen` checks
+    `is_cancellable()` itself before ever reaching its own `schedule()`
+    call, refusing to offer a new shutdown at all while a non-cancellable
+    one is in flight, rather than this class refusing on its behalf.
     """
 
     def __init__(self) -> None:
@@ -201,6 +224,23 @@ class SequenceScheduler:
 
     def is_scheduled(self) -> bool:
         return self._current is not None and not self._current.task.done()
+
+    def is_cancellable(self) -> bool:
+        """Whether the SysOp-facing "cancel it?"/replace path may act on
+        the currently-scheduled sequence right now (issue #108). `True`
+        when nothing is scheduled at all (nothing to refuse), or when
+        what's scheduled was itself SysOp-created. `False` for an
+        externally triggered shutdown (`source="sigterm"`/`"sigint"`) --
+        the service supervisor's own authority to stop this process
+        outranks an in-BBS choice to keep it running."""
+        return not self.is_scheduled() or self._current.cancellable
+
+    def source(self) -> str | None:
+        """Provenance of the currently-scheduled sequence ("sysop",
+        "sigterm", "sigint"), or `None` if nothing is scheduled -- lets a
+        status screen explain *why* cancellation is refused, not merely
+        that it is."""
+        return self._current.source if self.is_scheduled() else None
 
     def remaining_seconds(self) -> float | None:
         """`None` if nothing is currently scheduled -- never a negative
@@ -215,20 +255,46 @@ class SequenceScheduler:
     def message(self) -> str | None:
         return self._current.message if self.is_scheduled() else None
 
-    def schedule(self, task: asyncio.Task, *, deadline: float, message: str | None) -> None:
+    def schedule(
+        self,
+        task: asyncio.Task,
+        *,
+        deadline: float,
+        message: str | None,
+        source: str = "sysop",
+        cancellable: bool = True,
+    ) -> None:
         """Registers `task` (already created by the caller via
         `asyncio.create_task`) as the currently-scheduled sequence,
         cancelling and discarding any existing one first -- the actual
         fix for the stacking bug this class exists for: a second call
-        always fully replaces the first, never runs alongside it."""
-        self.cancel()
-        self._current = _ScheduledSequence(task=task, deadline=deadline, message=message)
+        always fully replaces the first, never runs alongside it.
+
+        This replacement is deliberately unconditional regardless of the
+        outgoing sequence's own `cancellable` flag -- see this class's
+        own docstring for why (the signal-handler path must always be
+        able to reassert itself). `source`/`cancellable` (issue #108)
+        default to the shape every pre-existing caller already has."""
+        self._cancel_unconditionally()
+        self._current = _ScheduledSequence(
+            task=task, deadline=deadline, message=message, source=source, cancellable=cancellable
+        )
 
     def cancel(self) -> bool:
-        """Cancels the currently-scheduled sequence, if any. Returns
-        whether anything was actually cancelled -- callers offering a
-        SysOp an explicit "cancel it?" choice use this to confirm
-        something really was there to cancel."""
+        """Cancels the currently-scheduled sequence, if any *and if it is
+        cancellable* (issue #108, `is_cancellable()`) -- callers offering
+        a SysOp an explicit "cancel it?" choice use this to confirm
+        something really was there to cancel. Returns `False` without
+        cancelling anything for a non-cancellable (externally triggered)
+        sequence, same as when nothing is scheduled at all."""
+        if not self.is_scheduled() or not self._current.cancellable:
+            return False
+        return self._cancel_unconditionally()
+
+    def _cancel_unconditionally(self) -> bool:
+        """Shared by the public `cancel()` (gated on `is_cancellable()`)
+        and `schedule()`'s own unconditional replace-any-existing-
+        sequence step (never gated -- see that method's own docstring)."""
         if not self.is_scheduled():
             return False
         self._current.task.cancel()

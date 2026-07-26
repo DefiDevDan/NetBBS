@@ -1350,6 +1350,117 @@ def test_cancel_stops_it_being_scheduled_and_cancels_the_task():
     asyncio.run(scenario())
 
 
+# -- provenance/cancellability (issue #108) ----------------------------------
+
+
+def test_schedule_defaults_to_sysop_and_cancellable():
+    """Every pre-#108 caller (SysOp `[D]rain`/`[S]hutdown`) needs no
+    changes -- the defaults reproduce their exact existing behavior."""
+
+    async def scenario():
+        scheduler = SequenceScheduler()
+        task = asyncio.create_task(_pending_task())
+        loop = asyncio.get_running_loop()
+        scheduler.schedule(task, deadline=loop.time() + 60.0, message=None)
+
+        assert scheduler.source() == "sysop"
+        assert scheduler.is_cancellable() is True
+
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_is_cancellable_is_true_when_nothing_is_scheduled():
+    """Nothing to refuse -- a caller about to schedule a fresh sequence
+    from an idle scheduler must not be blocked."""
+    assert SequenceScheduler().is_cancellable() is True
+    assert SequenceScheduler().source() is None
+
+
+def test_a_signal_triggered_shutdown_is_recorded_as_non_cancellable():
+    """Mirrors exactly what `netbbs.__main__._install_signal_handlers`
+    registers for a real SIGTERM/SIGINT."""
+
+    async def scenario():
+        scheduler = SequenceScheduler()
+        task = asyncio.create_task(_pending_task())
+        loop = asyncio.get_running_loop()
+        scheduler.schedule(
+            task, deadline=loop.time() + 60.0, message=None, source="sigterm", cancellable=False
+        )
+
+        assert scheduler.source() == "sigterm"
+        assert scheduler.is_cancellable() is False
+
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_cancel_refuses_a_non_cancellable_sequence():
+    """The actual enforcement point (issue #108): `cancel()` -- the
+    SysOp-facing "cancel it?" action -- must not touch a signal-
+    triggered sequence at all, distinct from the ordinary SysOp case
+    `test_cancel_stops_it_being_scheduled_and_cancels_the_task` above
+    proves works."""
+
+    async def scenario():
+        scheduler = SequenceScheduler()
+        task = asyncio.create_task(_pending_task())
+        loop = asyncio.get_running_loop()
+        scheduler.schedule(
+            task, deadline=loop.time() + 60.0, message=None, source="sigint", cancellable=False
+        )
+
+        cancelled = scheduler.cancel()
+        await asyncio.sleep(0)
+
+        assert cancelled is False
+        assert scheduler.is_scheduled() is True
+        assert not task.cancelled()
+
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_schedule_still_unconditionally_replaces_a_non_cancellable_sequence():
+    """`schedule()` itself stays unconditional regardless of the outgoing
+    sequence's own cancellability -- a second real SIGTERM must still be
+    able to reset an in-flight SIGTERM countdown (e.g. a longer/shorter
+    delay change), the same as any other replace. Distinguishing "may the
+    SysOp UI act on this" (`cancel()`, refused) from "can the scheduler
+    itself be re-armed" (`schedule()`, never refused) is the whole point
+    of this asymmetry -- see `SequenceScheduler`'s own docstring."""
+
+    async def scenario():
+        scheduler = SequenceScheduler()
+        loop = asyncio.get_running_loop()
+        first_task = asyncio.create_task(_pending_task())
+        scheduler.schedule(
+            first_task, deadline=loop.time() + 60.0, message=None, source="sigterm", cancellable=False
+        )
+
+        second_task = asyncio.create_task(_pending_task())
+        scheduler.schedule(
+            second_task, deadline=loop.time() + 10.0, message=None, source="sigterm", cancellable=False
+        )
+        await asyncio.sleep(0)
+
+        assert first_task.cancelled()
+        assert not second_task.done()
+        assert scheduler.is_cancellable() is False
+
+        second_task.cancel()
+        await asyncio.gather(second_task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
 def test_is_scheduled_becomes_false_once_the_task_finishes_naturally():
     async def scenario():
         scheduler = SequenceScheduler()
