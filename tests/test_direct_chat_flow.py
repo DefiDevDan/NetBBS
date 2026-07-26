@@ -83,16 +83,18 @@ def _written_text(session: FakeSession) -> str:
     return "".join(session.written)
 
 
-async def _run_until(predicate, *, max_iterations: int = 10_000) -> None:
-    """Polls `predicate` with a bare `asyncio.sleep(0)` between checks --
-    the standard way this test drives one concurrent task until it has
-    reached a specific, externally-observable point (a message written, a
-    invite registered) before the test injects the next scripted input,
-    rather than guessing a fixed number of yields."""
+async def _run_until(predicate, *, max_iterations: int = 2_000) -> None:
+    """Poll an externally visible condition for up to roughly two seconds.
+
+    A small real delay matters because several conditions depend on the
+    DatabaseLane worker thread, not only another event-loop task. Repeated
+    zero-delay yields can exhaust a large iteration count before Windows
+    schedules that worker at all.
+    """
     for _ in range(max_iterations):
         if predicate():
             return
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.001)
     raise AssertionError("condition never became true")
 
 
@@ -335,12 +337,9 @@ def test_a_second_invite_to_an_already_busy_session_is_refused_up_front(tmp_path
         database.close()
 
 
-def test_dm_command_from_inside_channel_chat_triggers_the_identical_flow(tmp_path):
-    """`/dm <user>` (design doc §6.3) is the second entry point, alongside
-    the Who screen's `[I]nvite to chat` -- both call the identical
-    `run_direct_chat_invite_flow`, so this only needs to prove `_chat_loop`
-    actually wires the command through, not re-prove the invite mechanism
-    itself (covered above)."""
+def test_dm_command_unwinds_channel_before_direct_chat_and_rejoins_afterward(tmp_path):
+    """`/dm <user>` must give direct chat exclusive ownership of the
+    session (issue #118), then cleanly re-enter the original channel."""
     database = Database(tmp_path / "node.db")
     lane = DatabaseLane(database.path)
     try:
@@ -360,28 +359,125 @@ def test_dm_command_from_inside_channel_chat_triggers_the_identical_flow(tmp_pat
             registry.mark_authenticated(bob_session, "bob")
 
             alice_session = FakeSession()
-            history = InputHistory()
             chat_task = asyncio.create_task(
-                chat_flow._chat_loop(
-                    alice_session, lane, hub, presence, MessageMailbox(), history, channel, alice,
-                    session_registry=registry, direct_invites=direct_invites,
+                chat_flow.browse_channels(
+                    alice_session,
+                    lane,
+                    hub,
+                    presence,
+                    MessageMailbox(),
+                    InputHistory(),
+                    alice,
+                    initial_channel=channel,
+                    session_registry=registry,
+                    direct_invites=direct_invites,
                 )
             )
             alice_session.queue_line("/dm bob")
 
             await _run_until(lambda: direct_invites.pending_for(bob_session) is not None)
+            assert hub.participant_count(channel.name) == 0
+
             # Bob's own side of accepting is already covered by the live-
             # interrupt test above -- resolve it directly here so this
             # test stays focused on /dm's own wiring.
             direct_invites.respond(bob_session, accepted=True)
 
             await _run_until(lambda: "accepted." in _written_text(alice_session))
+            public_marker = "PUBLIC TRAFFIC MUST STAY OUT OF THE DM SCREEN"
+            await hub.broadcast(channel.name, public_marker)
+            await asyncio.sleep(0)
+            assert public_marker not in _written_text(alice_session)
+
             alice_session.queue_line("hi bob")
             await _run_until(lambda: "you: hi bob" in _written_text(alice_session))
             alice_session.queue_line("/close")
+            await _run_until(lambda: hub.participant_count(channel.name) == 1)
             alice_session.queue_line("/quit")
-            action = await asyncio.wait_for(chat_task, timeout=2)
-            assert isinstance(action, chat_flow._Quit)
+            await asyncio.wait_for(chat_task, timeout=2)
+            assert hub.participant_count(channel.name) == 0
+
+        asyncio.run(scenario())
+    finally:
+        lane.close()
+        database.close()
+
+
+def test_unsupported_invite_key_does_not_cancel_waiting_invite(tmp_path):
+    database = Database(tmp_path / "node.db")
+    lane = DatabaseLane(database.path)
+    try:
+        alice = create_user(database, "alice", password="hunter2", user_level=10)
+        bob = create_user(database, "bob", password="hunter2", user_level=10)
+
+        async def scenario():
+            registry = ActiveSessionRegistry()
+            hub = ChatHub()
+            presence = PresenceRegistry()
+            presence.enter("bob")
+            direct_invites = DirectChatInvites()
+            bob_session = FakeSession()
+            registry.enter(bob_session)
+            registry.mark_authenticated(bob_session, "bob")
+            alice_session = FakeSession()
+
+            invite_task = asyncio.create_task(
+                chat_flow.run_direct_chat_invite_flow(
+                    alice_session, lane, hub, presence, direct_invites, registry, alice, bob
+                )
+            )
+            await _run_until(lambda: direct_invites.pending_for(bob_session) is not None)
+
+            alice_session.queue_key("x")
+            await _run_until(lambda: "\b" in _written_text(alice_session))
+            assert not invite_task.done()
+            assert direct_invites.pending_for(bob_session) is not None
+
+            direct_invites.respond(bob_session, accepted=False)
+            await asyncio.wait_for(invite_task, timeout=2)
+            assert "declined." in _written_text(alice_session)
+
+        asyncio.run(scenario())
+    finally:
+        lane.close()
+        database.close()
+
+
+def test_acceptance_wins_when_accept_and_local_cancel_land_together(tmp_path):
+    database = Database(tmp_path / "node.db")
+    lane = DatabaseLane(database.path)
+    try:
+        alice = create_user(database, "alice", password="hunter2", user_level=10)
+        bob = create_user(database, "bob", password="hunter2", user_level=10)
+
+        async def scenario():
+            registry = ActiveSessionRegistry()
+            hub = ChatHub()
+            presence = PresenceRegistry()
+            presence.enter("bob")
+            direct_invites = DirectChatInvites()
+            bob_session = FakeSession()
+            registry.enter(bob_session)
+            registry.mark_authenticated(bob_session, "bob")
+            alice_session = FakeSession()
+
+            invite_task = asyncio.create_task(
+                chat_flow.run_direct_chat_invite_flow(
+                    alice_session, lane, hub, presence, direct_invites, registry, alice, bob
+                )
+            )
+            await _run_until(lambda: direct_invites.pending_for(bob_session) is not None)
+
+            # Resolve both inputs without yielding, so the inviter observes
+            # them in the same scheduler turn. The committed acceptance must
+            # win or the accepting peer would be stranded in a dead room.
+            direct_invites.respond(bob_session, accepted=True)
+            alice_session.queue_key("c")
+            await _run_until(lambda: "accepted." in _written_text(alice_session))
+            assert "Invitation cancelled." not in _written_text(alice_session)
+
+            alice_session.queue_line("/close")
+            await asyncio.wait_for(invite_task, timeout=2)
 
         asyncio.run(scenario())
     finally:

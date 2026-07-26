@@ -525,6 +525,7 @@ def test_request_inventory_lets_a_completed_peer_discover_carried_content_from_a
                     build_inventory_request,
                     signing_identity=alice_identity.signing_key,
                     requester_fingerprint=alice_identity.fingerprint,
+                    responder_fingerprint=bob_identity.fingerprint,
                 )
                 assert inventory_request.boards == {}
                 return await request_inventory(
@@ -574,6 +575,7 @@ def test_request_inventory_is_refused_for_a_stranger_attempting_anonymous_enumer
                     build_inventory_request,
                     signing_identity=mallory_identity.signing_key,
                     requester_fingerprint=mallory_identity.fingerprint,
+                    responder_fingerprint=bob_identity.fingerprint,
                 )
                 assert inventory_request.boards == {}
                 await request_inventory(

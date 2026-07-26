@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from netbbs.auth.users import User
 from netbbs.storage.database import Database
 from netbbs.timeutil import utc_now_iso
-from netbbs.user_preferences import get_user_preference, set_user_preference
+from netbbs.user_preferences import get_user_preference
 
 # Keeps only the most recent this-many rows on every insert -- generous
 # enough that "last N sessions" (N well under this) always has a full
@@ -121,6 +121,33 @@ def list_recent_sessions(db: Database, *, limit: int = 20) -> list[SessionHistor
     ]
 
 
+def _backfill_name_visibility_fallbacks(db: Database) -> None:
+    """Repair legacy fallback values from each live account preference.
+
+    Issue #111's already-shipped migration necessarily defaulted every
+    pre-existing row to visible. A user who had opted out before that
+    upgrade therefore needs one bounded, idempotent repair before
+    listeners start (issue #123). Deleted-account rows are intentionally
+    untouched because no live preference remains to consult.
+    """
+    db.connection.execute(
+        """
+        UPDATE session_history
+        SET name_visible_fallback = CASE
+            WHEN EXISTS (
+                SELECT 1 FROM user_preferences
+                WHERE user_preferences.user_id = session_history.user_id
+                  AND user_preferences.key = ?
+                  AND user_preferences.value = '0'
+            ) THEN 0
+            ELSE 1
+        END
+        WHERE user_id IS NOT NULL
+        """,
+        (_NAME_VISIBLE_KEY,),
+    )
+
+
 def reconcile_interrupted_sessions(db: Database) -> int:
     """Issue #110: called once, at node startup (`netbbs.__main__.run`),
     *before* any listener can accept a new session -- the same "anything
@@ -129,8 +156,9 @@ def reconcile_interrupted_sessions(db: Database) -> int:
     purge_incoming_staging` already established for stale upload staging
     files.
 
-    Every row with `disconnected_at IS NULL` at this exact point was, by
-    construction, left open by a *previous* process instance: this
+    Every row with both `disconnected_at IS NULL` and `interrupted_at IS
+    NULL` at this exact point was, by construction, left open by a
+    *previous* process instance: this
     process's own listeners haven't started yet, so nothing here could
     have called `record_session_start` this run. `record_session_end`
     only ever fills `disconnected_at` from `run_authenticated_session`'s
@@ -144,14 +172,21 @@ def reconcile_interrupted_sessions(db: Database) -> int:
     _last_sessions_screen` show something honest instead of "still
     connected" for a session that cannot possibly still exist.
 
-    Returns the number of rows reconciled, purely for the caller's own
-    startup log line (same convention `purge_incoming_staging` returns
-    its own count for)."""
-    cursor = db.connection.execute(
-        "UPDATE session_history SET interrupted_at = ? WHERE disconnected_at IS NULL",
-        (utc_now_iso(),),
-    )
-    db.connection.commit()
+    Issue #122's second predicate makes the operation idempotent:
+    reconciled rows deliberately keep `disconnected_at` NULL, so later
+    restarts must not overwrite their first detection timestamp.
+
+    The same before-listeners transaction repairs legacy privacy
+    fallbacks (issue #123). Returns only the number of newly interrupted
+    sessions, preserving the caller's existing log meaning.
+    """
+    with db.connection:
+        _backfill_name_visibility_fallbacks(db)
+        cursor = db.connection.execute(
+            "UPDATE session_history SET interrupted_at = ? "
+            "WHERE disconnected_at IS NULL AND interrupted_at IS NULL",
+            (utc_now_iso(),),
+        )
     return cursor.rowcount
 
 
@@ -175,10 +210,23 @@ def set_session_history_name_visible(db: Database, user: User, visible: bool) ->
     every one of its rows falls back to is the value that was actually
     in effect right up until deletion, matching what an ordinary caller
     was already seeing, rather than reverting to whatever was true back
-    when each row happened to first connect."""
-    set_user_preference(db, user, _NAME_VISIBLE_KEY, "1" if visible else "0")
-    db.connection.execute(
-        "UPDATE session_history SET name_visible_fallback = ? WHERE user_id = ?",
-        (int(visible), user.id),
-    )
-    db.connection.commit()
+    when each row happened to first connect.
+
+    Issue #123: the live preference and all fallback rows are one
+    privacy decision and therefore one SQLite transaction. The generic
+    preference helper commits internally, so this typed wrapper performs
+    the small UPSERT directly before updating history.
+    """
+    value = "1" if visible else "0"
+    with db.connection:
+        db.connection.execute(
+            """
+            INSERT INTO user_preferences (user_id, key, value) VALUES (?, ?, ?)
+            ON CONFLICT(user_id, key) DO UPDATE SET value = excluded.value
+            """,
+            (user.id, _NAME_VISIBLE_KEY, value),
+        )
+        db.connection.execute(
+            "UPDATE session_history SET name_visible_fallback = ? WHERE user_id = ?",
+            (int(visible), user.id),
+        )

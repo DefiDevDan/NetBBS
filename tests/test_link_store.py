@@ -931,7 +931,10 @@ def test_build_inventory_request_includes_self_originated_genesis_and_post(tmp_p
     board_post = queue_board_post_if_linked(db, post, board, node_identity=own_identity)
 
     request = build_inventory_request(
-        db, signing_identity=own_identity.signing_key, requester_fingerprint=own_identity.fingerprint
+        db,
+        signing_identity=own_identity.signing_key,
+        requester_fingerprint=own_identity.fingerprint,
+        responder_fingerprint="peer-fingerprint",
     )
 
     assert board.board_id in request.boards
@@ -952,7 +955,10 @@ def test_build_inventory_request_includes_carried_content(tmp_path):
     materialize_carried_post(db, post, sender_fingerprint=remote_identity.fingerprint)
 
     request = build_inventory_request(
-        db, signing_identity=own_identity.signing_key, requester_fingerprint=own_identity.fingerprint
+        db,
+        signing_identity=own_identity.signing_key,
+        requester_fingerprint=own_identity.fingerprint,
+        responder_fingerprint="peer-fingerprint",
     )
 
     assert set(request.boards["remote-board-id"]) == {genesis.content_id, post.content_id}
@@ -1111,7 +1117,10 @@ def test_build_inventory_request_includes_self_originated_file_area_genesis_and_
     descriptor = queue_file_descriptor_if_linked(db, file_entry, area, node_identity=own_identity)
 
     request = build_inventory_request(
-        db, signing_identity=own_identity.signing_key, requester_fingerprint=own_identity.fingerprint
+        db,
+        signing_identity=own_identity.signing_key,
+        requester_fingerprint=own_identity.fingerprint,
+        responder_fingerprint="peer-fingerprint",
     )
 
     assert area.area_id in request.file_areas
@@ -1132,7 +1141,10 @@ def test_build_inventory_request_includes_carried_file_area_content(tmp_path):
     materialize_carried_file_descriptor(db, descriptor, sender_fingerprint=remote_identity.fingerprint)
 
     request = build_inventory_request(
-        db, signing_identity=own_identity.signing_key, requester_fingerprint=own_identity.fingerprint
+        db,
+        signing_identity=own_identity.signing_key,
+        requester_fingerprint=own_identity.fingerprint,
+        responder_fingerprint="peer-fingerprint",
     )
 
     assert set(request.file_areas["remote-area-id"]) == {genesis.content_id, descriptor.content_id}

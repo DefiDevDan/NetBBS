@@ -949,7 +949,10 @@ def test_a_node_with_nothing_carried_yet_discovers_a_new_board_via_multi_hop_inv
     # genuinely empty, unlike the test above's hand-injected board_id.
     assert "fresh-board-id" not in c_node.boards
     request = build_inventory_request(
-        c.db, signing_identity=c.identity.signing_key, requester_fingerprint=c.identity.fingerprint
+        c.db,
+        signing_identity=c.identity.signing_key,
+        requester_fingerprint=c.identity.fingerprint,
+        responder_fingerprint=b.fingerprint,
     )
     assert request.boards == {}
 

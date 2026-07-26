@@ -120,10 +120,25 @@ class ChatHub:
         return queue
 
     def leave(self, channel_name: str, participant_id: ParticipantId) -> None:
-        self._channels[channel_name].pop(participant_id, None)
+        participants = self._channels.get(channel_name)
+        if participants is None:
+            return
+        participants.pop(participant_id, None)
+        # Real channel names come from a bounded, persisted set. Direct
+        # chat instead creates a fresh synthetic room for every
+        # conversation, so retaining its empty dict/activity key would
+        # grow these maps monotonically over node uptime (issue #119).
+        if not participants and channel_name.startswith("__dm__:"):
+            self._channels.pop(channel_name, None)
+            self._last_activity.pop(channel_name, None)
 
     async def broadcast(
-        self, channel_name: str, message: object, *, exclude: set[ParticipantId] | None = None
+        self,
+        channel_name: str,
+        message: object,
+        *,
+        exclude: set[ParticipantId] | None = None,
+        priority: bool = False,
     ) -> None:
         """
         Push `message` onto every current participant's queue in
@@ -148,19 +163,27 @@ class ChatHub:
         who leaves mid-broadcast still safely receives it or not
         consistently either way, rather than crashing the broadcast for
         everyone.
+
+        ``priority`` has the same mandatory-state-transition meaning as
+        ``send_to(priority=True)``. It exists for the direct-chat close
+        sentinel (issue #120): a full recipient queue may evict ordinary
+        traffic, but must never replace the incoming close transition
+        with a QueueOverflowNotice.
+
+        Synthetic direct-chat rooms are excluded from the ordinary
+        channel activity index and a late symmetric teardown broadcast
+        must not recreate an already-discarded room (issue #119).
         """
         exclude = exclude or set()
-        participants = list(self._channels[channel_name].items())
+        participants = list(self._channels.get(channel_name, {}).items())
         for participant_id, queue in participants:
             if participant_id in exclude:
                 continue
-            self._deliver(queue, message)
-        # Recorded even if there were zero participants to actually
-        # deliver to (e.g. the system-generated join/leave notices) —
-        # any broadcast attempt counts as activity on the channel,
-        # matching what a user browsing by "most recent activity" would
-        # intuitively expect.
-        self._last_activity[channel_name] = utc_now_iso()
+            self._deliver(queue, message, priority=priority)
+        if not channel_name.startswith("__dm__:"):
+            # Recorded even if there were zero participants to actually
+            # deliver to (e.g. system-generated join/leave notices).
+            self._last_activity[channel_name] = utc_now_iso()
 
     def _deliver(self, queue: asyncio.Queue, message: object, *, priority: bool = False) -> None:
         """
@@ -209,14 +232,14 @@ class ChatHub:
             pass
 
     def participant_count(self, channel_name: str) -> int:
-        return len(self._channels[channel_name])
+        return len(self._channels.get(channel_name, {}))
 
     def participant_ids(self, channel_name: str) -> list[ParticipantId]:
         """
         Every `ParticipantId` currently present in `channel_name`, a
         snapshot (same non-live-dict-iteration safety as `broadcast`).
         """
-        return list(self._channels[channel_name].keys())
+        return list(self._channels.get(channel_name, {}).keys())
 
     def participants_for_username(self, channel_name: str, username: str) -> list[ParticipantId]:
         """
@@ -229,7 +252,7 @@ class ChatHub:
         replaced, which could misattribute a session belonging to
         `alice:alt` to canonical user `alice`.
         """
-        return [pid for pid in self._channels[channel_name] if pid.username == username]
+        return [pid for pid in self._channels.get(channel_name, {}) if pid.username == username]
 
     async def send_to(
         self, channel_name: str, participant_id: ParticipantId, message: object, *, priority: bool = False
@@ -255,7 +278,7 @@ class ChatHub:
         by one slot's worth of eviction, but can never simply drop it
         on the floor the way it would drop ordinary traffic.
         """
-        queue = self._channels[channel_name].get(participant_id)
+        queue = self._channels.get(channel_name, {}).get(participant_id)
         if queue is None:
             return False
         self._deliver(queue, message, priority=priority)

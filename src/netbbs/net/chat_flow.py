@@ -140,7 +140,7 @@ from netbbs.link.boards import LinkContext
 from netbbs.link.channels import queue_channel_message_if_linked
 from netbbs.messaging_preferences import accepts_direct_messages
 from netbbs.moderation import ChannelPermission, has_permission
-from netbbs.net.char_input import Completer, InputHistory, LiveInputBuffer
+from netbbs.net.char_input import Completer, InputHistory, LiveInputBuffer, reject_unhandled_key
 from netbbs.net.char_input import move_cursor as relative_move_cursor
 from netbbs.net.picker import pick_item
 from netbbs.net.session import Session, SessionClosedError
@@ -284,6 +284,26 @@ async def browse_channels(
             channel = await _pick_channel(
                 session, lane, hub, user, category_id=None,
                 community_id=community_id, community_scoped=community_scoped, title_prefix=title_prefix,
+            )
+            continue
+        if isinstance(action, _EnterDirectChat):
+            # Issue #118: `_chat_loop` has fully unwound before this
+            # call -- its receive/clock tasks are gathered, channel
+            # presence is removed, pinned UI is reset, and its notice
+            # hook is cleared. Direct chat therefore becomes the sole
+            # owner of this session's reads, writes, and terminal rows.
+            # On return, keep `channel` unchanged: the loop's normal
+            # authorization check runs again and re-enters it cleanly.
+            assert direct_invites is not None and session_registry is not None
+            await run_direct_chat_invite_flow(
+                session,
+                lane,
+                hub,
+                presence,
+                direct_invites,
+                session_registry,
+                user,
+                action.target,
             )
             continue
         return  # _Quit
@@ -839,6 +859,19 @@ class _ExitPrivate:
     scope as `_EnterPrivate`."""
 
 
+@dataclass(frozen=True)
+class _EnterDirectChat:
+    """Leave the current channel screen before inviting ``target``.
+
+    Unlike `_EnterPrivate`, this action must propagate to
+    `browse_channels`: direct chat is an exclusive fullscreen screen,
+    so it cannot run inside `_chat_loop`'s send task while the channel
+    receive/clock tasks and pinned UI remain live (issue #118).
+    """
+
+    target: User
+
+
 # What a command handler returns after running: `None` means "continue
 # the chat loop as normal." A `ChatAction` means "something about the
 # loop itself needs to change" — propagated all the way up through
@@ -851,7 +884,7 @@ class _ExitPrivate:
 # "keep going": the same "explicit return contract, not exceptions"
 # reasoning already established, just with more to say than a
 # single bit could carry.
-ChatAction = _Quit | _ToPicker | _SwitchTo | _EnterPrivate | _ExitPrivate
+ChatAction = _Quit | _ToPicker | _SwitchTo | _EnterPrivate | _ExitPrivate | _EnterDirectChat
 CommandHandler = Callable[[ChatCommandContext, str], Awaitable[ChatAction | None]]
 
 
@@ -1075,17 +1108,18 @@ async def _handle_close(ctx: ChatCommandContext, args: str) -> ChatAction:
     return _ExitPrivate()
 
 
-async def _handle_dm(ctx: ChatCommandContext, args: str) -> None:
+async def _handle_dm(ctx: ChatCommandContext, args: str) -> ChatAction | None:
     """
     `/dm <user>` (design doc §6.3): sends a mutual invite to a live,
     fullscreen 1:1 direct chat -- distinct from `/msg`/`/private`, both
     one-sided (see `run_direct_chat_invite_flow`'s own docstring for the
     full contrast: neither pulls the target into any shared view or asks
-    them to explicitly agree to anything). Suspends this channel chat
-    for the duration of the invite wait and, if accepted, the direct
-    chat itself -- the same "blocking screen call, returns when done"
-    shape entering any other screen from here would already have, not a
-    new kind of interruption.
+    them to explicitly agree to anything).
+
+    Issue #118: returns an action instead of running the invite flow
+    inline. `browse_channels` receives it only after `_chat_loop` has
+    cancelled/gathered its receive and clock tasks, removed channel
+    presence, cleared the pinned hook, and reset the scroll region.
 
     `ctx.direct_invites`/`ctx.session_registry` are both optional on
     `ChatCommandContext` (not every caller of `_chat_loop` threads a real
@@ -1095,20 +1129,33 @@ async def _handle_dm(ctx: ChatCommandContext, args: str) -> None:
     """
     if ctx.direct_invites is None or ctx.session_registry is None:
         await ctx.session.write_line(colored("Direct chat is not available from here.", fg_color=MUTED_COLOR))
-        return
+        return None
 
     target_name = args.split(maxsplit=1)[0] if args.split() else ""
     if not target_name:
         await _show_usage(ctx.session, "dm")
-        return
+        return None
 
     target = await _resolve_target(ctx.session, ctx.lane, target_name)
     if target is None:
-        return
+        return None
 
-    await run_direct_chat_invite_flow(
-        ctx.session, ctx.lane, ctx.hub, ctx.presence, ctx.direct_invites, ctx.session_registry, ctx.user, target,
-    )
+    # Avoid tearing down and immediately re-entering the channel for a
+    # request that is already known to be impossible. The outer flow
+    # repeats both checks after unwind because either state may change
+    # in the meantime.
+    if not await ctx.lane.run(accepts_direct_messages, target):
+        await ctx.session.write_line(
+            colored(f"{sanitize_text(target.username)} has opted out of direct messages.", fg_color=MUTED_COLOR)
+        )
+        return None
+    if not ctx.presence.is_online(target.username):
+        await ctx.session.write_line(
+            colored(f"{sanitize_text(target.username)} is not currently online.", fg_color=MUTED_COLOR)
+        )
+        return None
+
+    return _EnterDirectChat(target)
 
 
 async def _handle_help(ctx: ChatCommandContext, args: str) -> None:
@@ -2788,9 +2835,10 @@ async def _chat_loop(
 ) -> ChatAction:
     """
     Real-time chat within `channel`, until the user types /quit, /leave,
-    or /join — returns a `ChatAction` telling `browse_channels` what to
-    do next (exit to the main menu, return to the channel picker, or
-    jump straight into another channel) rather than just ending. A kick/
+    /join, or /dm — returns a `ChatAction` telling `browse_channels` what
+    to do next (exit to the main menu, return to the channel picker,
+    jump straight into another channel, or enter an exclusive direct
+    chat after this channel has fully unwound) rather than just ending. A kick/
     ban or a dropped connection (`receive_task` finishing instead of
     `send_task`) always resolves to `_Quit()`.
 
@@ -3656,7 +3704,16 @@ async def run_direct_chat_loop(
             except SessionClosedError:
                 pass
         hub.leave(room, participant_id)
-        await hub.broadcast(room, _DirectChatClosedNotice(), exclude={participant_id})
+        # Issue #120: this is a mandatory room-lifecycle transition, not
+        # lossy chat traffic. A full peer queue may evict an older line
+        # to make room, but must never substitute QueueOverflowNotice for
+        # the close sentinel and leave the peer stuck in a dead room.
+        await hub.broadcast(
+            room,
+            _DirectChatClosedNotice(),
+            exclude={participant_id},
+            priority=True,
+        )
 
 
 async def run_direct_chat_invite_flow(
@@ -3722,30 +3779,68 @@ async def run_direct_chat_invite_flow(
         colored(f"\r\nWaiting for {sanitize_text(target.username)} to accept your invitation...", fg_color=MUTED_COLOR)
     )
     await session.write(f"{menu_key('C', 'ancel')}: ")
-    cancel_key_task = asyncio.create_task(session.read_key())
-    try:
-        done, _pending = await asyncio.wait(
-            set(future_to_session) | {cancel_key_task}, return_when=asyncio.FIRST_COMPLETED
-        )
-    except asyncio.CancelledError:
-        cancel_key_task.cancel()
-        for target_session in invites:
-            direct_invites.cancel(target_session)
-        raise
 
-    if cancel_key_task in done:
-        for target_session in invites:
-            direct_invites.cancel(target_session)
-        await session.write_line(colored("\r\nInvitation cancelled.", fg_color=MUTED_COLOR))
-        return
-    cancel_key_task.cancel()
-    await asyncio.gather(cancel_key_task, return_exceptions=True)
+    # Issue #121: this is a real key-dispatch loop, not "any completed
+    # read means cancel." Unsupported keys are rejected normally and
+    # waiting continues. Outcome precedence is explicit and
+    # deterministic when events land in one scheduler cycle:
+    #
+    #   accepted response > local C > decline/timeout > unsupported key.
+    #
+    # Acceptance wins because DirectChatInvites.respond() has already
+    # committed it and removed the target slot; returning "cancelled"
+    # afterward would strand the accepting peer alone in the room.
+    resolved: list[tuple[object, str]]
+    while True:
+        cancel_key_task = asyncio.create_task(session.read_key())
+        try:
+            done, _pending = await asyncio.wait(
+                set(future_to_session) | {cancel_key_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+        except asyncio.CancelledError:
+            cancel_key_task.cancel()
+            await asyncio.gather(cancel_key_task, return_exceptions=True)
+            for target_session in invites:
+                direct_invites.cancel(target_session)
+            raise
+
+        # Inspect every outcome future, not only the wait() call's
+        # snapshot: an acceptance may commit immediately after wait()
+        # returns for C but before this coroutine resumes.
+        resolved = [
+            (future_to_session[future], future.result())
+            for future in future_to_session
+            if future.done()
+        ]
+        accepted = next((item for item in resolved if item[1] == "accepted"), None)
+        key = cancel_key_task.result() if cancel_key_task in done else None
+
+        if accepted is not None:
+            if cancel_key_task not in done:
+                cancel_key_task.cancel()
+                await asyncio.gather(cancel_key_task, return_exceptions=True)
+            break
+
+        if key is not None and key.lower() == "c":
+            for target_session in invites:
+                direct_invites.cancel(target_session)
+            await session.write_line(colored("\r\nInvitation cancelled.", fg_color=MUTED_COLOR))
+            return
+
+        if resolved:
+            if cancel_key_task not in done:
+                cancel_key_task.cancel()
+                await asyncio.gather(cancel_key_task, return_exceptions=True)
+            break
+
+        # Only an unsupported key completed. Preserve the existing
+        # echo-aware rejection rules (Ctrl-L/Ctrl-R were never echoed)
+        # and start another read without disturbing the live invites.
+        assert key is not None
+        await session.write(reject_unhandled_key(key))
 
     # Prefer an acceptance if it happens to land in the same wait cycle
-    # as a decline/timeout from a different one of target's sessions --
-    # see this function's own docstring on why more than one may have
-    # been sent at all.
-    resolved = [(future_to_session[future], future.result()) for future in done]
+    # as another session's decline/timeout or the inviter's C key.
     accepted_session, outcome = next((r for r in resolved if r[1] == "accepted"), resolved[0])
     for target_session, invite in invites.items():
         if target_session != accepted_session:
