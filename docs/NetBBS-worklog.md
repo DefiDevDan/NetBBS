@@ -839,6 +839,32 @@ A terminal auto-wrap outside the cleared row can accumulate visual corruption.
 Editor autosave tasks are owned by the editor and must be cancelled/gathered
 before any cleanup write which may itself fail on a disconnected session.
 
+The shared line reader already provides cursor editing inside the current line
+(Left/Right, Home/End, Backspace/Delete, Insert/overwrite). That does not make a
+multi-line prompt an editor: once Enter submits a logical line, revisiting it
+requires a caller-owned body buffer and explicit line operations. Keep that
+buffer transport-independent and separate from the fullscreen editor's screen
+model. Both editor paths must return a draft to a review/commit boundary; they
+must not persist or dispatch merely because editing ended.
+
+### Confirmation and visual interaction primitives
+
+`prompt_yes_no` moved from `read_key()` to `read_line()` because generic
+`read_key()` deliberately swallows CR/LF; otherwise a displayed `[y/N]` or
+`[Y/n]` default cannot be selected with Enter. The reason remains valid, but it
+is not a reason for line-based confirmation UX. Implement single-key
+confirmation through a narrow primitive which returns `Y`, `N`, or Enter;
+never weaken generic menu `read_key()` semantics. Invalid confirmation keys
+must not silently choose the default.
+
+Current `main` already field-colors every ordinary `pick_item` row, so caller
+and SysOp Who screens share selector/reference/name/metadata roles by
+construction. The generated default login banner already uses a truecolor
+gradient when session capability negotiation says it is safe; an enabled
+custom SysOp ANSI banner intentionally bypasses that generator. If dogfood does
+not show either behavior, first verify deployed revision, banner configuration,
+and Telnet/SSH/web capability negotiation before adding duplicate rendering.
+
 ---
 
 ## 8. Async ownership, shutdown, and background tasks
@@ -1955,6 +1981,10 @@ status, ownership, and acceptance criteria.
 
 Current work spans the Phase 3 operational-validation track and active Phase 4
 implementation:
+
+- before #127, complete the bounded product-track dogfood interleave: direct
+  chat (#134), safe composition (#133), confirmation consistency (#135), and
+  visual/capability verification plus named-surface polish (#136);
 
 - independent non-Python interoperability validation is deprioritized and
   deferred (issue #71); Python canonical vectors remain authoritative and
