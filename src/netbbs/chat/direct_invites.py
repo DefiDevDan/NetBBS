@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import weakref
 from dataclasses import dataclass
 
 from netbbs.auth.users import User
@@ -70,13 +71,31 @@ class DirectChatInvites:
 
     def __init__(self) -> None:
         self._pending: dict[object, DirectChatInvite] = {}
-        # Persistent per-session notification, deliberately separate
-        # from any one DirectChatInvite's own lifecycle -- see
-        # arrival_event()'s own docstring for why this must be able to
-        # exist and be waited on *before* any invite has ever arrived at
-        # all, which a per-invite event (created only inside send())
-        # cannot support.
-        self._arrival: dict[object, asyncio.Event] = {}
+        # Issue #119: production Session objects are weak-referenceable,
+        # so the persistent arrival notification must not itself keep a
+        # disconnected session alive forever. WeakKeyDictionary preserves
+        # the original "same Event for this live session" semantics while
+        # automatically dropping the entry once every real owner of that
+        # Session is gone. A tiny strong fallback keeps the intentionally
+        # generic object-key API usable for non-weak-referenceable test/
+        # embedding keys such as strings; real NetBBS sessions never use
+        # that fallback.
+        self._arrival: weakref.WeakKeyDictionary[object, asyncio.Event] = weakref.WeakKeyDictionary()
+        self._arrival_nonweak: dict[object, asyncio.Event] = {}
+
+    def _arrival_store(self, session: object) -> dict | weakref.WeakKeyDictionary:
+        """Return the arrival-event mapping suitable for `session`.
+
+        Real Session instances support weak references. Keeping the
+        non-weak fallback preserves this class's deliberately generic
+        object-key contract without making production session lifetime
+        depend on an event stored here.
+        """
+        try:
+            weakref.ref(session)
+        except TypeError:
+            return self._arrival_nonweak
+        return self._arrival
 
     def arrival_event(self, session: object) -> asyncio.Event:
         """A persistent, per-session event that `_main_menu`'s own read/
@@ -90,11 +109,17 @@ class DirectChatInvites:
         arrived while elsewhere (queued -- already `set()`, so the very
         next wait resolves instantly). `send()` sets it; the main-menu
         loop clears it via `clear_arrival()` once it has actually
-        consumed whatever caused it to fire."""
-        event = self._arrival.get(session)
+        consumed whatever caused it to fire.
+
+        Issue #119: for real Session objects the mapping is weakly keyed,
+        so this persistent notification state never becomes a permanent
+        owner of a connection which has otherwise ended.
+        """
+        store = self._arrival_store(session)
+        event = store.get(session)
         if event is None:
             event = asyncio.Event()
-            self._arrival[session] = event
+            store[session] = event
         return event
 
     def clear_arrival(self, session: object) -> None:
@@ -102,7 +127,7 @@ class DirectChatInvites:
         handled whatever caused it to fire -- otherwise the next loop
         iteration would instantly (and incorrectly) treat a stale,
         already-handled signal as a brand new arrival."""
-        event = self._arrival.get(session)
+        event = self._arrival_store(session).get(session)
         if event is not None:
             event.clear()
 
