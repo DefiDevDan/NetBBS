@@ -2165,3 +2165,30 @@ check, log-and-continue on failure" loop in this codebase: log-only
 error handling is a silent-failure gap by definition whenever the
 result is also supposed to be visible through a persisted, SysOp-facing
 status field elsewhere.
+
+**Adding a new byte-emitting step to `TelnetSession.negotiate_initial_options`
+(e.g. NEW-ENVIRON for truecolor detection, added alongside NAWS) silently
+broke ~70 existing tests across `tests/test_telnet.py` and
+`tests/test_picker.py`, as failures or hangs, not import errors.** Every
+test that opens a real socket against `TelnetServer` and does
+`await reader.readexactly(9)` to skip past the initial negotiation before
+asserting on exact application-level bytes was hard-coding "9" as the
+total negotiation size. Once negotiation grew (a second `IAC DO` plus a
+`SB ... SE` subnegotiation, sent unconditionally on every connect), the
+leftover unread bytes stayed buffered in the socket and were consumed by
+the *next* `readexactly(N)` call instead -- silently corrupting
+byte-for-byte content assertions (misleading `FAILED` diffs) or, worse,
+throwing off a later test's read-count bookkeeping enough to leave a
+`readexactly` call blocked forever waiting for bytes the server had
+already sent earlier in the stream (an apparent hang with zero pytest
+output, not a clean failure). A test that only checks a handler-side
+side effect (e.g. `tests/test_telnet_idle_timeout.py`, which never reads
+the echoed bytes back) or reads with `read(4096)`/`in` substring checks
+rather than an exact `readexactly` count is unaffected. Any future
+negotiation option added to `negotiate_initial_options` needs the same
+audit: grep both files for `readexactly(9)` (or whatever the new fixed
+skip-length constant is), distinguish "skip past all negotiation bytes"
+call sites (need updating) from "assert on the exact negotiation
+content" or "assert on an unrelated byte count that happens to equal 9"
+call sites (must NOT be touched), and update only the former -- a blind
+find/replace corrupts the latter two categories.
