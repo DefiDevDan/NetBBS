@@ -38,6 +38,7 @@ from netbbs.net.nodeconfig import LinkConfig, NodeConfig, ShutdownConfig, Transp
 from netbbs.net.session_registry import ActiveSessionRegistry
 from netbbs.storage.database import Database
 from netbbs.storage.execution import DatabaseLane
+from tests.test_telnet import skip_initial_negotiation
 
 
 def _config(tmp_path, *, seed_sysop: bool = True, **overrides) -> NodeConfig:
@@ -544,7 +545,7 @@ def test_shutdown_event_and_graceful_delay_reach_handle_session(tmp_path, monkey
         task = asyncio.create_task(run(config, shutdown_event=shutdown_event))
         try:
             reader, writer = await _open_connection_when_ready("127.0.0.1", 12391)
-            await reader.readexactly(9)  # initial Telnet negotiation triplets
+            await skip_initial_negotiation(reader)
 
             deadline = asyncio.get_event_loop().time() + 2.0
             while "node_controls" not in captured:

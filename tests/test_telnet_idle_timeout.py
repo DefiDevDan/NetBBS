@@ -27,6 +27,7 @@ import pytest
 
 from netbbs.net.session import Session, SessionClosedError
 from netbbs.net.telnet import TelnetServer
+from tests.test_telnet import skip_initial_negotiation
 
 
 async def _run_server(session_handler):
@@ -50,7 +51,7 @@ def test_outer_timeout_fires_when_client_sends_nothing():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(9)  # initial negotiation
+            await skip_initial_negotiation(reader)
             await asyncio.sleep(0.5)  # send nothing -- let the idle timeout fire
             writer.close()
             await writer.wait_closed()
@@ -75,7 +76,7 @@ def test_outer_timeout_does_not_fire_for_normal_typing():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(9)
+            await skip_initial_negotiation(reader)
             writer.write(b"alice\r\n")
             await writer.drain()
             await asyncio.sleep(0.2)
@@ -116,7 +117,7 @@ def test_outer_timeout_survives_an_escape_sequence_mid_read(run):
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(9)
+            await skip_initial_negotiation(reader)
             # "a" + up-arrow (ESC [ A, discarded without corrupting the
             # line, per netbbs.net.char_input) + "b" + Enter.
             writer.write(b"a\x1b[Ab\r\n")

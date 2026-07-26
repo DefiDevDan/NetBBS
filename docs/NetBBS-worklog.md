@@ -2184,11 +2184,22 @@ already sent earlier in the stream (an apparent hang with zero pytest
 output, not a clean failure). A test that only checks a handler-side
 side effect (e.g. `tests/test_telnet_idle_timeout.py`, which never reads
 the echoed bytes back) or reads with `read(4096)`/`in` substring checks
-rather than an exact `readexactly` count is unaffected. Any future
-negotiation option added to `negotiate_initial_options` needs the same
-audit: grep both files for `readexactly(9)` (or whatever the new fixed
-skip-length constant is), distinguish "skip past all negotiation bytes"
-call sites (need updating) from "assert on the exact negotiation
-content" or "assert on an unrelated byte count that happens to equal 9"
-call sites (must NOT be touched), and update only the former -- a blind
-find/replace corrupts the latter two categories.
+rather than an exact `readexactly` count is unaffected.
+
+**Fixed (issue #105) by centralizing the "skip past all negotiation
+bytes" intent into one place** rather than continuing to audit every
+hardcoded count by hand: `tests/test_telnet.py` now exposes
+`_FULL_NEGOTIATION_LEN` (derived from the same IAC/WILL/DO byte
+constants `netbbs.net.telnet` itself uses, not a literal number) and an
+`async def skip_initial_negotiation(reader)` helper built on it. Every
+other integration test module that only needs to get past negotiation
+(`test_picker.py`, `test_telnet_idle_timeout.py`, `test_shutdown.py`,
+`test_main_lifecycle.py`) imports and calls that helper instead of its
+own hardcoded/re-derived byte count. `test_telnet.py` itself keeps its
+own byte-content constants (`_INITIAL_NEGOTIATION`, `_NEW_ENVIRON_
+REQUEST`) locally, since a couple of its own tests deliberately assert
+on the exact negotiation bytes rather than skip past them -- those two
+call sites must still never be pointed at the shared helper. A future
+negotiation addition to `negotiate_initial_options` therefore only
+requires updating `_FULL_NEGOTIATION_LEN` in one file; no more grepping
+every integration test file for its own magic number.

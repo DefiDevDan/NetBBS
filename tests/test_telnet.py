@@ -56,6 +56,22 @@ _NEW_ENVIRON_REQUEST = bytes([IAC, DO, NEW_ENVIRON]) + bytes(
 _FULL_NEGOTIATION_LEN = len(_INITIAL_NEGOTIATION) + len(_NEW_ENVIRON_REQUEST)
 
 
+async def skip_initial_negotiation(reader: asyncio.StreamReader) -> None:
+    """Consume exactly the bytes `TelnetSession.negotiate_initial_options()`
+    sends on every connection, for the overwhelming majority of real-socket
+    integration tests (here and in other test modules) that don't care about
+    the negotiation bytes themselves, only about getting past them before
+    asserting on application-level data.
+
+    Issue #105: adding NEW-ENVIRON negotiation for truecolor detection broke
+    roughly 70 tests that each hardcoded their own now-stale byte count
+    (`readexactly(9)`, the length before that addition). Routing every such
+    call through this one function means the next legitimate negotiation
+    addition only requires updating `_FULL_NEGOTIATION_LEN` above, not
+    re-auditing every integration test file for its own magic number."""
+    await reader.readexactly(_FULL_NEGOTIATION_LEN)
+
+
 async def _run_server(session_handler):
     server = TelnetServer(host="127.0.0.1", port=0, session_handler=session_handler)
     await server.start()
@@ -94,7 +110,7 @@ def test_server_runs_handler_and_sends_output():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             line = await reader.readline()
             assert line == b"hello\r\n"
             writer.close()
@@ -126,7 +142,7 @@ def test_accepted_connections_have_tcp_nodelay_set():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             await asyncio.sleep(0.05)  # let the handler run and record the option
             writer.close()
             await writer.wait_closed()
@@ -154,7 +170,7 @@ def test_each_character_is_echoed_as_typed():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             writer.write(b"hi\r\n")
             await writer.drain()
             echoed = await reader.readexactly(4)  # 'h' 'i' '\r' '\n'
@@ -178,7 +194,7 @@ def test_password_mode_masks_each_character_with_asterisk():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             writer.write(b"secret\r\n")
             await writer.drain()
             echoed = await reader.readexactly(8)  # 6 asterisks + CRLF
@@ -203,7 +219,7 @@ def test_crlf_pair_is_one_line_terminator_not_two():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             writer.write(b"first\r\nsecond\r\n")
             await writer.drain()
             await reader.readexactly(len(b"first\r\nsecond\r\n"))
@@ -231,7 +247,7 @@ def test_bare_cr_terminates_line_without_hanging():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             writer.write(b"hi")
             await writer.drain()
             await reader.readexactly(2)
@@ -265,7 +281,7 @@ def test_backspace_removes_last_character_and_erases_visually():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
 
             writer.write(b"helz")
             await writer.drain()
@@ -303,7 +319,7 @@ def test_delete_byte_also_works_as_backspace():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
 
             writer.write(b"abx")
             await writer.drain()
@@ -336,7 +352,7 @@ def test_backspace_on_empty_line_does_nothing():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             writer.write(bytes([0x08]) + b"ok\r\n")
             await writer.drain()
             # No erase sequence should appear — just "ok\r\n".
@@ -364,7 +380,7 @@ def test_two_byte_utf8_character_umlaut():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             text = "grüße"
             payload = text.encode("utf-8")
             writer.write(payload + b"\r\n")
@@ -390,7 +406,7 @@ def test_three_byte_utf8_character():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             text = "€100"  # Euro sign is 3-byte UTF-8
             payload = text.encode("utf-8")
             writer.write(payload + b"\r\n")
@@ -419,7 +435,7 @@ def test_csi_escape_sequence_discarded_without_corrupting_line():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             writer.write(b"ab")
             await writer.drain()
             assert await reader.readexactly(2) == b"ab"
@@ -451,7 +467,7 @@ def test_ss3_escape_sequence_discarded():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             writer.write(b"x")
             await writer.drain()
             assert await reader.readexactly(1) == b"x"
@@ -485,7 +501,7 @@ def test_negotiation_sequence_mid_input_produces_no_echo():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             writer.write(b"a")
             await writer.drain()
             assert await reader.readexactly(1) == b"a"
@@ -519,7 +535,7 @@ def test_naws_subnegotiation_still_works_during_character_mode():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             writer.write(bytes([IAC, WILL, NAWS]))
             writer.write(bytes([IAC, SB, NAWS, 0, 100, 0, 30, IAC, SE]))
             writer.write(b"x\r\n")
@@ -551,7 +567,7 @@ def test_naws_handles_width_containing_0xff_byte():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             # width=255 (0x00FF): low byte 0xFF must be doubled (two
             # consecutive 0xFF bytes represent one literal 0xFF).
             naws_subneg = bytes([IAC, SB, NAWS, 0x00, 0xFF, 0xFF, 0x00, 24, IAC, SE])
@@ -583,7 +599,7 @@ def test_naws_maximum_16_bit_size_is_clamped():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             # 0xFFFF for both width and height -- each byte doubled per
             # NAWS's IAC-escaping rule (0xFF is the IAC byte itself).
             writer.write(bytes([IAC, SB, NAWS, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, IAC, SE]))
@@ -612,7 +628,7 @@ def test_naws_zero_dimension_does_not_override_default():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             writer.write(bytes([IAC, WILL, NAWS]))
             writer.write(bytes([IAC, SB, NAWS, 0, 0, 0, 0, IAC, SE]))
             writer.write(b"x\r\n")
@@ -746,7 +762,7 @@ def test_line_length_is_capped():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             writer.write(b"a" * 5000 + b"\r\n")
             await writer.drain()
             echoed = await reader.readexactly(4096 + 2)
@@ -771,7 +787,7 @@ def test_write_never_produces_invalid_utf8_or_stray_iac():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             data = await reader.readline()
             assert data == b"hello world\r\n"
             assert 0xFF not in data
@@ -791,7 +807,7 @@ def test_write_normalizes_internal_bare_lf_to_crlf():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             data = await reader.read(1024)
             assert data == b"first line\r\nsecond line\r\nthird line\r\n"
             writer.close()
@@ -810,7 +826,7 @@ def test_write_normalization_is_idempotent_for_already_crlf_text():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             data = await reader.read(1024)
             assert data == b"first line\r\nsecond line\r\n"
             assert b"\r\r" not in data
@@ -835,7 +851,7 @@ def test_read_key_returns_immediately_no_enter_needed():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             writer.write(b"b")  # deliberately no Enter/CR/LF sent at all
             await writer.drain()
             assert await reader.readexactly(1) == b"b"
@@ -864,7 +880,7 @@ def test_read_key_skips_backspace_and_enter_bytes():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             writer.write(bytes([0x08, 0x0D, 0x0A]))
             await writer.drain()
             await asyncio.sleep(0.05)
@@ -896,7 +912,7 @@ def test_read_key_echo_false_masks_with_asterisk():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             writer.write(b"x")
             await writer.drain()
             echoed = await reader.readexactly(1)
@@ -920,7 +936,7 @@ def test_read_key_ignores_negotiation_sequences():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             writer.write(bytes([IAC, DO, ECHO]))
             await writer.drain()
             await asyncio.sleep(0.05)
@@ -961,7 +977,7 @@ def test_concurrent_writes_from_two_tasks_do_not_interleave_bytes():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             chunks = []
             try:
                 while True:
@@ -1010,7 +1026,7 @@ def test_write_raw_doubles_literal_iac_bytes_per_rfc_854():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)  # initial negotiation
+            await skip_initial_negotiation(reader)  # initial negotiation
             data = await reader.readexactly(9)  # 6 bytes + 3 doubled IACs
             assert data == bytes([0x01, IAC, IAC, 0x02, IAC, IAC, IAC, IAC, 0x03])
             writer.close()
@@ -1035,7 +1051,7 @@ def test_read_byte_undoubles_iac_and_roundtrips_all_byte_values():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_FULL_NEGOTIATION_LEN)
+            await skip_initial_negotiation(reader)
             payload = bytes(range(256))
             escaped = payload.replace(bytes([IAC]), bytes([IAC, IAC]))
             writer.write(escaped)

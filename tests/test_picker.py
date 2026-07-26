@@ -14,39 +14,11 @@ import asyncio
 import re
 
 from netbbs.net.session import Session
-from netbbs.net.telnet import (
-    DO,
-    ECHO,
-    IAC,
-    NAWS,
-    NEW_ENVIRON,
-    NEW_ENVIRON_SEND,
-    NEW_ENVIRON_VAR,
-    SB,
-    SE,
-    SUPPRESS_GO_AHEAD,
-    WILL,
-    TelnetServer,
-)
+from netbbs.net.telnet import IAC, NAWS, SB, SE, WILL, TelnetServer
 from netbbs.net.picker import pick_item
+from tests.test_telnet import skip_initial_negotiation
 
 _ANSI_ESCAPE_RE = re.compile(rb"\x1b\[[0-9;]*[A-Za-z]")
-
-# Every connection sends this many bytes of initial Telnet negotiation
-# (IAC WILL SGA/ECHO, IAC DO NAWS, IAC DO NEW-ENVIRON + a COLORTERM
-# SEND/VAR subnegotiation -- see netbbs.net.telnet.TelnetSession.
-# negotiate_initial_options) before any application-level data -- tests
-# here don't care about the negotiation bytes themselves, only about
-# skipping past all of them.
-_NEGOTIATION_SKIP_LEN = (
-    len(bytes([IAC, WILL, SUPPRESS_GO_AHEAD, IAC, WILL, ECHO, IAC, DO, NAWS]))
-    + len(bytes([IAC, DO, NEW_ENVIRON]))
-    + len(
-        bytes([IAC, SB, NEW_ENVIRON, NEW_ENVIRON_SEND, NEW_ENVIRON_VAR])
-        + b"COLORTERM"
-        + bytes([IAC, SE])
-    )
-)
 
 
 def _visible(data: bytes) -> bytes:
@@ -111,7 +83,7 @@ def test_empty_list_shows_message_and_returns_none():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             data = await _read_until_quiet(reader)
             assert b"Nothing here." in data
             writer.close()
@@ -136,7 +108,7 @@ def test_select_by_two_digit_number():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"02")
             await writer.drain()
@@ -174,7 +146,7 @@ def test_selection_ends_with_its_own_newline_before_whatever_comes_next():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"02")
             await writer.drain()
@@ -203,7 +175,7 @@ def test_back_returns_none():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"b")
             await writer.drain()
@@ -230,7 +202,7 @@ def test_invalid_two_digit_selection_sounds_bell_and_stays_in_picker():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"99")  # only 2 items exist
             await writer.drain()
@@ -265,7 +237,7 @@ def test_unknown_command_letter_sounds_bell_and_stays_in_picker():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"z")
             await writer.drain()
@@ -305,7 +277,7 @@ def test_repeated_invalid_keys_produce_nothing_but_an_echo_and_a_bell():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"z")
             await writer.drain()
@@ -348,7 +320,7 @@ def test_search_unique_match_auto_selects():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"s")
             await writer.drain()
@@ -378,7 +350,7 @@ def test_search_multiple_matches_then_select():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"s")
             await writer.drain()
@@ -411,7 +383,7 @@ def test_search_no_matches_reports_and_stays_in_picker():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"s")
             await writer.drain()
@@ -445,7 +417,7 @@ def test_empty_search_clears_active_filter():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"s")
             await writer.drain()
@@ -479,7 +451,7 @@ def test_search_matches_name_case_insensitively():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"s")
             await writer.drain()
@@ -512,7 +484,7 @@ def test_search_tab_completes_a_single_matching_candidate():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"s")
             await writer.drain()
@@ -542,7 +514,7 @@ def test_search_tab_with_no_matching_candidates_does_not_change_the_query():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"s")
             await writer.drain()
@@ -578,7 +550,7 @@ def test_search_tab_completion_reflects_the_current_working_set_not_the_full_lis
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"s")
             await writer.drain()
@@ -626,7 +598,7 @@ def test_goto_absolute_index():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"g")
             await writer.drain()
@@ -656,7 +628,7 @@ def test_goto_out_of_range_reports_and_stays_in_picker():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"g")
             await writer.drain()
@@ -690,7 +662,7 @@ def test_goto_non_numeric_input_reports_and_stays_in_picker():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"g")
             await writer.drain()
@@ -736,7 +708,7 @@ def test_pagination_adapts_to_negotiated_terminal_height():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             writer.write(bytes([IAC, WILL, NAWS]))
             writer.write(_naws_subneg(80, 12))
             writer.write(b"x\r\n")
@@ -776,7 +748,7 @@ def test_prev_on_first_page_sounds_bell_and_stays_in_picker():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"p")
             await writer.drain()
@@ -811,7 +783,7 @@ def test_next_on_last_page_sounds_bell_and_stays_in_picker():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"n")  # already on (only) last page with default-size terminal
             await writer.drain()
@@ -855,7 +827,7 @@ def test_description_shown_alongside_name():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             data = await _read_until_quiet(reader)
             assert b"general" in data
             assert b"General discussion" in data
@@ -897,7 +869,7 @@ def test_goto_after_search_uses_stable_original_index_not_filtered_position():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
 
             writer.write(b"s")
@@ -943,7 +915,7 @@ def test_stable_absolute_index_is_displayed_alongside_page_relative_number():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             data = await _read_until_quiet(reader)
             assert b"01. (#1) item1" in _visible(data)
             assert b"02. (#2) item2" in _visible(data)
@@ -975,7 +947,7 @@ def test_stable_index_correct_on_second_page():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
 
             writer.write(b"n")
@@ -1026,7 +998,7 @@ def test_goto_uses_caller_supplied_stable_id_not_list_position():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"g")
             await writer.drain()
@@ -1061,7 +1033,7 @@ def test_display_shows_caller_supplied_stable_id_not_position():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             data = await _read_until_quiet(reader)
             # Position 1 on screen ("01.") shows stable ID 205, not "1" —
             # and position 2 ("02.") shows stable ID 7, not "2".
@@ -1101,7 +1073,7 @@ def test_goto_ignores_current_search_filter_with_non_positional_ids():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
 
             # Search narrows to the two "widget" items first.
@@ -1179,7 +1151,7 @@ def test_mixed_category_and_item_list_disambiguates_colliding_ids():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"g")
             await writer.drain()
@@ -1231,7 +1203,7 @@ def test_mixed_list_two_digit_selection_unaffected_by_id_disambiguation():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
             writer.write(b"02")
             await writer.drain()
@@ -1262,7 +1234,7 @@ def test_ctrl_l_redraws_the_current_page():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             first = await _read_until_quiet(reader)
             assert first.count(b"(page ") == 1
 
@@ -1300,7 +1272,7 @@ def test_ctrl_r_without_a_refresh_callback_sounds_a_bell():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
 
             writer.write(b"\x12")
@@ -1340,7 +1312,7 @@ def test_ctrl_r_refetches_and_displays_the_refreshed_list():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             first = await _read_until_quiet(reader)
             assert b"old1" in first
             assert b"2 total" in first
@@ -1388,7 +1360,7 @@ def test_ctrl_r_refresh_resets_page_index_and_clears_search_filter():
         server = await _run_server(handler)
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
-            await reader.readexactly(_NEGOTIATION_SKIP_LEN)
+            await skip_initial_negotiation(reader)
             await _read_until_quiet(reader)
 
             writer.write(b"n")  # page 2
