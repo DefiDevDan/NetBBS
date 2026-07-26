@@ -58,6 +58,7 @@ from netbbs.mail import (
     unread_count,
 )
 from netbbs.net.char_input import reject_unhandled_key
+from netbbs.net.composition import ReviewAction, edit_line_body, review_composition
 from netbbs.net.editor_preference import fullscreen_editor_enabled
 from netbbs.net.picker import pick_item
 from netbbs.net.prose_editor import edit_prose
@@ -283,30 +284,27 @@ async def _compose_mail(
     fresh-compose path: a reply always targets an already-resolved
     local `User` (`prefill_recipient`), never a typed address.
     """
-    recipient: User | None = None
-    link_recipient_address: str | None = None
-
     if prefill_recipient is not None:
-        recipient = prefill_recipient
-        await session.write_line(f"To: {sanitize_text(recipient.username)}")
+        recipient_text = prefill_recipient.username
+        await session.write_line(f"To: {sanitize_text(recipient_text)}")
     else:
         prompt = "username or user@node-fingerprint" if link_context is not None else "username"
         await session.write(f"\r\nTo ({prompt}): ")
-        typed = (await session.read_line()).strip()
-        if not typed:
+        recipient_text = (await session.read_line()).strip()
+        if not recipient_text:
             await session.write_line(colored("Cancelled.", fg_color=MUTED_COLOR))
             return
-        if link_context is not None and "@" in typed:
-            link_recipient_address = typed
-        else:
+        if link_context is None or "@" not in recipient_text:
             try:
-                recipient = await lane.run(get_user_by_username, typed)
+                await lane.run(get_user_by_username, recipient_text)
             except AuthError:
-                await session.write_line(colored(f"No such user: {typed!r}", fg_color=MUTED_COLOR))
+                await session.write_line(
+                    colored(f"No such user: {sanitize_text(recipient_text)!r}", fg_color=MUTED_COLOR)
+                )
                 return
 
     if prefill_subject:
-        await session.write(f"Subject [{prefill_subject}] (Enter to keep): ")
+        await session.write(f"Subject [{sanitize_text(prefill_subject)}] (Enter to keep): ")
         subject = (await session.read_line()).strip() or prefill_subject
     else:
         await session.write("Subject: ")
@@ -315,58 +313,93 @@ async def _compose_mail(
         await session.write_line(colored("Cancelled -- a subject is required.", fg_color=MUTED_COLOR))
         return
 
-    body = await _compose_mail_body(session, lane, user)
+    body = await _compose_mail_body(session, lane, user, initial_text=None)
     if body is None or not body.strip():
-        await session.write_line(colored("Cancelled -- message body cannot be blank.", fg_color=MUTED_COLOR))
+        await session.write_line(colored("Message cancelled.", fg_color=MUTED_COLOR))
         return
 
-    if link_recipient_address is not None:
-        try:
-            await lane.run(
-                compose_link_message, user, link_recipient_address, subject, body,
-                node_identity=link_context.node_identity,
-            )
-        except (LinkMailError, MailError) as exc:
-            await session.write_line(colored(f"Could not send: {exc}", fg_color=MUTED_COLOR))
+    while True:
+        action = await review_composition(
+            session,
+            recipient=recipient_text,
+            subject=subject,
+            body=body,
+            commit_key="s",
+            commit_label="end",
+        )
+        if action is ReviewAction.CANCEL:
+            await session.write_line(colored("Message cancelled.", fg_color=MUTED_COLOR))
             return
+        if action is ReviewAction.EDIT_RECIPIENT:
+            await session.write(f"To [{sanitize_text(recipient_text)}] (Enter to keep): ")
+            recipient_text = (await session.read_line()).strip() or recipient_text
+            continue
+        if action is ReviewAction.EDIT_SUBJECT:
+            await session.write(f"Subject [{sanitize_text(subject)}] (Enter to keep): ")
+            subject = (await session.read_line()).strip() or subject
+            continue
+        if action is ReviewAction.EDIT_BODY:
+            revised = await _compose_mail_body(session, lane, user, initial_text=body)
+            if revised is not None:
+                body = revised
+            else:
+                await session.write_line(colored("Body unchanged.", fg_color=MUTED_COLOR))
+            continue
+
+        if link_context is not None and "@" in recipient_text:
+            try:
+                await lane.run(
+                    compose_link_message, user, recipient_text, subject, body,
+                    node_identity=link_context.node_identity,
+                )
+            except (LinkMailError, MailError) as exc:
+                await session.write_line(colored(f"Could not send: {exc}", fg_color=MUTED_COLOR))
+                continue
+            await session.write_line("Message sent.")
+            return
+
+        try:
+            recipient = await lane.run(get_user_by_username, recipient_text)
+        except AuthError:
+            await session.write_line(
+                colored(f"Could not send: no such user {sanitize_text(recipient_text)!r}.", fg_color=MUTED_COLOR)
+            )
+            continue
+        try:
+            await lane.run(send_mail, user, recipient, subject, body)
+        except MailboxFullError:
+            await session.write_line(
+                colored(
+                    f"{recipient.username}'s mailbox is full and cannot accept new mail right now.",
+                    fg_color=MUTED_COLOR,
+                )
+            )
+            continue
+        except MailError as exc:
+            await session.write_line(colored(f"Could not send: {exc}", fg_color=MUTED_COLOR))
+            continue
         await session.write_line("Message sent.")
         return
 
-    try:
-        await lane.run(send_mail, user, recipient, subject, body)
-    except MailboxFullError:
-        await session.write_line(
-            colored(
-                f"{recipient.username}'s mailbox is full and cannot accept new mail right now.",
-                fg_color=MUTED_COLOR,
-            )
-        )
-        return
-    except MailError as exc:
-        await session.write_line(colored(f"Could not send: {exc}", fg_color=MUTED_COLOR))
-        return
-    await session.write_line("Message sent.")
 
+async def _compose_mail_body(
+    session: Session, lane: DatabaseLane, user: User, *, initial_text: str | None
+) -> str | None:
+    """Enter or revise one mail body through the user's chosen editor.
 
-async def _compose_mail_body(session: Session, lane: DatabaseLane, user: User) -> str | None:
-    """The single place a mail body is actually entered -- the
-    fullscreen prose editor if `user` has opted in
-    (`netbbs.net.editor_preference`), otherwise a repeated-`read_line`-
-    until-blank-line prompt, matching `netbbs.net.login_flow._edit_bio`'s
-    own plain-path shape (a letter benefits from multiple lines the way
-    a bio does, unlike a board post's single-line plain fallback)."""
+    Both paths accept the current draft and only return text/explicit cancel;
+    the caller owns review and persistence.
+    """
     if await lane.run(fullscreen_editor_enabled, user):
         return await edit_prose(
-            session, initial_text=None, draft_path=_mail_draft_path(lane, user), max_bytes=MAX_MAIL_BODY_BYTES
+            session, initial_text=initial_text, draft_path=_mail_draft_path(lane, user), max_bytes=MAX_MAIL_BODY_BYTES
         )
-    await session.write_line("Enter your message. Blank line to finish.")
-    lines: list[str] = []
-    for _ in range(_MAX_PLAIN_MAIL_LINES):
-        line = (await session.read_line()).strip()
-        if not line:
-            break
-        lines.append(line)
-    return "\n".join(lines)
+    return await edit_line_body(
+        session,
+        initial_text=initial_text,
+        max_bytes=MAX_MAIL_BODY_BYTES,
+        max_lines=_MAX_PLAIN_MAIL_LINES,
+    )
 
 
 def _mail_draft_path(lane: DatabaseLane, user: User) -> Path:

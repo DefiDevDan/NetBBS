@@ -137,6 +137,7 @@ from netbbs.net.chat_flow import (
     run_direct_chat_loop,
 )
 from netbbs.net.color_depth_preference import color_depth_override, set_color_depth_override
+from netbbs.net.composition import ReviewAction, edit_line_body, review_composition
 from netbbs.net.editor_preference import fullscreen_editor_enabled, set_fullscreen_editor_enabled
 from netbbs.net.file_flow import browse_file_areas, enter_file_area, has_visible_areas
 from netbbs.net.mail_flow import browse_mail
@@ -185,6 +186,7 @@ from netbbs.storage.execution import DatabaseLane
 from netbbs.timeutil import format_for_display, utc_now_iso
 
 _MAX_LOGIN_ATTEMPTS = 3
+_MAX_PLAIN_POST_LINES = 200
 
 # How often the background account-revocation watcher re-checks a live
 # session's account (GitHub issue #29, reopened a second time). A fixed
@@ -2273,14 +2275,44 @@ async def _show_board(
         if body is None:
             await session.write_line(colored("Post cancelled.", fg_color=MUTED_COLOR))
             return
-        try:
-            post = create_post(db, board, user, subject, body)
-        except PostError as exc:
-            await session.write_line(colored(f"Could not create post: {exc}", fg_color=MUTED_COLOR))
+        while True:
+            action = await review_composition(
+                session,
+                recipient=None,
+                subject=subject,
+                body=body,
+                commit_key="p",
+                commit_label="ost",
+            )
+            if action is ReviewAction.CANCEL:
+                await session.write_line(colored("Post cancelled.", fg_color=MUTED_COLOR))
+                return
+            if action is ReviewAction.EDIT_SUBJECT:
+                await session.write(f"Subject [{sanitize_text(subject)}] (Enter to keep): ")
+                subject = (await session.read_line()).strip() or subject
+                continue
+            if action is ReviewAction.EDIT_BODY:
+                revised = await _compose_body(
+                    session,
+                    db,
+                    user,
+                    initial_text=body,
+                    draft_path=_post_draft_path(db, kind="new", board=board, user=user),
+                )
+                if revised is not None:
+                    body = revised
+                else:
+                    await session.write_line(colored("Body unchanged.", fg_color=MUTED_COLOR))
+                continue
+            try:
+                post = create_post(db, board, user, subject, body)
+            except PostError as exc:
+                await session.write_line(colored(f"Could not create post: {exc}", fg_color=MUTED_COLOR))
+                continue
+            if link_context is not None:
+                queue_board_post_if_linked(db, post, board, node_identity=link_context.node_identity)
+            await session.write_line(f"Posted (id {post.post_id[:12]}...).")
             return
-        if link_context is not None:
-            queue_board_post_if_linked(db, post, board, node_identity=link_context.node_identity)
-        await session.write_line(f"Posted (id {post.post_id[:12]}...).")
 
     page_anchor: tuple[str, tuple[str, str]] | None = ("after", initial_cursor) if initial_cursor else None
     page = list_posts_page(db, board, user, after=initial_cursor) if initial_cursor else list_posts_page(db, board, user)
@@ -2488,30 +2520,20 @@ async def _compose_body(
     session: Session, db: Database, user: User, *, initial_text: str | None = None, draft_path: Path
 ) -> str | None:
     """The single place a post body (or an edit of one) is actually
-    entered: the fullscreen prose editor if `user` has opted in
-    (`netbbs.net.editor_preference`), otherwise the original plain
-    single-line prompt every account still sees by default. Returns
-    `None` only for the fullscreen path's genuine cancel (quit without
-    saving) -- the plain-line fallback has no equivalent "cancel"
-    concept and always returns a string, matching its unchanged
-    existing behavior for every account that hasn't opted in. The
-    plain path has no way to *pre-fill* a line-based prompt with
-    `initial_text` (unlike the subject field's own "[current] (Enter
-    to keep)" pattern, a whole body is too long to inline into a
-    prompt that way) -- shown as read-only context above the prompt
-    instead, on an edit, so the current content isn't simply invisible
-    to anyone who hasn't opted into the fullscreen editor."""
+    entered: the fullscreen prose editor if `user` has opted in,
+    otherwise the shared logical-line editor. Both paths accept
+    `initial_text`, return a complete draft, and return `None` only for
+    an explicit cancel. Neither path persists anything itself."""
     if fullscreen_editor_enabled(db, user):
         return await edit_prose(
             session, initial_text=initial_text, draft_path=draft_path, max_bytes=MAX_BODY_BYTES
         )
-    if initial_text:
-        await session.write_line(colored("Current body:", fg_color=MUTED_COLOR))
-        await session.write_line(reflow(sanitize_text(initial_text, allow_newlines=True), width=session.terminal_width))
-        await session.write("New body (Enter to keep unchanged): ")
-        return (await session.read_line()).strip() or initial_text
-    await session.write("Body: ")
-    return (await session.read_line()).strip()
+    return await edit_line_body(
+        session,
+        initial_text=initial_text,
+        max_bytes=MAX_BODY_BYTES,
+        max_lines=_MAX_PLAIN_POST_LINES,
+    )
 
 
 def _author_display_name(db: Database, post: Post, *, name_requirement: str | None) -> str:

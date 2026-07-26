@@ -142,7 +142,7 @@ def test_compose_post_uses_plain_read_line_by_default(db, alice):
     # runs) -- straight to the "Post a new message?" prompt, so no
     # leading "b" belongs in the scripted input here.
     board = create_board(db, "general", creator=alice)
-    session = FakeSession(["Hello there", "A plain single-line body"])
+    session = FakeSession(["Hello there", "A plain single-line body", "", "p"])
     asyncio.run(login_flow._show_board(session, db, board, alice))
     assert "Posted" in _written_text(session)
 
@@ -151,13 +151,51 @@ def test_compose_post_uses_fullscreen_editor_once_opted_in(db, alice):
     set_fullscreen_editor_enabled(db, alice, True)
     board = create_board(db, "general", creator=alice)
     session = FakeSession(
-        ["Hello there"] + _type("A body typed in the fullscreen editor") + ["CTRL+O"]
+        ["Hello there"] + _type("A body typed in the fullscreen editor") + ["CTRL+O", "p"]
     )
     asyncio.run(login_flow._show_board(session, db, board, alice))
     assert "Posted" in _written_text(session)
     saved = list_posts_page(db, board, alice).posts[0]
     assert saved.subject == "Hello there"
     assert saved.body == "A body typed in the fullscreen editor"
+
+
+def test_compose_post_review_can_revise_subject_and_submitted_body_line(db, alice):
+    board = create_board(db, "general", creator=alice)
+    session = FakeSession(
+        [
+            "Original subject", "first", "second", "",
+            "u", "Revised subject", "b", "/edit 2", "SECOND", "", "p",
+        ]
+    )
+
+    asyncio.run(login_flow._show_board(session, db, board, alice))
+
+    saved = list_posts_page(db, board, alice).posts[0]
+    assert saved.subject == "Revised subject"
+    assert saved.body == "first\nSECOND"
+    assert "Review composition" in _written_text(session)
+
+
+def test_compose_post_review_cancel_persists_nothing(db, alice):
+    board = create_board(db, "general", creator=alice)
+    session = FakeSession(["Subject", "Body", "", "c"])
+
+    asyncio.run(login_flow._show_board(session, db, board, alice))
+
+    assert list_posts_page(db, board, alice).posts == []
+    assert "Post cancelled" in _written_text(session)
+
+
+def test_fullscreen_post_save_still_requires_review_confirmation(db, alice):
+    set_fullscreen_editor_enabled(db, alice, True)
+    board = create_board(db, "general", creator=alice)
+    session = FakeSession(["Subject"] + _type("Saved draft") + ["CTRL+O", "c"])
+
+    asyncio.run(login_flow._show_board(session, db, board, alice))
+
+    assert list_posts_page(db, board, alice).posts == []
+    assert "Review composition" in _written_text(session)
 
 
 def test_compose_post_cancelled_from_the_fullscreen_editor_does_not_post(db, alice):
@@ -180,7 +218,7 @@ def test_compose_post_with_oversized_subject_shows_a_friendly_error(db, alice):
     shown as a normal rejection."""
     board = create_board(db, "general", creator=alice)
     oversized_subject = "x" * (MAX_SUBJECT_BYTES + 1)
-    session = FakeSession([oversized_subject, "A normal body"])
+    session = FakeSession([oversized_subject, "A normal body", "", "p", "c"])
     asyncio.run(login_flow._show_board(session, db, board, alice))
     text = _written_text(session)
     assert "Posted" not in text
@@ -197,7 +235,7 @@ def test_compose_post_with_oversized_multibyte_subject_shows_a_friendly_error(db
     oversized_subject = "€" * 150  # each euro sign is 3 UTF-8 bytes
     assert len(oversized_subject) < MAX_SUBJECT_BYTES
     assert len(oversized_subject.encode("utf-8")) > MAX_SUBJECT_BYTES
-    session = FakeSession([oversized_subject, "A normal body"])
+    session = FakeSession([oversized_subject, "A normal body", "", "p", "c"])
     asyncio.run(login_flow._show_board(session, db, board, alice))
     text = _written_text(session)
     assert "Posted" not in text
@@ -208,7 +246,7 @@ def test_compose_post_with_oversized_multibyte_subject_shows_a_friendly_error(db
 def test_compose_post_with_subject_exactly_at_the_byte_boundary_succeeds(db, alice):
     board = create_board(db, "general", creator=alice)
     subject = "x" * MAX_SUBJECT_BYTES
-    session = FakeSession([subject, "A normal body"])
+    session = FakeSession([subject, "A normal body", "", "p"])
     asyncio.run(login_flow._show_board(session, db, board, alice))
     assert "Posted" in _written_text(session)
     assert list_posts_page(db, board, alice).posts[0].subject == subject
@@ -229,8 +267,8 @@ def test_edit_option_hidden_when_nothing_on_the_page_is_editable(db, alice):
 def test_edit_existing_post_via_plain_line_flow(db, alice):
     board = create_board(db, "general", creator=alice)
     create_post(db, board, alice, "Original subject", "Original body")
-    # e -> pick post 1 -> keep subject (Enter) -> new body -> back -> skip new post
-    session = FakeSession(["e", "1", "", "Edited body", "b", ""])
+    # e -> pick post 1 -> keep subject -> replace body line 1 -> finish -> back
+    session = FakeSession(["e", "1", "", "/edit 1", "Edited body", "", "b", ""])
     asyncio.run(login_flow._show_board(session, db, board, alice))
     assert "Post updated" in _written_text(session)
     saved = list_posts_page(db, board, alice).posts[0]
@@ -279,7 +317,7 @@ def test_editing_a_post_does_not_reset_to_the_newest_page(db, alice):
     # page, edit the post shown there, and confirm the view stays on
     # that same older page rather than jumping back to page one.
     posts = [create_post(db, board, alice, f"Subject {i}", f"Body {i}") for i in range(6)]
-    session = FakeSession(["o", "e", "1", "", "Edited", "b", ""])
+    session = FakeSession(["o", "e", "1", "", "/edit 1", "Edited", "", "b", ""])
     asyncio.run(login_flow._show_board(session, db, board, alice))
     text = _written_text(session)
     assert "Post updated" in text
