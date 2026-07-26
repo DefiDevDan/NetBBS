@@ -3594,7 +3594,9 @@ from issue #83's real-user dogfood feedback before foundation issue #127:
   the shared line buffer can list/insert/replace/delete submitted lines, and
   local mail, Link mail, and new posts share an explicit editable review state
   before persistence or dispatch;
-- truthful single-key yes/no confirmations with Enter defaults (#135);
+- truthful single-key yes/no confirmations with Enter defaults (#135) —
+  implemented through one shared structured-key primitive without weakening
+  generic menu hotkeys; invalid keys retry and accepted choices end their row;
 - current-build visual/capability verification plus bounded semantic-color
   polish on named mature surfaces (#136).
 
