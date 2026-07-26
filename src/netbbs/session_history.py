@@ -129,26 +129,35 @@ def reconcile_interrupted_sessions(db: Database) -> int:
     purge_incoming_staging` already established for stale upload staging
     files.
 
-    Every row with `disconnected_at IS NULL` at this exact point was, by
-    construction, left open by a *previous* process instance: this
-    process's own listeners haven't started yet, so nothing here could
-    have called `record_session_start` this run. `record_session_end`
-    only ever fills `disconnected_at` from `run_authenticated_session`'s
-    own `finally:` block -- a hard kill, power loss, or crash skips that
-    entirely, leaving the row silently claiming "still connected" forever
-    (until it eventually ages out of the row-count cap). Marking
-    `interrupted_at` (never `disconnected_at` itself, which must keep
-    meaning "the actual moment the session cleanly ended" -- this is only
-    ever "the moment this reconciliation ran," typically well after the
-    connection actually dropped) is what lets `netbbs.net.login_flow.
-    _last_sessions_screen` show something honest instead of "still
-    connected" for a session that cannot possibly still exist.
+    Every row with both `disconnected_at IS NULL` and `interrupted_at IS
+    NULL` at this exact point was, by construction, left open by a
+    *previous* process instance: this process's own listeners haven't
+    started yet, so nothing here could have called `record_session_start`
+    this run. `record_session_end` only ever fills `disconnected_at` from
+    `run_authenticated_session`'s own `finally:` block -- a hard kill,
+    power loss, or crash skips that entirely, leaving the row silently
+    claiming "still connected" forever (until it eventually ages out of
+    the row-count cap). Marking `interrupted_at` (never `disconnected_at`
+    itself, which must keep meaning "the actual moment the session cleanly
+    ended" -- this is only ever "the moment this reconciliation ran,"
+    typically well after the connection actually dropped) is what lets
+    `netbbs.net.login_flow._last_sessions_screen` show something honest
+    instead of "still connected" for a session that cannot possibly still
+    exist.
+
+    Issue #122: `interrupted_at IS NULL` is part of the predicate, not
+    merely the state we write. Reconciled rows deliberately keep
+    `disconnected_at` NULL, so without this guard every later restart
+    would rediscover the same historical interruption, overwrite its
+    original detection timestamp, and count/log it as newly reconciled
+    again.
 
     Returns the number of rows reconciled, purely for the caller's own
     startup log line (same convention `purge_incoming_staging` returns
     its own count for)."""
     cursor = db.connection.execute(
-        "UPDATE session_history SET interrupted_at = ? WHERE disconnected_at IS NULL",
+        "UPDATE session_history SET interrupted_at = ? "
+        "WHERE disconnected_at IS NULL AND interrupted_at IS NULL",
         (utc_now_iso(),),
     )
     db.connection.commit()
