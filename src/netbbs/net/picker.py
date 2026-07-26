@@ -42,7 +42,7 @@ from __future__ import annotations
 import math
 from typing import Awaitable, Callable, Sequence, TypeVar
 
-from netbbs.net.char_input import REDRAW_KEY, REFRESH_KEY, Completer
+from netbbs.net.char_input import REDRAW_KEY, REFRESH_KEY, Completer, reject_unhandled_key
 from netbbs.net.session import Session
 from netbbs.rendering import (
     ACCENT_COLOR,
@@ -136,8 +136,16 @@ async def pick_item(
     through to an ordinary rejected-keystroke bell if the caller didn't
     (most existing callers), the same as any other key this function
     doesn't recognize.
+
+    Issue #112: an empty list remains interactive when `refresh` exists.
+    Dynamic screens such as Who's Online can therefore start empty and
+    populate later via Ctrl-R instead of immediately returning to their
+    caller. Non-refreshable empty pickers keep the historical immediate-
+    return behavior. Ctrl-L/Ctrl-R are deliberately unechoed by
+    `read_key`, so rejection paths must not erase a character that was
+    never written to the terminal.
     """
-    if not items:
+    if not items and refresh is None:
         await session.write_line(f"\r\n{empty_message}")
         return None
 
@@ -149,6 +157,16 @@ async def pick_item(
 
     async def _render() -> Sequence[T]:
         nonlocal page_index
+        if not working_set:
+            page_index = 0
+            await session.write_line(f"\r\n{empty_message}")
+            trailer = f"{menu_key('B', 'ack')} — Ctrl-L: redraw"
+            if refresh is not None:
+                trailer += ", Ctrl-R: refresh"
+            await session.write_line(f"\r\n{trailer}")
+            await session.write("Choice: ")
+            return []
+
         page_size = _page_size(session)
         total_pages = _total_pages()
         page_index = max(0, min(page_index, total_pages - 1))
@@ -219,7 +237,7 @@ async def pick_item(
 
         if key == REFRESH_KEY:
             if refresh is None:
-                await session.write(reject_keystroke())
+                await session.write(reject_unhandled_key(key))
                 continue
             items = await refresh()
             working_set = items
@@ -304,11 +322,13 @@ async def pick_item(
         if key.isdigit():
             second = await session.read_key()
             if not second.isdigit():
-                # Both digits' worth of echo are already on screen --
-                # the first from the read above, the second from this
-                # one -- so rejecting the pair erases two characters,
-                # not one.
-                await session.write(reject_keystroke(2))
+                # The first digit is always echoed. Ctrl-L/Ctrl-R are
+                # deliberately returned unechoed, however, so erase only
+                # the one character which actually reached the terminal in
+                # that case; ordinary invalid second keys still contributed
+                # their own echo and therefore erase both characters.
+                erase_count = 1 if second in (REDRAW_KEY, REFRESH_KEY) else 2
+                await session.write(reject_keystroke(erase_count))
                 continue
             number = int(key + second)
             if 1 <= number <= len(page_items):
