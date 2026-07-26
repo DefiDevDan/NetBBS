@@ -1214,3 +1214,171 @@ def test_mixed_list_two_digit_selection_unaffected_by_id_disambiguation():
 
     asyncio.run(scenario())
     assert result["value"] == FakeBoard(id=1, name="general")
+
+
+# -- issue #102: Ctrl-L redraw / Ctrl-R refresh --------------------------
+
+
+def test_ctrl_l_redraws_the_current_page():
+    result = {}
+    items = [f"item{i}" for i in range(1, 4)]
+
+    async def handler(session: Session):
+        result["value"] = await pick_item(
+            session, items, name_of=lambda x: x, stable_id_of=lambda x: items.index(x) + 1,
+            title="Items", empty_message="none",
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await reader.readexactly(9)
+            first = await _read_until_quiet(reader)
+            assert first.count(b"(page ") == 1
+
+            writer.write(b"\x0c")
+            await writer.drain()
+            second = await _read_until_quiet(reader)
+            # A second full page/nav block, not a bell -- Ctrl-L is a
+            # deliberate redraw request, not a rejected keystroke.
+            assert second.count(b"(page ") == 1
+            assert b"\a" not in second
+
+            writer.write(b"b")
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert result["value"] is None
+
+
+def test_ctrl_r_without_a_refresh_callback_sounds_a_bell():
+    result = {}
+    items = ["only"]
+
+    async def handler(session: Session):
+        result["value"] = await pick_item(
+            session, items, name_of=lambda x: x, stable_id_of=lambda x: 1,
+            title="Items", empty_message="none",
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await reader.readexactly(9)
+            await _read_until_quiet(reader)
+
+            writer.write(b"\x12")
+            await writer.drain()
+            data = await _read_until_quiet(reader)
+            assert b"\a" in data
+            assert data.count(b"(page ") == 0  # no redraw happened either
+
+            writer.write(b"b")
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert result["value"] is None
+
+
+def test_ctrl_r_refetches_and_displays_the_refreshed_list():
+    result = {}
+    initial_items = ["old1", "old2"]
+    refreshed_items = ["new1", "new2", "new3"]
+    stable_ids = {"old1": 1, "old2": 2, "new1": 3, "new2": 4, "new3": 5}
+
+    async def refresh():
+        return refreshed_items
+
+    async def handler(session: Session):
+        result["value"] = await pick_item(
+            session, initial_items, name_of=lambda x: x, stable_id_of=lambda x: stable_ids[x],
+            title="Items", empty_message="none", refresh=refresh,
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await reader.readexactly(9)
+            first = await _read_until_quiet(reader)
+            assert b"old1" in first
+            assert b"2 total" in first
+
+            writer.write(b"\x12")
+            await writer.drain()
+            second = await _read_until_quiet(reader)
+            assert b"new1" in second
+            assert b"new3" in second
+            assert b"old1" not in second
+            assert b"3 total" in second
+
+            writer.write(b"b")
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert result["value"] is None
+
+
+def test_ctrl_r_refresh_resets_page_index_and_clears_search_filter():
+    """A refresh means "show me current reality" -- not "reapply my old
+    search filter to it". Also confirms the page index resets even if
+    it was sitting on page 2+ of the old (larger) working set."""
+    result = {}
+    initial_items = [f"item{i}" for i in range(1, 21)]  # 20 -> 2 pages at page_size 18
+    refreshed_items = ["fresh"]
+    stable_ids = {f"item{i}": i for i in range(1, 21)}
+    stable_ids["fresh"] = 100
+
+    async def refresh():
+        return refreshed_items
+
+    async def handler(session: Session):
+        result["value"] = await pick_item(
+            session, initial_items, name_of=lambda x: x, stable_id_of=lambda x: stable_ids[x],
+            title="Items", empty_message="none", refresh=refresh,
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await reader.readexactly(9)
+            await _read_until_quiet(reader)
+
+            writer.write(b"n")  # page 2
+            await writer.drain()
+            await _read_until_quiet(reader)
+
+            writer.write(b"\x12")
+            await writer.drain()
+            data = await _read_until_quiet(reader)
+            assert b"fresh" in data
+            assert b"page 1/1" in data
+
+            writer.write(b"b")
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert result["value"] is None

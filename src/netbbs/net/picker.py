@@ -40,9 +40,9 @@ of how the list is currently sorted or filtered.
 from __future__ import annotations
 
 import math
-from typing import Callable, Sequence, TypeVar
+from typing import Awaitable, Callable, Sequence, TypeVar
 
-from netbbs.net.char_input import Completer
+from netbbs.net.char_input import REDRAW_KEY, REFRESH_KEY, Completer
 from netbbs.net.session import Session
 from netbbs.rendering import (
     ACCENT_COLOR,
@@ -82,6 +82,7 @@ async def pick_item(
     description_of: Callable[[T], str | None] = lambda item: None,
     title: str,
     empty_message: str,
+    refresh: Callable[[], Awaitable[Sequence[T]]] | None = None,
 ) -> T | None:
     """
     Let the user browse/search/jump through `items` and pick one, or
@@ -123,6 +124,18 @@ async def pick_item(
     specific text response *and* a freshly reprinted prompt afterward,
     since something was actually communicated that the user needs a
     clean line to respond to.
+
+    Issue #102: Ctrl-L always redraws the current page in place (no
+    state change, just a fresh copy of what's already on screen -- the
+    same "not a real action" bucket paging past the last page falls
+    into, just without the bell, since nothing here was actually
+    rejected). Ctrl-R additionally re-fetches via `refresh` if the
+    caller supplied one -- resetting to the freshly fetched list and
+    clearing any active search filter, since "refresh" means "show me
+    current reality," not "reapply my old filter to it" -- and falls
+    through to an ordinary rejected-keystroke bell if the caller didn't
+    (most existing callers), the same as any other key this function
+    doesn't recognize.
     """
     if not items:
         await session.write_line(f"\r\n{empty_message}")
@@ -183,7 +196,15 @@ async def pick_item(
                 menu_key("B", "ack"),
             ]
         )
-        await session.write_line(f"\r\n{nav} — or type a 2-digit number to select")
+        # Folded into this same trailing line, not a line of its own
+        # (issue #102's own "document it somewhere discoverable"
+        # criterion) -- a permanent extra row here would shift every
+        # picker's page_size by one and ripple through every existing
+        # page-boundary test/assumption for a purely cosmetic addition.
+        trailer = "or type a 2-digit number to select; Ctrl-L: redraw"
+        if refresh is not None:
+            trailer += ", Ctrl-R: refresh"
+        await session.write_line(f"\r\n{nav} — {trailer}")
         await session.write("Choice: ")
         return page_items
 
@@ -191,6 +212,20 @@ async def pick_item(
     while True:
         key = await session.read_key()
         key_lower = key.lower()
+
+        if key == REDRAW_KEY:
+            page_items = await _render()
+            continue
+
+        if key == REFRESH_KEY:
+            if refresh is None:
+                await session.write(reject_keystroke())
+                continue
+            items = await refresh()
+            working_set = items
+            page_index = 0
+            page_items = await _render()
+            continue
 
         if key_lower == "b":
             await session.write_line("")

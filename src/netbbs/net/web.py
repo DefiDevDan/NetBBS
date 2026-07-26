@@ -43,6 +43,8 @@ from urllib.parse import urlsplit
 from aiohttp import WSCloseCode, web
 
 from netbbs.net.char_input import (
+    REDRAW_KEY,
+    REFRESH_KEY,
     CandidateListPrinter,
     Completer,
     EditorKey,
@@ -510,10 +512,18 @@ class WebSession(Session):
         return submitted
 
     async def read_key(self, echo: bool = True) -> str:
+        # Issue #102: Ctrl-L/Ctrl-R returned unechoed as their own keys
+        # before the generic "control byte, no meaning here" skip below
+        # -- same narrow carve-out netbbs.net.char_input.read_key makes,
+        # for the same reason (see that function's own docstring).
         while True:
             char = await self._read_char()
             if char in (_CR, _LF, _BS, _DEL):
                 continue
+            if char == REDRAW_KEY:
+                return REDRAW_KEY
+            if char == REFRESH_KEY:
+                return REFRESH_KEY
             if ord(char) < 0x20:
                 continue
             await self.write(char if echo else "*")

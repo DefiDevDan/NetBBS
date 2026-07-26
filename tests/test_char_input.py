@@ -18,7 +18,14 @@ import asyncio
 import pytest
 
 import netbbs.net.char_input as char_input_module
-from netbbs.net.char_input import EditorKeyKind, read_editor_key, read_key, read_line
+from netbbs.net.char_input import (
+    REDRAW_KEY,
+    REFRESH_KEY,
+    EditorKeyKind,
+    read_editor_key,
+    read_key,
+    read_line,
+)
 from netbbs.net.session import SessionClosedError
 
 
@@ -216,6 +223,55 @@ def test_read_key_echo_false_masks_with_asterisk():
         writer = Writer()
         await read_key(source, writer, echo=False)
         assert writer.joined == "*"
+
+
+# -- issue #102: Ctrl-L/Ctrl-R as returnable keys ------------------------
+
+
+def test_read_key_returns_ctrl_l_as_redraw_key():
+    async def scenario():
+        source = FakeByteSource(b"\x0c")
+        writer = Writer()
+        key = await read_key(source, writer)
+        assert key == REDRAW_KEY == "\x0c"
+
+    asyncio.run(scenario())
+
+
+def test_read_key_returns_ctrl_r_as_refresh_key():
+    async def scenario():
+        source = FakeByteSource(b"\x12")
+        writer = Writer()
+        key = await read_key(source, writer)
+        assert key == REFRESH_KEY == "\x12"
+
+    asyncio.run(scenario())
+
+
+def test_read_key_does_not_echo_ctrl_l_or_ctrl_r():
+    """Unlike every other returned key, these must never be echoed --
+    writing a raw Ctrl-L byte back to a real terminal risks triggering
+    its own local form-feed/clear behavior."""
+    async def scenario():
+        source = FakeByteSource(b"\x0c")
+        writer = Writer()
+        await read_key(source, writer)
+        assert writer.joined == ""
+
+    asyncio.run(scenario())
+
+
+def test_read_key_still_skips_other_control_bytes_as_before():
+    """Regression guard: the Ctrl-L/Ctrl-R carve-out must stay narrow --
+    every other control byte keeps the old "no meaning, skip it"
+    treatment, not a broadened blanket pass-through."""
+    async def scenario():
+        source = FakeByteSource(b"\x01\x02\x03z")
+        writer = Writer()
+        key = await read_key(source, writer)
+        assert key == "z"
+
+    asyncio.run(scenario())
 
     asyncio.run(scenario())
 

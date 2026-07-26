@@ -126,7 +126,7 @@ from netbbs.messaging_preferences import (
 )
 from netbbs.moderation import BoardPermission, has_permission, is_blocked
 from netbbs.net.admin_flow import admin_menu
-from netbbs.net.char_input import InputHistory
+from netbbs.net.char_input import REDRAW_KEY, InputHistory
 from netbbs.net.confirm import prompt_yes_no
 from netbbs.net.chat_flow import browse_channels, has_visible_channels, list_visible_channels_for
 from netbbs.net.editor_preference import fullscreen_editor_enabled, set_fullscreen_editor_enabled
@@ -528,7 +528,15 @@ async def run_authenticated_session(
         await session.write_line(f"\r\n{LOCKDOWN_MESSAGE}")
         return
 
-    welcome = f"\r\nWelcome, {sanitize_text(user.username)}! You are level {user.user_level}."
+    # The Ctrl-L mention (issue #102) lives here, once per session,
+    # rather than repeated on every single menu redraw the way list
+    # screens' own Ctrl-L/Ctrl-R hint is (netbbs.net.picker) -- the main
+    # menu's own options line is already dense enough without adding a
+    # permanent trailer to it too.
+    welcome = (
+        f"\r\nWelcome, {sanitize_text(user.username)}! You are level {user.user_level}. "
+        f"(Ctrl-L redraws the current screen.)"
+    )
     if (
         node_controls is not None
         and node_controls.maintenance.is_lockdown_active()
@@ -1018,6 +1026,14 @@ async def _main_menu(
                 colored("\r\nYour account is no longer active. Disconnecting.", fg_color=MUTED_COLOR)
             )
             return
+
+        if choice == REDRAW_KEY:
+            # Issue #102: redraws in place, no state change -- the same
+            # "not a real action" shape an unrecognized key already has
+            # (design doc), just without the bell, since Ctrl-L is a
+            # deliberate request, not a mistyped one.
+            await _draw_main_menu(session, db, mailbox, user, node_controls=node_controls)
+            continue
 
         if choice == "l":
             await session.write_line("")
@@ -2536,18 +2552,24 @@ async def _caller_who_screen(
     message text, with a plain explanation rather than a silently
     swallowed send.
     """
-    entries = [
-        entry
-        for entry in node_controls.session_registry.list_entries()
-        if entry.username is not None and entry.session is not session
-    ]
+    async def _load_entries() -> list[SessionSummary]:
+        return [
+            entry
+            for entry in node_controls.session_registry.list_entries()
+            if entry.username is not None and entry.session is not session
+        ]
+
     selected = await pick_item(
-        session, entries,
+        session, await _load_entries(),
         name_of=_who_entry_name,
         stable_id_of=lambda e: id(e.session),
         description_of=lambda e: _who_entry_description(db, e),
         title="Who's online",
         empty_message="No one else is online right now.",
+        # Issue #102: this is exactly the "list that goes stale while
+        # you're looking at it" case Ctrl-R exists for -- who's
+        # connected changes independently of anything this screen does.
+        refresh=_load_entries,
     )
     if selected is None:
         return

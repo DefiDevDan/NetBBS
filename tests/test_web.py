@@ -167,6 +167,36 @@ def test_read_key_returns_immediately_no_enter_needed():
     assert received == ["q"]
 
 
+def test_read_key_returns_ctrl_l_unechoed():
+    """Issue #102: Ctrl-L is returned as its own key, and -- unlike an
+    ordinary printable key -- never echoed back (no "output" message at
+    all for it), matching netbbs.net.char_input.read_key's identical
+    carve-out for the Telnet/SSH transports."""
+    received = []
+
+    async def handler(session: Session):
+        received.append(await session.read_key())
+        await session.write_line("done")
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            async with aiohttp.ClientSession() as client:
+                async with client.ws_connect(f"http://127.0.0.1:{server.port}/ws") as ws:
+                    await ws.send_json({"type": "key", "data": "\x0c"})
+                    # The only message this handler ever produces is the
+                    # post-read_key "done" line -- if Ctrl-L had been
+                    # echoed, that echo would arrive first and this
+                    # assertion would see it instead.
+                    msg = await ws.receive_json(timeout=2)
+                    assert msg == {"type": "output", "data": "done\r\n"}
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert received == ["\x0c"]
+
+
 def test_resize_updates_terminal_dimensions():
     sizes = []
 

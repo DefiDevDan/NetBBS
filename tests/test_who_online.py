@@ -143,6 +143,72 @@ def test_who_screen_lists_other_online_users_and_excludes_self(tmp_path):
     database.close()
 
 
+def test_who_screen_ctrl_r_refreshes_with_a_session_that_joined_since(tmp_path):
+    """Issue #102: exactly the "list that goes stale while you're
+    looking at it" case Ctrl-R exists for -- a session that registers
+    *after* the screen was first drawn must show up once refreshed,
+    without backing out and reopening [W]ho's online. Bob is already
+    online when the screen opens (an empty picker returns immediately,
+    before ever reading a key at all, so there has to be at least one
+    entry already for Ctrl-R to actually be reached)."""
+    database = db(tmp_path)
+    alice = create_user(database, "alice", password="hunter2", user_level=10)
+    create_user(database, "bob", password="hunter2", user_level=10)
+    create_user(database, "carol", password="hunter2", user_level=10)
+
+    class _RegisterOnCtrlR(FakeSession):
+        """Registers `carol` the moment Ctrl-R is actually read --
+        matches the real timing this feature is for: someone else
+        connects while the screen is already open, not before."""
+
+        def __init__(self, keys, registry, new_session):
+            super().__init__(keys)
+            self._registry = registry
+            self._new_session = new_session
+            self._registered = False
+
+        async def read_key(self, echo: bool = True) -> str:
+            key = await super().read_key(echo=echo)
+            if key == "\x12" and not self._registered:
+                self._registry.enter(self._new_session)
+                self._registry.mark_authenticated(self._new_session, "carol")
+                self._registered = True
+            return key
+
+    async def scenario():
+        node_controls = _node_controls()
+        registry = node_controls.session_registry
+        bob_session = FakeSession()
+        bob_task = asyncio.create_task(_hold_registered(registry, bob_session, "bob"))
+        await asyncio.sleep(0)
+        carol_session = FakeSession()
+
+        session = _RegisterOnCtrlR(["w", "\x12", "b", "l", "y"], registry, carol_session)
+        registry.enter(session)
+        registry.mark_authenticated(session, "alice")
+        try:
+            await _run_main_menu(session, database, alice, node_controls)
+        finally:
+            registry.leave(session)
+            registry.leave(carol_session)
+            bob_task.cancel()
+            await asyncio.gather(bob_task, return_exceptions=True)
+
+        text = _written_text(session)
+        # Anchored past the picker's own title, not the whole session's
+        # text -- the very first "Choice: " in the full output belongs
+        # to the main menu's own prompt (printed before "w" is even
+        # pressed), not the who's-online picker's first render.
+        after_who = text.split("Who's online", 1)[1]
+        first_page, _, rest = after_who.partition("Choice: ")
+        assert "bob" in first_page
+        assert "carol" not in first_page  # not there yet on the first render
+        assert "carol" in rest  # present after the Ctrl-R refresh
+
+    asyncio.run(scenario())
+    database.close()
+
+
 def test_who_screen_excludes_unauthenticated_sessions(tmp_path):
     database = db(tmp_path)
     alice = create_user(database, "alice", password="hunter2", user_level=10)

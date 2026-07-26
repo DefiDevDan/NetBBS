@@ -54,6 +54,22 @@ _DEL = 0x7F  # Delete — many terminals send this for the Backspace key
 _ESC = 0x1B
 _TAB = 0x09
 
+# Issue #102: the two control bytes `read_key()` recognizes and returns
+# as their own distinct keys, rather than the generic "no meaning as a
+# standalone key, skip it and keep reading" treatment every other
+# control byte still gets below. Exported (not `_`-prefixed) since a
+# menu loop comparing `key == REDRAW_KEY`/`REFRESH_KEY` needs these same
+# values — a raw `"\x0c"`/`"\x12"` literal at every call site would be
+# both unreadable and easy to typo.
+#
+# Deliberately narrow: only these two bytes get this treatment, not a
+# blanket "pass every control byte through" -- CR/LF/BS/DEL/ESC above
+# keep their own existing special handling, and every other control
+# byte remains silently swallowed exactly as before, matching this
+# function's own documented "not a standalone key" contract.
+REDRAW_KEY = "\x0c"  # Ctrl-L
+REFRESH_KEY = "\x12"  # Ctrl-R
+
 # Bounded wait used when peeking for a byte that might not be coming (a
 # following LF after a lone CR; the rest of an escape sequence) — short
 # enough to be imperceptible when the byte does arrive (which happens
@@ -759,7 +775,13 @@ async def read_key(source: ByteSource, write: WriteFunc, echo: bool = True) -> s
     here for Left/Right/Home/End/Delete to act within, and Up/Down have
     no history to recall in a single-keystroke menu) — are silently
     skipped and reading continues, rather than being returned as a key
-    in their own right.
+    in their own right. Two narrow exceptions (issue #102): Ctrl-L and
+    Ctrl-R are returned as `REDRAW_KEY`/`REFRESH_KEY`, unechoed (unlike
+    every other returned key below) — echoing a raw Ctrl-L byte back to
+    a real terminal risks triggering its own local form-feed/clear
+    behavior, fighting whatever redraw the caller is about to do on
+    purpose. Every *other* control byte keeps the plain "no meaning,
+    keep reading" treatment unchanged.
     """
     while True:
         b = await _read_byte(source)
@@ -772,6 +794,11 @@ async def read_key(source: ByteSource, write: WriteFunc, echo: bool = True) -> s
         if b == _ESC:
             await _read_escape_sequence(source)
             continue
+
+        if b == ord(REDRAW_KEY):
+            return REDRAW_KEY
+        if b == ord(REFRESH_KEY):
+            return REFRESH_KEY
 
         if b < 0x20:
             continue
