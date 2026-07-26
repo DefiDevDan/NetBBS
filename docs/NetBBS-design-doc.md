@@ -227,6 +227,26 @@ The project intentionally provides two composition paths:
 - a robust simple/line-oriented editor available everywhere;
 - a nano-like fullscreen prose editor as a convenience preference.
 
+The line-oriented path is a real editor, not merely repeated irreversible
+prompts: callers can revisit, insert, replace, and delete already-submitted
+logical lines. Composition is separate from commitment. Mail and new posts
+show a final review state from which the caller may revise address/subject/body
+as applicable, commit explicitly, or cancel; leaving either editor never sends
+or posts by itself. Fullscreen-editor output passes through the same review
+boundary so editor preference cannot change send/commit safety.
+
+Conventional yes/no prompts act on one key: `Y`/`N` immediately, or Enter for
+the displayed default/current value. This uses a confirmation-specific input
+primitive; generic single-key menus retain their deliberate rule that Enter is
+not a menu action. Unsupported confirmation keys are rejected rather than
+silently selecting a default.
+
+Color is semantic rather than decorative state: labels, values, actions,
+metadata, warnings, and success/failure states use shared theme roles across
+screens. Truecolor is progressive enhancement with a deliberate 256-color
+fallback, never a requirement for understanding a screen. Product polish is
+bounded by named mature surfaces rather than an open-ended theming rewrite.
+
 ANSI art editing and prose editing are separate concerns. Syntax highlighting,
 spell checking, and similar enhancements remain optional modules rather than
 core editor assumptions.
@@ -559,6 +579,12 @@ before direct chat takes ownership of session input/output, then reauthorizes
 and re-enters the channel afterward. A peer-leave notice is a mandatory
 lifecycle signal and uses priority delivery rather than lossy chat-traffic
 overflow behavior.
+
+The direct-chat pinned status row permanently exposes the leave command (with
+a compact narrow-terminal fallback). Submitting a line clears/redraws the input
+row before the committed chat line is rendered, so the sender sees one message,
+not the input echo plus a second room copy. Identity labels and message bodies
+are sanitized and styled as separate spans using semantic theme colors.
 
 Phase 2 uses one active channel per session. Multiple simultaneous memberships,
 background delivery, and Link-wide presence wait for Phase 5.
@@ -3556,6 +3582,19 @@ specified in §12; its persistence, protocol, enforcement, UI, and validation
 must ship before any public/untrusted federation claim.
 
 ### Phase 4 — Trust, reputation, and public readiness — active
+
+After #126, Phase 4 deliberately pauses for a bounded product-track interleave
+from issue #83's real-user dogfood feedback before foundation issue #127:
+
+- direct-chat discoverability, single rendering, and field color (#134);
+- safe line-mode composition and review-before-commit (#133);
+- truthful single-key yes/no confirmations with Enter defaults (#135);
+- current-build visual/capability verification plus bounded semantic-color
+  polish on named mature surfaces (#136).
+
+This interleave does not change Phase 4's security dependencies or public-
+readiness gate. It applies the standing cadence between meaningful foundation
+work and complete user-visible slices; #127 resumes after this batch.
 
 - formal threat model from issue #55 — specified in §12;
 - persisted local trust inputs, projections, probation, and policy evaluation
