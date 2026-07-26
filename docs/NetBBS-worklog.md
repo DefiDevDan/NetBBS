@@ -811,6 +811,15 @@ and the scroll region reset may the invite/direct-chat screen begin. Returning
 reauthorizes and re-enters the original channel. The same boundary applies to
 any future screen which owns session reads or reserved terminal rows.
 
+In a pinned input UI, Enter clearing the logical `LiveInputBuffer` is only half
+of submission: repaint the input row from that empty buffer before moving into
+the content region and rendering the committed line. Otherwise the terminal
+still displays the old input below the committed copy even though internal
+state is already empty. Keep conversational identity and body as separately
+sanitized, separately styled spans; sanitizing a fully colored line would
+strip trusted ANSI, while coloring one combined untrusted string prevents
+field-level semantics and makes reset behavior harder to reason about.
+
 Room-lifecycle signals are not lossy chat traffic. A direct-chat close notice
 uses priority queue delivery so a full recipient queue evicts an older ordinary
 line rather than substituting an overflow notice and leaving the peer blocked.
@@ -1982,9 +1991,10 @@ status, ownership, and acceptance criteria.
 Current work spans the Phase 3 operational-validation track and active Phase 4
 implementation:
 
-- before #127, complete the bounded product-track dogfood interleave: direct
-  chat (#134), safe composition (#133), confirmation consistency (#135), and
-  visual/capability verification plus named-surface polish (#136);
+- before #127, complete the remaining bounded product-track dogfood interleave:
+  safe composition (#133), confirmation consistency (#135), and visual/
+  capability verification plus named-surface polish (#136); direct-chat polish
+  (#134) is implemented;
 
 - independent non-Python interoperability validation is deprioritized and
   deferred (issue #71); Python canonical vectors remain authoritative and

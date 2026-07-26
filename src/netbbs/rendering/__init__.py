@@ -39,6 +39,7 @@ from netbbs.rendering.screen_buffer import Cell, ScreenBuffer, Snapshot, diff_an
 from netbbs.rendering.theme import (
     ACCENT_COLOR,
     ALERT_COLOR,
+    CHAT_BODY_COLOR,
     CHANNEL_TYPE_COLOR,
     CLOCK_COLOR,
     HEADER_COLOR,
@@ -88,6 +89,7 @@ __all__ = [
     "full_render_ansi",
     "ACCENT_COLOR",
     "ALERT_COLOR",
+    "CHAT_BODY_COLOR",
     "CHANNEL_TYPE_COLOR",
     "CLOCK_COLOR",
     "HEADER_COLOR",

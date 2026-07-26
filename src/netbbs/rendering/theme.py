@@ -26,6 +26,9 @@ MENU_KEY_COLOR = 46  # bright green — the actual valid keystroke in a menu opt
 SELF_COLOR = 201  # bright magenta — the user's own name/messages in chat, distinct
                   # from ACCENT_COLOR (used for everyone else's), so a user's own
                   # messages visually stand out from the rest of the conversation
+CHAT_BODY_COLOR = 252  # soft white — ordinary direct-chat message text, kept
+                       # distinct from SELF_COLOR/ACCENT_COLOR identity labels so
+                       # a conversational line reads as speaker plus content
 NICK_COLOR = 39   # sky blue — a `/nick` alias shown alone in the live chat stream
                   # (design doc), distinct from ACCENT_COLOR/SELF_COLOR so
                   # "this is a stand-in name, not necessarily the account's own" reads

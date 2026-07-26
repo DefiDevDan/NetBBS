@@ -22,6 +22,7 @@ an invite outcome -- prematurely consuming an input meant for later.
 from __future__ import annotations
 
 import asyncio
+import re
 
 from netbbs.auth.users import create_user
 from netbbs.chat import ChatHub, DirectChatInvites, MessageMailbox, PresenceRegistry
@@ -32,6 +33,8 @@ from netbbs.net.maintenance import MaintenanceMode
 from netbbs.net.session import Session
 from netbbs.net.session_registry import ActiveSessionRegistry
 from netbbs.net.shutdown import NodeControls
+from netbbs.rendering import ACCENT_COLOR, CHAT_BODY_COLOR, MENU_KEY_COLOR, SELF_COLOR
+from netbbs.rendering.ansi import fg
 from netbbs.storage.database import Database
 from netbbs.storage.execution import DatabaseLane
 
@@ -81,6 +84,13 @@ class FakeSession(Session):
 
 def _written_text(session: FakeSession) -> str:
     return "".join(session.written)
+
+
+_ANSI_SEQUENCE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _plain(text: str) -> str:
+    return _ANSI_SEQUENCE.sub("", text)
 
 
 async def _run_until(predicate, *, max_iterations: int = 2_000) -> None:
@@ -178,10 +188,10 @@ def test_invite_interrupts_an_idle_main_menu_and_completes_a_round_trip(tmp_path
 
             await asyncio.wait_for(invite_task, timeout=2)
 
-            assert "you: hi bob" in _written_text(alice_session)
-            assert f"{alice.username}: hi bob" in _written_text(bob_session)
-            assert "you: hi alice" in _written_text(bob_session)
-            assert f"{bob.username}: hi alice" in _written_text(alice_session)
+            assert "you: hi bob" in _plain(_written_text(alice_session))
+            assert f"{alice.username}: hi bob" in _plain(_written_text(bob_session))
+            assert "you: hi alice" in _plain(_written_text(bob_session))
+            assert f"{bob.username}: hi alice" in _plain(_written_text(alice_session))
             assert "has left the direct chat" in _written_text(alice_session)
 
             assert not bob_task.done()  # back at his own idle main menu, not crashed/exited
@@ -390,7 +400,7 @@ def test_dm_command_unwinds_channel_before_direct_chat_and_rejoins_afterward(tmp
             assert public_marker not in _written_text(alice_session)
 
             alice_session.queue_line("hi bob")
-            await _run_until(lambda: "you: hi bob" in _written_text(alice_session))
+            await _run_until(lambda: "you: hi bob" in _plain(_written_text(alice_session)))
             alice_session.queue_line("/close")
             await _run_until(lambda: hub.participant_count(channel.name) == 1)
             alice_session.queue_line("/quit")
@@ -482,4 +492,153 @@ def test_acceptance_wins_when_accept_and_local_cancel_land_together(tmp_path):
         asyncio.run(scenario())
     finally:
         lane.close()
+        database.close()
+
+
+def test_direct_chat_status_keeps_close_command_visible_on_narrow_rows(tmp_path):
+    database = Database(tmp_path / "node.db")
+    try:
+        bob = create_user(database, "bob", password="hunter2", user_level=10)
+        groups = chat_flow._render_direct_chat_status_line(bob, PresenceRegistry())
+
+        wide = chat_flow._compose_status_line(groups, width=80, active=True)
+        compact = chat_flow._compose_status_line(groups, width=len("/close"), active=True)
+
+        assert _plain(wide).startswith("/close leave | Direct chat with bob")
+        assert _plain(compact) == "/close"
+        assert groups[0][0].fg_color == MENU_KEY_COLOR
+    finally:
+        database.close()
+
+
+def test_direct_chat_message_styles_sanitized_identity_and_body_separately():
+    rendered = chat_flow._render_direct_chat_message(
+        "ali\x1b[31mce", "hello\r\n\x1b[2Jthere", self_message=False
+    )
+
+    assert _plain(rendered) == "ali[31mce: hello[2Jthere"
+    assert fg(ACCENT_COLOR) in rendered
+    assert fg(CHAT_BODY_COLOR) in rendered
+    assert rendered.index(fg(ACCENT_COLOR)) < rendered.index(fg(CHAT_BODY_COLOR))
+    # The only ESC bytes left are NetBBS's trusted 256-color/reset SGRs;
+    # the untrusted 31m/2J sequences lost their introducers.
+    assert "\x1b[31m" not in rendered
+    assert "\x1b[2J" not in rendered
+
+    own = chat_flow._render_direct_chat_message("you", "hello", self_message=True)
+    assert fg(SELF_COLOR) in own
+    assert fg(CHAT_BODY_COLOR) in own
+
+
+def test_pinned_direct_chat_clears_submitted_input_before_rendering_it(tmp_path):
+    from tests.test_chat_pinned_input import _LiveTypingSession
+
+    database = Database(tmp_path / "node.db")
+    try:
+        alice = create_user(database, "alice", password="hunter2", user_level=10)
+        bob = create_user(database, "bob", password="hunter2", user_level=10)
+
+        async def scenario():
+            hub = ChatHub()
+            presence = PresenceRegistry()
+            room_token = "clear-before-render"
+            room = f"{chat_flow._DM_CHANNEL_PREFIX}{room_token}"
+            peer_id = chat_flow.ParticipantId(username=bob.username, session_key=99)
+            peer_queue = hub.join(room, peer_id)
+            session = _LiveTypingSession()
+            task = asyncio.create_task(
+                chat_flow.run_direct_chat_loop(session, hub, presence, alice, bob, room_token)
+            )
+            await _run_until(lambda: hub.participant_count(room) == 2)
+
+            session.feed("hello")
+            session.feed_enter()
+            peer_message = await asyncio.wait_for(peer_queue.get(), timeout=2)
+            await _run_until(lambda: "you: hello" in _plain(session.output))
+
+            session.feed("/close")
+            session.feed_enter()
+            await asyncio.wait_for(task, timeout=2)
+            return session.output, peer_message
+
+        output, peer_message = asyncio.run(scenario())
+        committed = chat_flow._render_direct_chat_message("you", "hello", self_message=True)
+        typed_at = output.index("hello")
+        cleared_at = output.index("\x1b[24;1H\x1b[2K> ", typed_at + len("hello"))
+        committed_at = output.index(committed)
+
+        assert typed_at < cleared_at < committed_at
+        assert _plain(peer_message) == "alice: hello"
+    finally:
+        database.close()
+
+
+def test_partial_input_survives_incoming_direct_chat_output_and_resize(tmp_path):
+    from tests.test_chat_pinned_input import _LiveTypingSession
+
+    database = Database(tmp_path / "node.db")
+    try:
+        alice = create_user(database, "alice", password="hunter2", user_level=10)
+        bob = create_user(database, "bob", password="hunter2", user_level=10)
+
+        async def scenario():
+            hub = ChatHub()
+            presence = PresenceRegistry()
+            room_token = "partial-and-resize"
+            room = f"{chat_flow._DM_CHANNEL_PREFIX}{room_token}"
+            peer_id = chat_flow.ParticipantId(username=bob.username, session_key=99)
+            peer_queue = hub.join(room, peer_id)
+            session = _LiveTypingSession()
+            task = asyncio.create_task(
+                chat_flow.run_direct_chat_loop(session, hub, presence, alice, bob, room_token)
+            )
+            await _run_until(lambda: hub.participant_count(room) == 2)
+
+            session.feed("hel")
+            await asyncio.sleep(0.05)
+            incoming = chat_flow._render_direct_chat_message(bob.username, "incoming", self_message=False)
+            await hub.broadcast(room, incoming, exclude={peer_id})
+            await _run_until(lambda: "incoming" in session.output and "> hel" in session.output)
+
+            session.terminal_height = 2
+            session.feed("lo")
+            session.feed_enter()
+            sent = await asyncio.wait_for(peer_queue.get(), timeout=2)
+
+            session.terminal_height = 24
+            session.feed("/close")
+            session.feed_enter()
+            await asyncio.wait_for(task, timeout=2)
+            return session.output, sent
+
+        output, sent = asyncio.run(scenario())
+        assert _plain(sent) == "alice: hello"
+        assert "> hel" in output
+        assert "\x1b[r\x1b[2J\x1b[H" in output  # shrink handed the screen back
+        assert output.endswith("\x1b[r\x1b[2J\x1b[H")  # regrowth was tracked for cleanup
+    finally:
+        database.close()
+
+
+def test_close_works_without_pinned_ui(tmp_path):
+    database = Database(tmp_path / "node.db")
+    try:
+        alice = create_user(database, "alice", password="hunter2", user_level=10)
+        bob = create_user(database, "bob", password="hunter2", user_level=10)
+        session = FakeSession()
+        session.terminal_height = 2
+        session.queue_line("/close")
+
+        asyncio.run(
+            asyncio.wait_for(
+                chat_flow.run_direct_chat_loop(
+                    session, ChatHub(), PresenceRegistry(), alice, bob, "unpinned-close"
+                ),
+                timeout=2,
+            )
+        )
+
+        assert "/close" in _plain(_written_text(session))
+        assert "\x1b[1;" not in _written_text(session)
+    finally:
         database.close()
