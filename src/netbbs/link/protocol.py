@@ -59,6 +59,8 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from string import hexdigits
 
 import nacl.signing
 
@@ -124,6 +126,7 @@ from netbbs.link.events import (
     verify_relay_consent_response,
 )
 from netbbs.link.node_identity import NodeIdentity, NodeIdentityError, resolve_current_operational_key
+from netbbs.timeutil import utc_now_iso
 
 # Bounds on remotely-influenced peer-list state (design doc's own
 # "every remotely influenced ... collection needs an explicit
@@ -140,6 +143,24 @@ _MAX_CANDIDATE_DESCRIPTORS = 500
 # single push could carry an unbounded event list. Same "reject the
 # whole batch" idiom as `_MAX_PEER_LIST_ENTRIES_PER_REQUEST`.
 _MAX_EVENTS_PER_REQUEST = 200
+
+# Issue #124: inventory is a potentially expensive enumeration route,
+# so a captured signed request must not remain reusable. Five minutes
+# allows ordinary clock skew without turning freshness into durable
+# authority; the bounded nonce cache closes exact replay within that
+# window without letting a remote peer grow in-memory state forever.
+_INVENTORY_REQUEST_FRESHNESS_SECONDS = 5 * 60
+_MAX_SEEN_INVENTORY_REQUEST_NONCES = 4096
+
+
+def _parse_aware_timestamp(value: str, *, field_name: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (AttributeError, ValueError) as exc:
+        raise LinkProtocolError(f"{field_name} is not a valid ISO 8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise LinkProtocolError(f"{field_name} must include a timezone")
+    return parsed.astimezone(timezone.utc)
 
 # Design doc §13.9: `board_post`/`board_post_edit` had no size
 # validation at all on receive, unlike a locally created post. Imported
@@ -275,8 +296,7 @@ class InventoryRequest:
     envelope of its own. This is a bookkeeping request about what the
     requester already has, not durable authored content that needs
     content-addressing or gossip-replay semantics -- there is still no
-    chain, no `content_id`, and a stale/duplicate request costs nothing
-    beyond one wasted round trip.
+    chain and no `content_id`.
 
     **Issue #106: signed, unlike when this docstring originally argued
     a signature was unnecessary here.** That reasoning held only while
@@ -288,7 +308,7 @@ class InventoryRequest:
     all-empty request into "list everything you have," which an
     unauthenticated caller could otherwise send to enumerate this node's
     carried content without ever needing to guess a single ID. This
-    class now carries `requester_fingerprint` and `signature` (`sign_
+    class carries `requester_fingerprint` and `signature` (`sign_
     inventory_request`/`verify_inventory_request`, `netbbs.link.events` --
     same "always signed by the requester's own current operational key"
     shape `RelayConsentRequest` already established) so `LinkNode.
@@ -298,6 +318,13 @@ class InventoryRequest:
     to be told an ID for. The invariant: a completed peer may still send
     an empty inventory and discover everything this node carries; an
     arbitrary unauthenticated HTTP client may not.
+
+    Issue #124 binds that same signature to `responder_fingerprint`,
+    `created_at`, and a 128-bit random `nonce`. The intended responder
+    rejects another destination, timestamps outside a five-minute skew
+    window, and recently seen nonces from its bounded replay cache. These
+    fields are required pre-freeze Link v1 wire shape, not optional
+    compatibility extensions.
 
     `boards` is keyed by every `board_id` the requester currently
     carries (bounded by its own `max_carried_boards` quota, §13.9 --
@@ -318,6 +345,9 @@ class InventoryRequest:
     """
 
     requester_fingerprint: str
+    responder_fingerprint: str
+    created_at: str
+    nonce: str
     signature: bytes
     boards: dict[str, tuple[str, ...]]
     channels: dict[str, tuple[str, ...]] = field(default_factory=dict)
@@ -326,6 +356,9 @@ class InventoryRequest:
     def to_dict(self) -> dict:
         return {
             "requester_fingerprint": self.requester_fingerprint,
+            "responder_fingerprint": self.responder_fingerprint,
+            "created_at": self.created_at,
+            "nonce": self.nonce,
             "signature": base64.b64encode(self.signature).decode("ascii"),
             "boards": {board_id: list(ids) for board_id, ids in self.boards.items()},
             "channels": {channel_id: list(ids) for channel_id, ids in self.channels.items()},
@@ -336,12 +369,15 @@ class InventoryRequest:
     def from_dict(cls, data: dict) -> "InventoryRequest":
         return cls(
             requester_fingerprint=data["requester_fingerprint"],
+            responder_fingerprint=data["responder_fingerprint"],
+            created_at=data["created_at"],
+            nonce=data["nonce"],
             signature=base64.b64decode(data["signature"]),
             boards={board_id: tuple(ids) for board_id, ids in data["boards"].items()},
-            # .get(..., {}) rather than a required key -- accepts a
-            # pre-issue-#87/#93 request shape too, harmless since an
-            # absent "channels"/"file_areas" key just means "nothing to
-            # ask about."
+            # Omitted optional resource dictionaries normalize to empty;
+            # current senders still emit both. The issue-#124 security
+            # fields above are deliberately required: accepting their
+            # absence would retain the replay.
             channels={channel_id: tuple(ids) for channel_id, ids in data.get("channels", {}).items()},
             file_areas={area_id: tuple(ids) for area_id, ids in data.get("file_areas", {}).items()},
         )
@@ -678,6 +714,19 @@ class RelayState:
 
 
 @dataclass
+class InventoryRequestState:
+    """Bounded, process-local replay state for signed inventory pulls.
+
+    Keys are `(requester_fingerprint, nonce)` and values are the local
+    receipt time. Signed timestamps make old requests invalid across a
+    restart; this cache additionally rejects an exact replay while a
+    fresh request could otherwise still be accepted.
+    """
+
+    seen_nonces: dict[tuple[str, str], datetime] = field(default_factory=dict)
+
+
+@dataclass
 class LinkNode:
     """
     This node's own Link protocol state: its identity, what it's
@@ -717,6 +766,7 @@ class LinkNode:
     board_events: BoardEventState = field(default_factory=BoardEventState)
     board_lifecycle: BoardLifecycleState = field(default_factory=BoardLifecycleState)
     relay_state: RelayState = field(default_factory=RelayState)
+    inventory_requests: InventoryRequestState = field(default_factory=InventoryRequestState)
     # Design doc §9.6, issue #87.
     channel_events: ChannelEventState = field(default_factory=ChannelEventState)
     # Design doc §11, issue #89.
@@ -1055,9 +1105,15 @@ class LinkNode:
                 "current signing key"
             )
 
-    def handle_inventory_request(self, sender_fingerprint: str, request: InventoryRequest) -> None:
+    def handle_inventory_request(
+        self,
+        sender_fingerprint: str,
+        request: InventoryRequest,
+        *,
+        now_iso: str | None = None,
+    ) -> None:
         """
-        Issue #106: authenticate an inventory requester before allowing
+        Issues #106/#124: authenticate an inventory requester before allowing
         the empty-request discovery issue #94 correctly added. Mirrors
         `handle_relay_consent_request`'s own three-part check exactly:
         the sender must already be a completed peer (the same "no pull
@@ -1070,6 +1126,9 @@ class LinkNode:
         merely a previously-observed, publicly-discoverable fingerprint
         (see `InventoryRequest`'s own docstring for the full history of
         why this replaced the pre-#106 "no signature needed" reasoning).
+        The signed responder must be this node, the timestamp must lie
+        within the bounded skew window, and the requester's nonce must
+        not have been accepted recently.
 
         Raises `LinkProtocolError` if anything doesn't check out. The
         caller (`netbbs.link.transport`'s `/inventory` route handler)
@@ -1091,9 +1150,19 @@ class LinkNode:
                 f"requester_fingerprint ({request.requester_fingerprint!r}) -- refusing"
             )
 
+        if request.responder_fingerprint != self.identity.fingerprint:
+            raise LinkProtocolError(
+                f"inventory_request from {sender_fingerprint} is addressed to "
+                f"{request.responder_fingerprint!r}, not this node "
+                f"({self.identity.fingerprint!r}) -- refusing"
+            )
+
         signing_verify_key = self._resolve_sender_signing_key(sender, sender_fingerprint, "inventory_request")
         if not verify_inventory_request(
             requester_fingerprint=request.requester_fingerprint,
+            responder_fingerprint=request.responder_fingerprint,
+            created_at=request.created_at,
+            nonce=request.nonce,
             boards=request.boards,
             channels=request.channels,
             file_areas=request.file_areas,
@@ -1104,6 +1173,38 @@ class LinkNode:
                 f"inventory_request from {sender_fingerprint} does not verify against its "
                 "current signing key"
             )
+
+        if len(request.nonce) != 32 or any(character not in hexdigits for character in request.nonce):
+            raise LinkProtocolError(
+                f"inventory_request from {sender_fingerprint} has an invalid nonce -- refusing"
+            )
+
+        received_at = _parse_aware_timestamp(now_iso or utc_now_iso(), field_name="current time")
+        created_at = _parse_aware_timestamp(
+            request.created_at, field_name="inventory_request.created_at"
+        )
+        age_seconds = (received_at - created_at).total_seconds()
+        if abs(age_seconds) > _INVENTORY_REQUEST_FRESHNESS_SECONDS:
+            raise LinkProtocolError(
+                f"inventory_request from {sender_fingerprint} is outside the "
+                f"{_INVENTORY_REQUEST_FRESHNESS_SECONDS}-second freshness window -- refusing"
+            )
+
+        replay_cutoff = received_at.timestamp() - _INVENTORY_REQUEST_FRESHNESS_SECONDS
+        for key, seen_at in list(self.inventory_requests.seen_nonces.items()):
+            if seen_at.timestamp() < replay_cutoff:
+                self.inventory_requests.seen_nonces.pop(key, None)
+
+        replay_key = (sender_fingerprint, request.nonce)
+        if replay_key in self.inventory_requests.seen_nonces:
+            raise LinkProtocolError(
+                f"inventory_request from {sender_fingerprint} reuses a recent nonce -- refusing"
+            )
+
+        while len(self.inventory_requests.seen_nonces) >= _MAX_SEEN_INVENTORY_REQUEST_NONCES:
+            oldest_key = next(iter(self.inventory_requests.seen_nonces))
+            self.inventory_requests.seen_nonces.pop(oldest_key)
+        self.inventory_requests.seen_nonces[replay_key] = received_at
 
     def _check_protocol_version(self, envelope: dict, *, kind: str, sender_fingerprint: str | None = None) -> None:
         """

@@ -66,6 +66,12 @@ between NetBBS nodes, opt-in and disabled by default. Currently working:
   materialize into that node's own real, locally browsable content,
   with a `[R]epair carried posts` SysOp tool if a crash ever leaves
   that materialization incomplete;
+- linked-board origin transfer, orphan/fork handling, closure,
+  origin-authorized moderator edits, and tombstones;
+- linked channels with live message propagation, plus linked file-area
+  catalogues with interactive, resumable on-demand file fetching;
+- bounded inventory/pull catch-up across boards, channels, and file-area
+  catalogues, including empty-inventory discovery through a carrier;
 - Link mail — asynchronous, encrypted, addressed `user@node-
   fingerprint` — with accepted/bounced delivery acknowledgement;
 - automatic relay selection/consent and a bounded relay mailbox, so an
@@ -86,10 +92,11 @@ just rotting this document.
 **What Link does not yet do** — no public federation or trust/
 reputation model (Phase 3 is explicitly a private, invite-your-friends
 federation for now; see [issue #55](https://github.com/Thiesi/NetBBS/issues/55));
-no inventory/pull-based catch-up (a node that's been offline doesn't
-yet backfill everything it missed, only what peers happen to still be
-actively re-gossiping); and no linked channels or remote file areas
-(boards only, so far).
+no tier-2 Link-message routing or client-side decryption; no real-time
+Link-wide chat (local direct chat is a separate feature); and no linked
+channel/file-area origin succession, delegated Link moderation, or Link
+Communities. Public interoperability also remains unclaimed until the
+independent implementation and sustained multi-node dogfood work are done.
 
 See [`docs/NetBBS-design-doc.md`](docs/NetBBS-design-doc.md) for the
 full architecture, rationale, and phased roadmap, and

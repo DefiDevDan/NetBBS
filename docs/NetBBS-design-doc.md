@@ -551,6 +551,15 @@ An unanswered invite expires automatically after a short fixed window, with
 an explicit accepted/declined/timed-out outcome always shown to the inviter
 -- never a silent no-op.
 
+While the inviter waits, only `C` cancels; unsupported keys are rejected and
+the invite remains live. If acceptance and local cancellation become ready in
+the same scheduler turn, the already-committed acceptance wins so the accepting
+peer is never stranded. Entering from `/dm` fully unwinds the channel screen
+before direct chat takes ownership of session input/output, then reauthorizes
+and re-enters the channel afterward. A peer-leave notice is a mandatory
+lifecycle signal and uses priority delivery rather than lossy chat-traffic
+overflow behavior.
+
 Phase 2 uses one active channel per session. Multiple simultaneous memberships,
 background delivery, and Link-wide presence wait for Phase 5.
 
@@ -1156,18 +1165,16 @@ Current background sync:
 - pushes the complete locally originated supported event set;
 - relies on idempotent acceptance;
 - sends targeted Link mail directly or through a selected relay;
-- requests and applies bounded inventory/pull-based catch-up for every
-  currently-carried board, from every seed dialed that pass, genuinely
-  multi-hop for board content already carried somewhere in reach (§8.8,
-  issue #85).
+- requests and applies bounded inventory/pull-based catch-up for linked
+  boards, channels, and file-area catalogues from every seed dialed that
+  pass. Responders include carried resources absent from the request, so
+  an empty inventory can discover a first resource through a carrier
+  (§8.8, issues #85/#94).
 
 This is intentionally simple but incomplete.
 
 Not yet present:
 
-- discovery of a wholly novel board through a relay with no direct genesis
-  ever received (§8.8's own stated scope boundary — inventory/pull only
-  catches up boards the requester already carries);
 - efficient per-peer deltas beyond a full per-board known-ID list (fine at
   this project's declared scale; a compact digest would be needed beyond it);
 - complete retained-event and dedup-purge policy — `key_transition` alone
@@ -1194,35 +1201,46 @@ Alice's board events never relays them to Carol). This section specifies
 both, deliberately reusing existing machinery wherever possible rather than
 adding new protocol-verification surface.
 
-**Scope.** Board-scoped events only — `board_genesis`, `board_post`,
-`board_post_edit`, `board_origin_transfer_offer`, and
-`board_origin_transfer_accepted`, the five object types that already carry
-`payload["board_id"]` directly. Identity (`key_transition`) events are
+**Scope.** Signed board-scoped events, linked-channel genesis/messages, and
+linked file-area catalogue metadata are included. File bytes are fetched
+separately and never appear in inventory. Identity (`key_transition`) events are
 already gossiped to every configured seed every pass regardless (§12) and
 are small enough that this has never been the gap; Link messages are
 point-to-point by design (§10) and are explicitly excluded from any
 multi-hop relay, matching their existing "no relay from a stranger" routing
 boundary (§10.4) — nothing here changes how `link_message` is delivered.
 
-**`InventoryRequest` — signed, not a canonical event (revised by issue
-#106; originally shipped unsigned).** This is a bookkeeping request about
+**`InventoryRequest` — signed, destination-bound, fresh, and not a canonical
+event (revised by issues #106/#124; originally shipped unsigned).** This is a bookkeeping request about
 what the requester already has, not durable authored content, so it still
 needs no content-addressing or gossip-replay semantics of its own — no
-chain, no `content_id`, and a stale/duplicate request costs nothing beyond
-a wasted round trip. It **is** now always signed by the requester's own
+chain and no `content_id`. It **is** always signed by the requester's own
 current operational signing key, the same "always signed by the
 requester's own current key" shape §12's `relay_consent_request` already
-established, for the reason below.
+established. Before Link v1 interoperability is frozen, issue #124 makes the
+additional fields below required rather than preserving the replayable
+pre-freeze request shape.
 
 ```
 InventoryRequest {
   requester_fingerprint: string,
+  responder_fingerprint: string,
+  created_at: timestamp,
+  nonce: 128-bit random hex string,
   signature: bytes,
   boards: { board_id: [known_content_id, ...], ... },
   channels: { channel_id: [known_content_id, ...], ... },
   file_areas: { area_id: [known_content_id, ...], ... }
 }
 ```
+
+The signature covers every field except `signature` itself. A responder
+requires `responder_fingerprint` to equal its own root fingerprint, rejects
+timestamps more than five minutes old or ahead of its clock, and rejects a
+recently seen `(requester_fingerprint, nonce)` pair. The replay cache is
+process-local and capped at 4,096 entries; timestamp freshness preserves the
+bounded replay window across restart. This prevents a captured request from
+being redirected to enumerate a different peer or replayed indefinitely.
 
 `boards` is keyed by every `board_id` the requester itself currently
 carries (bounded by its own `max_carried_boards` quota, §13.9 — the request
@@ -1284,7 +1302,9 @@ some *other* peer's behalf); and `signature` must verify against that
 peer's current resolved signing key — proving current possession of the
 identity, not merely a previously-observed, publicly-discoverable
 fingerprint (fingerprints are exactly that: discoverable via the
-deliberately-unauthenticated `/peers` route, §8.3). The governing
+deliberately-unauthenticated `/peers` route, §8.3). The signed responder,
+freshness, and nonce checks above then prevent cross-responder reuse and
+replay. The governing
 invariant: a completed, cryptographically verified peer may send an empty
 inventory and discover everything this node carries; an arbitrary
 unauthenticated HTTP client may not enumerate anything. A request failing
@@ -1340,23 +1360,15 @@ via a relay, exactly as it already could not accept it directly — this
 issue does not weaken that boundary, only lets it be satisfied through a
 past hello rather than requiring the origin to be *currently* reachable.
 
-**A second, separate limitation: this closes the "missed events for a
-board I already carry" gap, not "discover a board I've never heard of
-purely through a relay."** `InventoryRequest.boards` is keyed by the
-boards the *requester* already carries (`netbbs.link.store.
-carried_board_ids`) — a node with zero prior knowledge of a board has no
-way to name it in a request in the first place, so it will never learn
-that board exists this way. This matches the more common and more
-directly valuable real case: a node that already carries board X (having
-received its genesis at some point, whether directly or via an earlier
-relay) but has fallen behind on that board's *later* posts/edits because
-its own connection to the origin became unreliable, while a third node it
-still talks to regularly has stayed current. Bootstrapping a wholly novel
-board through a relay with no direct genesis delivery ever is real,
-additional scope this issue deliberately does not solve — it would need
-the responder to proactively advertise board_ids the requester didn't ask
-about, not just diff the ones it did, which changes the wire shape and is
-better sized as its own follow-up if it turns out to matter in practice.
+**Empty inventory is discovery, not "ask about nothing" (issue #94).**
+Although each request dictionary lists what the requester currently
+carries, the responder walks the union of requested and locally carried
+IDs. A missing key therefore means "the requester has never seen this,"
+and the responder returns that resource's events subject to the same
+authentication, origin-verification, quota, and response-size boundaries.
+This lets a node discover its first board/channel/file-area catalogue
+through a carrier without weakening the independent-known-origin rule
+above.
 
 **Bounded response size.** Capped at the existing `_MAX_EVENTS_PER_REQUEST`
 (200, §13.9) — the same constant `handle_events` already enforces on the
@@ -1696,10 +1708,8 @@ Still future or incomplete:
 - linked-board moderator grants and revocations (delegating origin-recognized
   moderator authority to a non-origin node, rather than only the origin
   itself ever asserting a moderator edit/tombstone, as above);
-- general relay/anti-entropy beyond direct peers, in the fullest sense —
-  issue #85 covers bounded catch-up for content already carried, not
-  discovery of a wholly novel board through a relay with no direct genesis
-  ever received;
+- general public-network anti-entropy beyond the current bounded
+  full-known-ID inventory exchange;
 - Link-blanket governance surfaces and audit feeds (Phase 6).
 
 ### 9.6 Linked channels (issue #87)
@@ -3262,8 +3272,10 @@ Implemented or substantially working:
   checking, diagnostic log retention, protocol/database upgrade
   compatibility, and graceful Link drain on shutdown (§13.11) — issue #60 is
   closed.
-- inventory/pull-based catch-up and multi-hop relay for already-carried
-  board content (§8.8, issue #85, closed).
+- authenticated inventory/pull-based catch-up and multi-hop relay across
+  boards, channels, and file-area catalogues, including empty-inventory
+  discovery and responder/freshness/replay binding (§8.8, issues
+  #85/#94/#106/#124).
 - correctness-preserving `key_transition` retention, and the chain-
   idempotency fix that made any retention provable (§8.9, issue #86,
   closed) — board-scoped types remain intentionally unbounded.
@@ -3305,14 +3317,15 @@ engineering effort to *building* a later phase is.
 
 The gate is met when all of the following hold:
 
-- every currently implemented Link product vertical (linked boards, Link
-  mail) has at least one end-to-end regression test that exercises the real
+- every currently implemented Link product vertical (linked boards,
+  linked channels, remote file areas, and Link mail) has at least one
+  end-to-end regression test that exercises the real
   sender/receiver/acknowledgement or sender/receiver/materialization
   boundary across a restart, not only isolated unit coverage (issue #80);
 - offline/missed-event catch-up exists and demonstrably converges after a
   partition, not only live delivery during an already-connected pass
-  (§8.8, issue #85, closed — scoped to boards already carried, not
-  discovery of a wholly novel board through a relay);
+  (§8.8, issues #85/#94, closed — including discovery from an empty
+  inventory when the resource origin is independently known);
 - retained event/dedup state has a correctness-preserving retention policy:
   purging the fast dedup cache must not make an old control event
   re-applicable, nor let suppressed or deleted content reappear (§8.9,
@@ -3359,7 +3372,7 @@ No public/untrusted federation claim precedes this phase.
 
 ### Phase 6 — Advanced Link governance and Link Communities
 
-- linked channels and signed membership/topic governance;
+- linked-channel signed membership/topic governance and origin succession;
 - Link-blanket moderator grants and authorized moderation events;
 - advanced creation, closure, and lifecycle surfaces;
 - Link Communities and signed Community membership/carry changes;
@@ -3461,10 +3474,10 @@ narrow methods, not a further flat field.
 §14.1's "Cross-subsystem end-to-end scenarios" subsection now states
 the complete design: `tests/test_link_end_to_end.py`, a real-transport,
 real-domain-read-path vertical slice per implemented Link product
-surface (linked boards, Link mail), each covering restart-between-
-stages and duplicate delivery; the linked-boards and Link-mail
-verticals each have one. The mail vertical also covers a dead-letter ->
-replay -> real-redelivery cycle end to end. Confirmed the consolidated
+surface. It now covers linked boards, linked channels, remote file
+catalogue/fetch, and Link mail, with restart and duplicate-delivery
+coverage where the surface has persisted state. The mail vertical also
+covers a dead-letter -> replay -> real-redelivery cycle end to end. Confirmed the consolidated
 mail scenario (and its restart variant) would fail on the pre-fix
 issue #69 implementation by temporarily reverting the fix and observing
 both fail, then restoring it. Future Link vertical slices extend this
@@ -3531,7 +3544,7 @@ above, not by this issue.
 
 ### Issue #85 — inventory/pull-based catch-up and multi-hop relay
 
-§8.8 now states the complete design: an unsigned `InventoryRequest` bundle
+§8.8 now states the complete design: a signed `InventoryRequest` bundle
 (not a canonical event, matching `PeerListMessage`'s own precedent), a new
 `POST {LINK_PATH_PREFIX}/inventory/{fingerprint}` route whose response
 reuses the exact `push_events` raw-event-list wire shape, a responder-side
@@ -3553,14 +3566,12 @@ property while correctly relocating which fingerprint it applies to. See
 §8.8's own "real, worth-stating limitation" note for what this does and
 does not enable.
 
-**Scope actually closed: missed-event catch-up for a board already
-carried, relayed through a currently-connected third node — not
-discovery of a wholly novel board through a relay with no direct genesis
-ever received.** `InventoryRequest` is keyed by what the requester already
-carries, so a node with zero prior knowledge of a board has nothing to
-name in a request. See §8.8's own second limitation note; a follow-up
-issue can pick up proactive board-genesis advertisement if that gap turns
-out to matter in practice.
+Issue #94 subsequently widened responder enumeration to resources absent
+from the request, so an empty inventory can discover a wholly novel board,
+channel, or file-area catalogue through a carrier. The signed requester
+authentication from issue #106 and destination/freshness/replay binding
+from issue #124 are now part of that disclosure boundary; §8.8 is the
+normative current request format.
 
 Explicitly excludes retention/purging (issue #86, sequenced after this one)
 and Link messages (already point-to-point by design, §10, untouched by the

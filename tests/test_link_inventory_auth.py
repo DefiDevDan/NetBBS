@@ -12,6 +12,8 @@ request still lets a peer discover carried content).
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
 from netbbs.link.events import sign_inventory_request
@@ -42,14 +44,28 @@ def _two_nodes_with_completed_hello(tmp_path, clock):
     return alice, bob, alice_node, bob_node
 
 
-def _signed_empty_request(*, signing_identity, requester_fingerprint) -> InventoryRequest:
+def _signed_empty_request(
+    *,
+    signing_identity,
+    requester_fingerprint,
+    responder_fingerprint,
+    created_at,
+    nonce="0123456789abcdef0123456789abcdef",
+) -> InventoryRequest:
     signature = sign_inventory_request(
         signing_identity=signing_identity,
         requester_fingerprint=requester_fingerprint,
+        responder_fingerprint=responder_fingerprint,
+        created_at=created_at,
+        nonce=nonce,
         boards={}, channels={}, file_areas={},
     )
     return InventoryRequest(
-        requester_fingerprint=requester_fingerprint, signature=signature,
+        requester_fingerprint=requester_fingerprint,
+        responder_fingerprint=responder_fingerprint,
+        created_at=created_at,
+        nonce=nonce,
+        signature=signature,
         boards={}, channels={}, file_areas={},
     )
 
@@ -62,10 +78,15 @@ def test_handle_inventory_request_accepts_a_valid_request_from_a_completed_peer(
     alice, bob, alice_node, bob_node = _two_nodes_with_completed_hello(tmp_path, clock)
 
     request = _signed_empty_request(
-        signing_identity=alice.identity.signing_key, requester_fingerprint=alice.fingerprint
+        signing_identity=alice.identity.signing_key,
+        requester_fingerprint=alice.fingerprint,
+        responder_fingerprint=bob.fingerprint,
+        created_at=clock.now_iso(),
     )
 
-    bob_node.handle_inventory_request(alice.fingerprint, request)  # does not raise
+    bob_node.handle_inventory_request(
+        alice.fingerprint, request, now_iso=clock.now_iso()
+    )  # does not raise
 
     alice.close()
     bob.close()
@@ -81,7 +102,10 @@ def test_handle_inventory_request_refuses_a_stranger(tmp_path, clock):
     bob_node = LinkNode(identity=bob.identity)  # bob never completed a hello with alice
 
     request = _signed_empty_request(
-        signing_identity=alice.identity.signing_key, requester_fingerprint=alice.fingerprint
+        signing_identity=alice.identity.signing_key,
+        requester_fingerprint=alice.fingerprint,
+        responder_fingerprint=bob.fingerprint,
+        created_at=clock.now_iso(),
     )
 
     with pytest.raises(LinkProtocolError):
@@ -99,7 +123,10 @@ def test_handle_inventory_request_rejects_a_mismatched_requester_claim(tmp_path,
     mallory = spawn_node(tmp_path, "mallory")
 
     request = _signed_empty_request(
-        signing_identity=alice.identity.signing_key, requester_fingerprint=mallory.fingerprint
+        signing_identity=alice.identity.signing_key,
+        requester_fingerprint=mallory.fingerprint,
+        responder_fingerprint=bob.fingerprint,
+        created_at=clock.now_iso(),
     )
 
     with pytest.raises(LinkProtocolError):
@@ -122,7 +149,10 @@ def test_handle_inventory_request_rejects_a_forged_signature(tmp_path, clock):
 
     # Signed by mallory, but claiming to be from alice (a real completed peer).
     request = _signed_empty_request(
-        signing_identity=mallory.identity.signing_key, requester_fingerprint=alice.fingerprint
+        signing_identity=mallory.identity.signing_key,
+        requester_fingerprint=alice.fingerprint,
+        responder_fingerprint=bob.fingerprint,
+        created_at=clock.now_iso(),
     )
 
     with pytest.raises(LinkProtocolError):
@@ -131,3 +161,84 @@ def test_handle_inventory_request_rejects_a_forged_signature(tmp_path, clock):
     alice.close()
     bob.close()
     mallory.close()
+
+
+def test_handle_inventory_request_rejects_a_request_signed_for_another_responder(tmp_path, clock):
+    alice, bob, alice_node, bob_node = _two_nodes_with_completed_hello(tmp_path, clock)
+    mallory = spawn_node(tmp_path, "mallory")
+    request = _signed_empty_request(
+        signing_identity=alice.identity.signing_key,
+        requester_fingerprint=alice.fingerprint,
+        responder_fingerprint=mallory.fingerprint,
+        created_at=clock.now_iso(),
+    )
+
+    with pytest.raises(LinkProtocolError, match="addressed to"):
+        bob_node.handle_inventory_request(alice.fingerprint, request, now_iso=clock.now_iso())
+
+    alice.close()
+    bob.close()
+    mallory.close()
+
+
+def test_handle_inventory_request_rejects_stale_and_future_requests(tmp_path, clock):
+    alice, bob, alice_node, bob_node = _two_nodes_with_completed_hello(tmp_path, clock)
+    stale = _signed_empty_request(
+        signing_identity=alice.identity.signing_key,
+        requester_fingerprint=alice.fingerprint,
+        responder_fingerprint=bob.fingerprint,
+        created_at=clock.now_iso(),
+        nonce="11111111111111111111111111111111",
+    )
+    clock.advance(seconds=301)
+
+    with pytest.raises(LinkProtocolError, match="freshness window"):
+        bob_node.handle_inventory_request(alice.fingerprint, stale, now_iso=clock.now_iso())
+
+    future_at = (clock.now() + timedelta(seconds=301)).isoformat()
+    future = _signed_empty_request(
+        signing_identity=alice.identity.signing_key,
+        requester_fingerprint=alice.fingerprint,
+        responder_fingerprint=bob.fingerprint,
+        created_at=future_at,
+        nonce="22222222222222222222222222222222",
+    )
+    with pytest.raises(LinkProtocolError, match="freshness window"):
+        bob_node.handle_inventory_request(alice.fingerprint, future, now_iso=clock.now_iso())
+
+    alice.close()
+    bob.close()
+
+
+def test_handle_inventory_request_rejects_an_exact_replay(tmp_path, clock):
+    alice, bob, alice_node, bob_node = _two_nodes_with_completed_hello(tmp_path, clock)
+    request = _signed_empty_request(
+        signing_identity=alice.identity.signing_key,
+        requester_fingerprint=alice.fingerprint,
+        responder_fingerprint=bob.fingerprint,
+        created_at=clock.now_iso(),
+    )
+    bob_node.handle_inventory_request(alice.fingerprint, request, now_iso=clock.now_iso())
+
+    with pytest.raises(LinkProtocolError, match="reuses a recent nonce"):
+        bob_node.handle_inventory_request(alice.fingerprint, request, now_iso=clock.now_iso())
+
+    alice.close()
+    bob.close()
+
+
+def test_inventory_security_fields_are_covered_by_the_signature(tmp_path, clock):
+    alice, bob, alice_node, bob_node = _two_nodes_with_completed_hello(tmp_path, clock)
+    request = _signed_empty_request(
+        signing_identity=alice.identity.signing_key,
+        requester_fingerprint=alice.fingerprint,
+        responder_fingerprint=bob.fingerprint,
+        created_at=clock.now_iso(),
+    )
+    request.created_at = (clock.now() + timedelta(seconds=1)).isoformat()
+
+    with pytest.raises(LinkProtocolError, match="current signing key"):
+        bob_node.handle_inventory_request(alice.fingerprint, request, now_iso=clock.now_iso())
+
+    alice.close()
+    bob.close()

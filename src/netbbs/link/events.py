@@ -2010,16 +2010,22 @@ INVENTORY_REQUEST_OBJECT_TYPE = "inventory_request"
 
 def _inventory_request_payload(
     requester_fingerprint: str,
+    responder_fingerprint: str,
+    created_at: str,
+    nonce: str,
     boards: dict[str, tuple[str, ...]],
     channels: dict[str, tuple[str, ...]],
     file_areas: dict[str, tuple[str, ...]],
 ) -> dict:
     """The exact payload shape `sign_inventory_request`/`verify_inventory_
-    request` (issue #106) both build canonical bytes over — one shared
+    request` (issues #106/#124) both build canonical bytes over — one shared
     definition so the signer and verifier can never quietly drift apart
     on what "the request" actually means."""
     return {
         "requester_fingerprint": requester_fingerprint,
+        "responder_fingerprint": responder_fingerprint,
+        "created_at": created_at,
+        "nonce": nonce,
         "boards": {board_id: list(ids) for board_id, ids in boards.items()},
         "channels": {channel_id: list(ids) for channel_id, ids in channels.items()},
         "file_areas": {area_id: list(ids) for area_id, ids in file_areas.items()},
@@ -2030,11 +2036,14 @@ def sign_inventory_request(
     *,
     signing_identity: Identity,
     requester_fingerprint: str,
+    responder_fingerprint: str,
+    created_at: str,
+    nonce: str,
     boards: dict[str, tuple[str, ...]],
     channels: dict[str, tuple[str, ...]],
     file_areas: dict[str, tuple[str, ...]],
 ) -> bytes:
-    """Sign an `InventoryRequest` (design doc §8.8, issue #106) with the
+    """Sign an `InventoryRequest` (design doc §8.8, issues #106/#124) with the
     requester's own current operational signing key -- the same "always
     signed by the requester's own current key" shape `RelayConsentRequest`
     already established, reused here rather than inventing a second
@@ -2044,7 +2053,15 @@ def sign_inventory_request(
     endpoint from "answer what you already had to know a resource ID to
     ask about" into unauthenticated resource enumeration unless the
     requester is now proven, not merely claimed."""
-    payload = _inventory_request_payload(requester_fingerprint, boards, channels, file_areas)
+    payload = _inventory_request_payload(
+        requester_fingerprint,
+        responder_fingerprint,
+        created_at,
+        nonce,
+        boards,
+        channels,
+        file_areas,
+    )
     envelope = build_envelope(INVENTORY_REQUEST_OBJECT_TYPE, payload)
     return signing_identity.sign(canonical_bytes(envelope))
 
@@ -2052,6 +2069,9 @@ def sign_inventory_request(
 def verify_inventory_request(
     *,
     requester_fingerprint: str,
+    responder_fingerprint: str,
+    created_at: str,
+    nonce: str,
     boards: dict[str, tuple[str, ...]],
     channels: dict[str, tuple[str, ...]],
     file_areas: dict[str, tuple[str, ...]],
@@ -2065,7 +2085,15 @@ def verify_inventory_request(
     all are all the caller's job (`netbbs.link.protocol.LinkNode.
     handle_inventory_request`), same division of responsibility every
     other `verify_*` function in this module already applies."""
-    payload = _inventory_request_payload(requester_fingerprint, boards, channels, file_areas)
+    payload = _inventory_request_payload(
+        requester_fingerprint,
+        responder_fingerprint,
+        created_at,
+        nonce,
+        boards,
+        channels,
+        file_areas,
+    )
     envelope = build_envelope(INVENTORY_REQUEST_OBJECT_TYPE, payload)
     return verify_signature(signing_verify_key, canonical_bytes(envelope), signature)
 

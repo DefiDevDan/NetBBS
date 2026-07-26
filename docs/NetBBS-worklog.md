@@ -85,8 +85,8 @@ specification.
 
 ### NetBBS Link
 
-Phase 3 has begun. The repository currently contains real, tested Link
-infrastructure rather than only placeholders:
+Phase 3 is active and already contains working Link product surfaces, not
+only protocol scaffolding:
 
 - canonical JSON bytes with recursive Unicode NFC normalization and float
   rejection;
@@ -101,10 +101,15 @@ infrastructure rather than only placeholders:
 - foreground and background database execution lanes;
 - deterministic multi-node fault injection covering duplicates, reordering,
   partitions, restart, and convergence;
-- linked-board genesis, post, and self-authored edit events;
-- receive-side verification, persistence, restart reconstruction, local
-  origination, admin linking, propagation, and convergence coverage for those
-  board events;
+- linked boards with genesis, post/edit propagation, carry materialization,
+  origin transfer/orphan/fork handling, closure, origin-authorized moderator
+  edits, and tombstones;
+- linked channels with promotion, materialization, live message propagation,
+  and inventory catch-up;
+- linked file-area catalogues with promotion/materialization, inventory
+  catch-up, and explicit resumable/deduplicated file fetching;
+- authenticated, bounded inventory/pull catch-up across all three linked
+  resource types, including empty-inventory discovery through a carrier;
 - Link messages (tier1_home_node_key only): compose/encrypt, receive-side
   decrypt/deliver/bounce, acknowledgement round trip, targeted per-recipient
   sync delivery (not the configured-seed flood-fill model boards use), and
@@ -120,31 +125,33 @@ infrastructure rather than only placeholders:
   dial-reliability scoring, automatic relay candidate selection/consent (a
   synchronous request/response route, not gossiped events) and self-healing,
   a bounded relay store-and-forward mailbox for `link_message` only, and an
-  operator opt-out/resource cap on serving as a relay for others.
+  operator opt-out/resource cap on serving as a relay for others;
+- operator-facing Link status/outbox/diagnostics, quotas, work-item retry and
+  dead-letter handling, backup/staged restore, startup integrity checking, and
+  graceful drain.
 
 Important boundaries of the current Link implementation:
 
 - It is still private/experimental federation. Phase 4 trust and quarantine are
   the public-readiness gate.
-- The working topology is direct pairwise synchronization plus single-hop
-  relay for outgoing-only reachability (issue #58). Nodes do not provide
-  general multi-hop relay or anti-entropy catch-up.
+- Synchronization is still seed/candidate driven rather than a public routing
+  fabric, but bounded multi-hop metadata/content-event catch-up works through
+  carriers. Relay mailboxes remain the separate single-hop reachability path
+  for outgoing-only Link-message recipients.
 - Relay delivery only works between nodes that have already met directly at
   some point -- see "WAN reachability and relay selection" below. It is not a
   way to reach or message a total stranger.
-- A hello carries key-lifecycle state, not arbitrary board history. Healing a
-  connection does not itself transfer missed board events; they must be sent.
+- A hello carries key-lifecycle state, not resource history. Inventory after
+  hello is what transfers missed board/channel/file-area events.
 - Only implemented event types are supported. Do not infer generic federation
   support for every local object from the existence of the envelope.
-- Linked-board moderator edits, tombstones, closure/transfer events, advanced
-  governance, and other author-signing tiers remain future work.
+- Delegated linked-resource moderation, channel/file-area origin succession,
+  advanced governance, and other author-signing tiers remain future work.
 - Tier2_personal_key Link messages are reserved but not offered: the server
   can never hold a tier-2 user's decryption key, and nothing in this codebase
   does client-side decryption yet.
-- A relay mailbox accepts only `link_message`; `link_message_accepted`/
-  `link_message_bounced` have no relay path yet -- an acknowledgement to a
-  message that arrived via relay is only delivered if the original sender is
-  independently dialable.
+- Public interoperability remains unclaimed pending the independent Link v1
+  implementation and sustained real-world multi-node dogfood work.
 - Current GitHub issues, not this file, are the task-status authority.
 
 ---
@@ -796,6 +803,21 @@ before falling back to a plain write. Any future node-wide broadcast to
 arbitrary sessions needs the same hook, not an assumption that a session is at
 a plain scrolling prompt.
 
+Fullscreen session owners must never be nested inside another fullscreen
+owner's input task. Direct chat entered through channel `/dm` first returns an
+explicit action to `browse_channels`; only after the channel receive/clock
+tasks are cancelled and gathered, presence removed, the pinned hook cleared,
+and the scroll region reset may the invite/direct-chat screen begin. Returning
+reauthorizes and re-enters the original channel. The same boundary applies to
+any future screen which owns session reads or reserved terminal rows.
+
+Room-lifecycle signals are not lossy chat traffic. A direct-chat close notice
+uses priority queue delivery so a full recipient queue evicts an older ordinary
+line rather than substituting an overflow notice and leaving the peer blocked.
+Synthetic direct-chat room keys and per-session arrival events are also
+ephemeral resources: remove an empty synthetic room immediately and use weak
+session-key storage where production session objects permit it.
+
 ### Editors
 
 The ANSI editor and prose editor share a screen-buffer/diff shell but have
@@ -1332,27 +1354,21 @@ successful reconnection per pass.
 
 **Inventory/pull-based catch-up and multi-hop relay (design doc §8.8, issue
 #85).** Each sync pass, in addition to the push above, a node also sends
-every seed one `InventoryRequest` naming every board it currently carries
-(`netbbs.link.store.build_inventory_request`) plus that board's own known
-content IDs; the seed's response (`board_event_diff`) is whatever board-
-scoped content it has for those boards that the requester doesn't, drawn
-from everything the seed has on file -- self-originated, locally-authored,
-or itself only carried -- not only what it originated. This is what makes
-relay genuinely multi-hop: a node that merely carries board X can answer an
-inventory request for it from a third node.
+every reached seed one `InventoryRequest` listing every linked board,
+channel, and file-area catalogue it carries plus the known content IDs for
+each. The responder walks its carried resources too, so an ID absent from
+the request is treated as wholly unknown and returned from genesis onward.
+That makes both missed-event catch-up and empty-inventory discovery genuinely
+multi-hop: a node that merely carries resource X can introduce it to a third
+node, subject to the receiver already knowing and verifying X's origin.
 
-This closes a narrower gap than "generic inventory exchange" might imply:
-`InventoryRequest` is keyed by boards the *requester* already carries, so a
-node with zero prior knowledge of a board has nothing to name in a request
-and will never discover that board exists this way. What it does close: a
-node that already carries a board but has fallen behind on its later
-posts/edits (its own connection to the origin became unreliable) can catch
-up via any other node it's still in regular contact with, including one
-that never originated any of the content itself. Bootstrapping a wholly
-novel board through a relay with no direct genesis ever received is a
-separate, unsolved case -- it would need a responder to proactively
-advertise boards the requester didn't ask about, not just diff the ones it
-did.
+Inventory enumeration is security-sensitive. The requester's operational key
+signs the requester, intended responder, timestamp, random 128-bit nonce, and
+all inventory dictionaries. The responder requires a completed hello, exact
+destination binding, a five-minute freshness window, and a nonce not present
+in its bounded 4,096-entry process-local replay cache. Timestamp freshness
+keeps captured requests short-lived across restart; the nonce cache closes
+same-window exact replay. Keep these checks ahead of diff/database work.
 
 **This required one correctness fix to `handle_events` itself, not zero
 protocol changes.** Every board-scoped acceptance branch previously
@@ -1929,25 +1945,20 @@ status, ownership, and acceptance criteria.
 
 Near-term Phase 3 work includes:
 
-- completing canonical event schemas and compatibility rules as new object
-  types are added;
-- persistent event/dedup retention without replay or resurrection bugs;
-- linked-resource closure, transfer, succession, orphan, and fork behavior;
-- pull-based catch-up; peer-list exchange, live supplementary seed-list
-  refresh, a bounded candidate-fallback dial when every configured/cached
-  seed fails a pass, and automatic relay selection/consent/self-healing plus
-  a bounded relay mailbox for outgoing-only reachability are done;
+- closing protocol/interoperability findings before the Link v1 wire format is
+  frozen, then validating it with an independent implementation (issue #71);
+- deciding and proving safe retention for event families which still require
+  their accepted rows for restart reconstruction or inventory serving;
+- completing linked-channel and linked-file-area succession/governance where
+  their semantics intentionally do not yet match boards;
 - Link messages: tier1_home_node_key only (server-side decryption; tier2
-  needs a real client-side decryption story first) -- send/receive/read,
-  bounce, and acknowledgement are done; link_message_expired and active
-  blocklist-backed sender blocking are not;
+  needs a real client-side decryption story first);
 - user-key and node-author signing tiers beyond current node-vouched users;
-- linked-board moderator grants and later moderator edits/tombstones;
 - local search over carried board/file/channel content (issue #56's
   remaining piece -- read/unread cursors, follows, and `[N]ew scan` are
   done, see §6 below);
-- operator-visible quotas, retry/dead-letter control, peer health, backup,
-  restore, and disaster recovery;
+- sustained multi-node dogfood, including restart and partition recovery
+  (issue #83);
 - the trust, reputation, and quarantine model required before public
   federation.
 
@@ -2217,7 +2228,8 @@ purge_incoming_staging`). The fix follows that exact precedent:
 `netbbs.session_history.reconcile_interrupted_sessions`, called from
 `netbbs.__main__.run()` immediately after `purge_incoming_staging`,
 before any listener starts -- at that exact point, every remaining
-`disconnected_at IS NULL` row is guaranteed to belong to some earlier
+row with both `disconnected_at IS NULL` and `interrupted_at IS NULL` is
+guaranteed to belong to some earlier
 process instance, since this one hasn't accepted a connection yet. A
 dedicated `interrupted_at` column (added via a new migration, not
 by reusing `disconnected_at`) records when reconciliation ran, so the
@@ -2254,4 +2266,9 @@ row elsewhere (a preference, a permission, a visibility flag) governed
 how that field was actually presented -- if so, that governing decision
 needs its own persisted, cascade-surviving snapshot too, kept in sync
 with the live value up until the moment survival becomes necessary, not
-just the denormalized data itself.
+just the denormalized data itself. The preference UPSERT and fallback update
+must be one SQLite transaction: a trigger/error between them must roll both
+back. Startup reconciliation also backfills missing fallbacks from the current
+live preference before accounts can be deleted, so databases created before
+the fallback migration do not preserve a stale default merely because no later
+preference edit happened.

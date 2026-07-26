@@ -387,6 +387,7 @@ async def _sync_one_seed(
             build_inventory_request,
             signing_identity=node.identity.signing_key,
             requester_fingerprint=node.identity.fingerprint,
+            responder_fingerprint=seed_peer.fingerprint,
         )
         events, _more_available = await request_inventory(node, session, seed_url, inventory_request)
         if events:

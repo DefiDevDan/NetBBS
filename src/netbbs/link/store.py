@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import base64
 import json
+import secrets
 from datetime import datetime, timedelta
 
 from netbbs.identity.keys import Identity
@@ -595,7 +596,13 @@ def carried_file_area_ids(db: Database) -> list[str]:
     ]
 
 
-def build_inventory_request(db: Database, *, signing_identity: Identity, requester_fingerprint: str) -> InventoryRequest:
+def build_inventory_request(
+    db: Database,
+    *,
+    signing_identity: Identity,
+    requester_fingerprint: str,
+    responder_fingerprint: str,
+) -> InventoryRequest:
     """
     This node's own `InventoryRequest` to send as requester (design doc
     §8.8, issue #85; §9.6, issue #87; §11, issue #93): every board/
@@ -608,24 +615,35 @@ def build_inventory_request(db: Database, *, signing_identity: Identity, request
     needs, just read from the requester's own database instead of the
     responder's.
 
-    Issue #106: `signing_identity` (the caller's own current operational
+    Issues #106/#124: `signing_identity` (the caller's own current operational
     signing key, e.g. `node.identity.signing_key`) and `requester_
     fingerprint` (`node.identity.fingerprint`) sign the request via
     `sign_inventory_request` -- see `InventoryRequest`'s own docstring
     for why a responder now requires this instead of answering anyone.
+    `responder_fingerprint`, a fresh timestamp, and a random nonce bind
+    the signed request to one peer and one short-lived attempt.
     """
     boards = {board_id: tuple(_all_board_events(db, board_id)) for board_id in carried_board_ids(db)}
     channels = {channel_id: tuple(_all_channel_events(db, channel_id)) for channel_id in carried_channel_ids(db)}
     file_areas = {
         area_id: tuple(_all_file_area_events(db, area_id)) for area_id in carried_file_area_ids(db)
     }
+    created_at = utc_now_iso()
+    nonce = secrets.token_hex(16)
     signature = sign_inventory_request(
         signing_identity=signing_identity,
         requester_fingerprint=requester_fingerprint,
+        responder_fingerprint=responder_fingerprint,
+        created_at=created_at,
+        nonce=nonce,
         boards=boards, channels=channels, file_areas=file_areas,
     )
     return InventoryRequest(
-        requester_fingerprint=requester_fingerprint, signature=signature,
+        requester_fingerprint=requester_fingerprint,
+        responder_fingerprint=responder_fingerprint,
+        created_at=created_at,
+        nonce=nonce,
+        signature=signature,
         boards=boards, channels=channels, file_areas=file_areas,
     )
 
