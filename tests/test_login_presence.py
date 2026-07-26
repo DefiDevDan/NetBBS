@@ -14,7 +14,7 @@ import asyncio
 
 import pytest
 
-from netbbs.auth.users import User
+from netbbs.auth.users import create_user
 from netbbs.chat import ChatHub, MessageMailbox, PresenceRegistry
 from netbbs.net import login_flow
 from netbbs.net.maintenance import MaintenanceMode
@@ -94,14 +94,10 @@ class _SpyPresence(PresenceRegistry):
 
 
 def test_handle_session_enters_and_leaves_presence_around_the_main_menu(db, monkeypatch):
-    user = User(
-        id=1,
-        username="alice",
-        user_level=0,
-        fingerprint=None,
-        created_at="2026-01-01T00:00:00+00:00",
-        last_login_at=None,
-    )
+    # A real DB-backed account, not a synthetic dataclass -- issue #100's
+    # session_history recording now does a real FK-constrained insert
+    # keyed on user.id, so a stand-in id with no matching row fails.
+    user = create_user(db, "alice", password="hunter2", user_level=0)
 
     async def fake_auth(db, username, password):
         return user
@@ -126,14 +122,8 @@ def test_presence_left_even_if_main_menu_raises(db, monkeypatch):
     """The leave() side of the hook is in a `finally`, so an
     exception during the authenticated portion must not leak an
     "online forever" session count."""
-    user = User(
-        id=1,
-        username="alice",
-        user_level=0,
-        fingerprint=None,
-        created_at="2026-01-01T00:00:00+00:00",
-        last_login_at=None,
-    )
+    # Real DB-backed account -- see the sibling test above for why.
+    user = create_user(db, "alice", password="hunter2", user_level=0)
 
     async def fake_auth(db, username, password):
         return user

@@ -1945,4 +1945,38 @@ MIGRATIONS = [
         CREATE INDEX idx_link_events_file_area_id ON link_events(file_area_id, object_type);
         """,
     ),
+    Migration(
+        description=(
+            "Issue #100: session_history, backing the caller-facing "
+            "'last N sessions' screen. One row per authenticated login "
+            "(netbbs.net.login_flow.run_authenticated_session, the shared "
+            "entry point every transport funnels through), not every raw "
+            "connection -- an unauthenticated visit to the login prompt "
+            "isn't a 'session' in the sense callers asked to see. "
+            "user_id is ON DELETE SET NULL with a denormalized "
+            "username_label (the posts.author_user_id / author_label "
+            "precedent) so a row -- and the fact *someone* connected -- "
+            "survives the account itself being deleted later; "
+            "disconnected_at starts NULL and is filled in once the "
+            "session's authenticated portion ends, so a still-connected "
+            "session's row is visible immediately, not only in "
+            "retrospect. Row-count-bounded on every insert (see "
+            "netbbs.session_history), the same reasoning link_diagnostic_"
+            "log's own pruning already established: an unbounded table "
+            "fed by every login over a node's lifetime needs an explicit "
+            "cap, and this feature only ever wants the most recent slice "
+            "anyway."
+        ),
+        sql="""
+        CREATE TABLE session_history (
+            id               INTEGER PRIMARY KEY,
+            user_id          INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            username_label   TEXT NOT NULL,
+            connected_at     TEXT NOT NULL,
+            disconnected_at  TEXT
+        );
+
+        CREATE INDEX idx_session_history_connected_at ON session_history(connected_at);
+        """,
+    ),
 ]

@@ -153,6 +153,7 @@ from netbbs.rendering import (
     reflow,
     reject_keystroke,
     sanitize_text,
+    truncate,
 )
 from netbbs.search import (
     ChannelMessageSearchHit,
@@ -163,6 +164,14 @@ from netbbs.search import (
     search_channel_messages,
     search_files,
     search_posts,
+)
+from netbbs.session_history import (
+    SessionHistoryEntry,
+    list_recent_sessions,
+    record_session_end,
+    record_session_start,
+    session_history_name_visible,
+    set_session_history_name_visible,
 )
 from netbbs.storage.database import Database
 from netbbs.storage.execution import DatabaseLane
@@ -560,6 +569,7 @@ async def run_authenticated_session(
     history = InputHistory()
 
     presence.enter(user.username)
+    history_id = record_session_start(db, user)
     watcher_task: asyncio.Task | None = None
     if node_controls is not None:
         node_controls.session_registry.mark_authenticated(
@@ -575,6 +585,7 @@ async def run_authenticated_session(
         )
     finally:
         presence.leave(user.username)
+        record_session_end(db, history_id)
         if watcher_task is not None:
             # Same cancel-then-await-swallowing-CancelledError shape
             # editor autosave tasks already use (GitHub issue #43) --
@@ -886,6 +897,7 @@ async def _draw_main_menu(
             menu_key("D", "irectory"),
             menu_key("P", "rofile"),
             menu_key("E", mail_label),
+            menu_key("H", "istory"),
         ]
     )
     if node_controls is not None:
@@ -1083,6 +1095,10 @@ async def _main_menu(
                 await session.write_line(
                     colored("Mail is not available in this context.", fg_color=MUTED_COLOR)
                 )
+            await _draw_main_menu(session, db, mailbox, user, node_controls=node_controls)
+        elif choice == "h":
+            await session.write_line("")
+            await _last_sessions_screen(session, db, user)
             await _draw_main_menu(session, db, mailbox, user, node_controls=node_controls)
         elif choice == "w" and node_controls is not None:
             await session.write_line("")
@@ -2565,6 +2581,61 @@ async def _caller_who_screen(
         await session.write_line(colored(f"{selected.username} is no longer online.", fg_color=MUTED_COLOR))
 
 
+# How many recent sessions [L]ast sessions shows -- generous enough to
+# be useful, small enough to fit on one screen page without its own
+# pagination affordance (unlike pick_item-backed screens, this is a
+# plain listing: there's no per-entry detail beyond what's already on
+# its one line, so there's nothing a selection would actually do).
+_SESSION_HISTORY_DISPLAY_LIMIT = 20
+
+
+def _session_history_display_name(
+    db: Database, entry: SessionHistoryEntry, *, viewer_is_sysop: bool
+) -> str:
+    """The denormalized `username_label` survives account deletion (see
+    the migration's own docstring) -- shown as-is once `user_id` is
+    `None`, since there's no longer an account to have exercised (or
+    changed) an opt-out preference. Otherwise: a SysOp always sees the
+    real name (mirrors `netbbs.net.admin_flow`'s existing SysOp-sees-
+    everything convention); an ordinary caller sees it only if the
+    account's own current `session_history_name_visible` preference
+    (re-checked live, not frozen at connect time) allows it."""
+    if entry.user_id is None or viewer_is_sysop:
+        return entry.username_label
+    target = get_user_by_id(db, entry.user_id)
+    if target is None or session_history_name_visible(db, target):
+        return entry.username_label
+    return "(name hidden)"
+
+
+async def _last_sessions_screen(session: Session, db: Database, user: User) -> None:
+    """
+    Issue #100: a caller-facing "who recently visited" list, backed by
+    the persisted `netbbs.session_history` table -- distinct from
+    `[W]ho's online` (issue #99), which only ever shows who's currently
+    connected. A session whose account has opted out of being shown by
+    name still appears -- the session itself is never hidden, only the
+    name, same "still listed, not suppressed" shape issue #99's opt-out
+    already established.
+    """
+    entries = list_recent_sessions(db, limit=_SESSION_HISTORY_DISPLAY_LIMIT)
+    await session.write_line(colored("\r\nLast sessions:", fg_color=HEADER_COLOR, bold=True))
+    if not entries:
+        await session.write_line(colored("No session history yet.", fg_color=MUTED_COLOR))
+        return
+
+    viewer_is_sysop = meets_level(user, SYSOP_LEVEL)
+    for entry in entries:
+        name = _session_history_display_name(db, entry, viewer_is_sysop=viewer_is_sysop)
+        connected = format_for_display(entry.connected_at, db)
+        if entry.disconnected_at is None:
+            status = "still connected"
+        else:
+            status = f"until {format_for_display(entry.disconnected_at, db)}"
+        line = f"  {sanitize_text(name)} -- connected {connected}, {status}"
+        await session.write_line(truncate(line, session.terminal_width))
+
+
 async def _render_profile(session: Session, db: Database, user: User) -> bool:
     """Renders the profile state plus its option line — the unit that
     should be redrawn on an actual state change (initial entry, an edit
@@ -2575,6 +2646,7 @@ async def _render_profile(session: Session, db: Database, user: User) -> bool:
     visible = is_bio_visible(db, user)
     editor_on = fullscreen_editor_enabled(db, user)
     accepts_dm = accepts_direct_messages(db, user)
+    history_name_visible = session_history_name_visible(db, user)
 
     await session.write_line(colored("\r\nYour profile:", fg_color=HEADER_COLOR, bold=True))
     if current_bio:
@@ -2588,6 +2660,9 @@ async def _render_profile(session: Session, db: Database, user: User) -> bool:
     await session.write_line(
         f"Direct messages (Who's online): {'accepted' if accepts_dm else 'not accepted'}"
     )
+    await session.write_line(
+        f"Name shown in Last sessions: {'yes' if history_name_visible else 'no (hidden)'}"
+    )
 
     options = "  ".join(
         [
@@ -2595,6 +2670,7 @@ async def _render_profile(session: Session, db: Database, user: User) -> bool:
             menu_key("V", "isibility"),
             menu_key("F", "ullscreen editor"),
             menu_key("M", "essages"),
+            menu_key("H", "istory visibility"),
             menu_key("N", "ame & details"),
             menu_key("B", "ack"),
         ]
@@ -2647,6 +2723,14 @@ async def _edit_profile(session: Session, db: Database, user: User) -> None:
             await session.write_line(
                 f"Direct messages are now "
                 f"{'accepted' if accepts_direct_messages(db, user) else 'not accepted'}."
+            )
+            visible = await _render_profile(session, db, user)
+        elif choice == "h":
+            await session.write_line("")
+            set_session_history_name_visible(db, user, not session_history_name_visible(db, user))
+            await session.write_line(
+                f"Name in Last sessions is now "
+                f"{'visible' if session_history_name_visible(db, user) else 'hidden'}."
             )
             visible = await _render_profile(session, db, user)
         elif choice == "n":

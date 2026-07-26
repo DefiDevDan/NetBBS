@@ -14,7 +14,7 @@ import asyncio
 
 import pytest
 
-from netbbs.auth.users import AuthError, User
+from netbbs.auth.users import AuthError, User, create_user
 from netbbs.chat import ChatHub, MessageMailbox, PresenceRegistry
 from netbbs.net import login_flow
 from netbbs.net.maintenance import MaintenanceMode
@@ -229,14 +229,14 @@ def test_unauthenticated_slot_is_released_after_login_completes(db, monkeypatch)
     lifetime, which would make the cap trivially exhaustible by anyone
     who logs in and just stays connected."""
 
-    user = User(
-        id=1,
-        username="alice",
-        user_level=0,
-        fingerprint=None,
-        created_at="2026-01-01T00:00:00+00:00",
-        last_login_at=None,
-    )
+    # A real DB-backed account, not a synthetic dataclass -- previously
+    # a stand-in id with no matching row meant the cross-process
+    # revalidation check (account_still_active) disconnected the
+    # session before "l" was ever actually dispatched as logoff at all,
+    # which happened to not need a confirmation answer for the wrong
+    # reason. A real account reaches the real logoff path, so this now
+    # also needs issue #97's confirmation answer.
+    user = create_user(db, "alice", password="hunter2", user_level=0)
 
     async def fake_auth(db, username, password):
         return user
@@ -248,7 +248,7 @@ def test_unauthenticated_slot_is_released_after_login_completes(db, monkeypatch)
         config = _throttle_config(max_concurrent_unauthenticated_sessions=1)
         throttle = _throttle(config)
 
-        first_session = FakeSession(["alice", "correct-password"], keys=["l"])
+        first_session = FakeSession(["alice", "correct-password", "y"], keys=["l"])
         await login_flow.handle_session(first_session, db, ChatHub(), PresenceRegistry(), MessageMailbox(), throttle, config, ActiveSessionRegistry(), MaintenanceMode())
         assert "Welcome, alice" in first_session.output
 
