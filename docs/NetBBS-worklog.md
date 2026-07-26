@@ -856,6 +856,20 @@ buffer transport-independent and separate from the fullscreen editor's screen
 model. Both editor paths must return a draft to a review/commit boundary; they
 must not persist or dispatch merely because editing ended.
 
+The shared line composer owns logical lines and uses explicit `/list`,
+`/insert N`, `/edit N`, `/delete N`, `/done`, and `/cancel` operations; a blank
+line retains the familiar finish gesture but now enters review rather than
+committing. `//` escapes a literal leading slash. Enforce domain byte and line
+limits against each candidate buffer mutation so an invalid edit never
+destroys the last valid draft.
+
+Review is a state, not a one-shot prompt. Subject/body and mail recipient
+changes return to a freshly rendered preview; validation or delivery failure
+does the same with the draft intact. Only the domain's explicit commit action
+may call persistence, and fullscreen-editor save output enters this identical
+state. A fullscreen cancel while revising a body means "keep the reviewed body
+unchanged"; cancellation of the overall composition remains a review action.
+
 ### Confirmation and visual interaction primitives
 
 `prompt_yes_no` moved from `read_key()` to `read_line()` because generic
@@ -1992,9 +2006,9 @@ Current work spans the Phase 3 operational-validation track and active Phase 4
 implementation:
 
 - before #127, complete the remaining bounded product-track dogfood interleave:
-  safe composition (#133), confirmation consistency (#135), and visual/
-  capability verification plus named-surface polish (#136); direct-chat polish
-  (#134) is implemented;
+  confirmation consistency (#135) and visual/capability verification plus
+  named-surface polish (#136); direct-chat polish (#134) and safe composition
+  (#133) are implemented;
 
 - independent non-Python interoperability validation is deprioritized and
   deferred (issue #71); Python canonical vectors remain authoritative and

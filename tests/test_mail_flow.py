@@ -198,7 +198,7 @@ def test_inbox_reply_sends_a_new_message(tmp_path):
     send_mail(db, alice, bob, "Hello", "body")
 
     session = FakeSession(
-        keys=["i", "0", "1", "r", "b", "b", "b"],
+        keys=["i", "0", "1", "r", "s", "b", "b", "b"],
         lines=["", "Sure thing, blank line to finish"],
     )
     lane = DatabaseLane(db_path)
@@ -258,7 +258,7 @@ def test_compose_sends_a_message(tmp_path):
     alice = create_user(db, "alice", password="hunter2pw", user_level=10)
     bob = create_user(db, "bob", password="hunter2pw", user_level=10)
 
-    session = FakeSession(keys=["c", "b"], lines=["bob", "Hello", "How are you?", ""])
+    session = FakeSession(keys=["c", "s", "b"], lines=["bob", "Hello", "How are you?", ""])
     lane = DatabaseLane(db_path)
     asyncio.run(browse_mail(session, lane, alice))
 
@@ -320,11 +320,11 @@ def test_compose_rejects_blank_body(tmp_path):
     alice = create_user(db, "alice", password="hunter2pw", user_level=10)
     create_user(db, "bob", password="hunter2pw", user_level=10)
 
-    session = FakeSession(keys=["c", "b"], lines=["bob", "Hello", ""])
+    session = FakeSession(keys=["c", "b"], lines=["bob", "Hello", "/cancel"])
     lane = DatabaseLane(db_path)
     asyncio.run(browse_mail(session, lane, alice))
 
-    assert "message body cannot be blank" in _written_text(session)
+    assert "Message cancelled" in _written_text(session)
     lane.close()
     db.close()
 
@@ -340,12 +340,131 @@ def test_compose_reports_bounce_when_mailbox_is_full(tmp_path, monkeypatch):
     bob = create_user(db, "bob", password="hunter2pw", user_level=10)
     send_mail(db, alice, bob, "First", "body")  # left unread -- fills the (patched) cap
 
-    session = FakeSession(keys=["c", "b"], lines=["bob", "Second", "body", ""])
+    session = FakeSession(keys=["c", "s", "c", "b"], lines=["bob", "Second", "body", ""])
     lane = DatabaseLane(db_path)
     asyncio.run(browse_mail(session, lane, alice))
 
     assert "mailbox is full" in _written_text(session)
     assert len(list_inbox(db, bob)) == 1
+    lane.close()
+    db.close()
+
+
+def test_compose_review_can_revise_recipient_subject_and_submitted_body_lines(tmp_path):
+    db_path = tmp_path / "node.db"
+    db = Database(db_path)
+    alice = create_user(db, "alice", password="hunter2pw", user_level=10)
+    create_user(db, "bob", password="hunter2pw", user_level=10)
+    carol = create_user(db, "carol", password="hunter2pw", user_level=10)
+
+    session = FakeSession(
+        keys=["c", "t", "u", "b", "s", "b"],
+        lines=[
+            "bob", "Original subject", "first", "second", "",
+            "carol", "Revised subject", "/edit 1", "FIRST", "/delete 2", "",
+        ],
+    )
+    lane = DatabaseLane(db_path)
+    asyncio.run(browse_mail(session, lane, alice))
+
+    inbox = list_inbox(db, carol)
+    assert len(inbox) == 1
+    assert inbox[0].subject == "Revised subject"
+    assert inbox[0].body == "FIRST"
+    assert "Review composition" in _written_text(session)
+    lane.close()
+    db.close()
+
+
+def test_compose_review_cancel_persists_nothing(tmp_path):
+    db_path = tmp_path / "node.db"
+    db = Database(db_path)
+    alice = create_user(db, "alice", password="hunter2pw", user_level=10)
+    bob = create_user(db, "bob", password="hunter2pw", user_level=10)
+    session = FakeSession(keys=["c", "c", "b"], lines=["bob", "Subject", "Body", ""])
+    lane = DatabaseLane(db_path)
+
+    asyncio.run(browse_mail(session, lane, alice))
+
+    assert list_inbox(db, bob) == []
+    assert "Message cancelled" in _written_text(session)
+    lane.close()
+    db.close()
+
+
+def test_delivery_failure_returns_to_review_and_can_retarget(tmp_path, monkeypatch):
+    import netbbs.mail as mail_module
+
+    monkeypatch.setattr(mail_module, "MAX_MAIL_PER_RECIPIENT", 1)
+    db_path = tmp_path / "node.db"
+    db = Database(db_path)
+    alice = create_user(db, "alice", password="hunter2pw", user_level=10)
+    bob = create_user(db, "bob", password="hunter2pw", user_level=10)
+    carol = create_user(db, "carol", password="hunter2pw", user_level=10)
+    send_mail(db, alice, bob, "Already full", "body")
+    session = FakeSession(
+        keys=["c", "s", "t", "s", "b"],
+        lines=["bob", "Recoverable", "draft body", "", "carol"],
+    )
+    lane = DatabaseLane(db_path)
+
+    asyncio.run(browse_mail(session, lane, alice))
+
+    assert "mailbox is full" in _written_text(session)
+    assert list_inbox(db, carol)[0].body == "draft body"
+    lane.close()
+    db.close()
+
+
+def test_fullscreen_mail_save_still_requires_review_and_can_send(tmp_path):
+    from netbbs.net.editor_preference import set_fullscreen_editor_enabled
+    from tests.test_login_flow_fullscreen_editor import FakeSession as FullscreenSession
+    from tests.test_login_flow_fullscreen_editor import _type
+
+    db_path = tmp_path / "node.db"
+    db = Database(db_path)
+    alice = create_user(db, "alice", password="hunter2pw", user_level=10)
+    bob = create_user(db, "bob", password="hunter2pw", user_level=10)
+    set_fullscreen_editor_enabled(db, alice, True)
+    session = FullscreenSession(
+        ["c", "bob", "Subject"] + _type("Fullscreen body") + ["CTRL+O", "s", "b"]
+    )
+    lane = DatabaseLane(db_path)
+
+    asyncio.run(browse_mail(session, lane, alice))
+
+    assert "Review composition" in _written_text(session)
+    assert list_inbox(db, bob)[0].body == "Fullscreen body"
+    lane.close()
+    db.close()
+
+
+def test_fullscreen_mail_delivery_failure_keeps_draft_recoverable(tmp_path, monkeypatch):
+    import netbbs.mail as mail_module
+
+    from netbbs.net.editor_preference import set_fullscreen_editor_enabled
+    from tests.test_login_flow_fullscreen_editor import FakeSession as FullscreenSession
+    from tests.test_login_flow_fullscreen_editor import _type
+
+    monkeypatch.setattr(mail_module, "MAX_MAIL_PER_RECIPIENT", 1)
+    db_path = tmp_path / "node.db"
+    db = Database(db_path)
+    alice = create_user(db, "alice", password="hunter2pw", user_level=10)
+    bob = create_user(db, "bob", password="hunter2pw", user_level=10)
+    carol = create_user(db, "carol", password="hunter2pw", user_level=10)
+    send_mail(db, alice, bob, "Already full", "body")
+    set_fullscreen_editor_enabled(db, alice, True)
+    session = FullscreenSession(
+        ["c", "bob", "Recoverable"]
+        + _type("Fullscreen draft")
+        + ["CTRL+O", "s", "t", "carol", "s", "b"]
+    )
+    lane = DatabaseLane(db_path)
+
+    asyncio.run(browse_mail(session, lane, alice))
+
+    assert "mailbox is full" in _written_text(session)
+    assert list_inbox(db, carol)[0].body == "Fullscreen draft"
     lane.close()
     db.close()
 
@@ -382,7 +501,7 @@ def test_compose_sends_a_link_message_to_a_remote_address(tmp_path):
     link_context = _link_context_with_known_peer(db, node_identity, remote_identity)
 
     session = FakeSession(
-        keys=["c", "b"], lines=[f"bob@{remote_identity.fingerprint}", "Hello", "How are you?", ""]
+        keys=["c", "s", "b"], lines=[f"bob@{remote_identity.fingerprint}", "Hello", "How are you?", ""]
     )
     lane = DatabaseLane(db_path)
     asyncio.run(browse_mail(session, lane, alice, link_context=link_context))
@@ -422,7 +541,7 @@ def test_compose_rejects_a_link_address_for_a_node_never_seen(tmp_path):
     node_identity = bootstrap_node_identity("roanoke")
     link_context = LinkContext(node_identity=node_identity, link_node=LinkNode(identity=node_identity))
 
-    session = FakeSession(keys=["c", "b"], lines=["bob@neverseenfingerprint", "Hello", "World", ""])
+    session = FakeSession(keys=["c", "s", "c", "b"], lines=["bob@neverseenfingerprint", "Hello", "World", ""])
     lane = DatabaseLane(db_path)
     asyncio.run(browse_mail(session, lane, alice, link_context=link_context))
 

@@ -3590,7 +3590,10 @@ from issue #83's real-user dogfood feedback before foundation issue #127:
   implemented: the pinned status row retains `/close` with a compact narrow-
   width form, submitted input is cleared before its committed rendering, and
   identity/message spans are independently sanitized and colored;
-- safe line-mode composition and review-before-commit (#133);
+- safe line-mode composition and review-before-commit (#133) — implemented:
+  the shared line buffer can list/insert/replace/delete submitted lines, and
+  local mail, Link mail, and new posts share an explicit editable review state
+  before persistence or dispatch;
 - truthful single-key yes/no confirmations with Enter defaults (#135);
 - current-build visual/capability verification plus bounded semantic-color
   polish on named mature surfaces (#136).
