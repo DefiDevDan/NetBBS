@@ -26,14 +26,25 @@ reason for toggling maintenance mode on in the first place.
 shutdown now has a countdown a SysOp can cancel before it fires
 (`netbbs.net.shutdown.SequenceScheduler`) -- if they do, new-login
 admission must reopen too, or a cancelled shutdown would leave the node
-silently unreachable forever. `run_shutdown_sequence` is the only
-caller, and only from its own cancellation handling for that countdown
-window; once a shutdown has actually reached `disconnect_all()`, there
-is no calling `deactivate()` anymore, matching the rest of this
-docstring's claim exactly for that point onward.
+silently unreachable forever. Once a shutdown has actually reached
+`disconnect_all()`, there is no calling `deactivate()` anymore,
+matching the rest of this docstring's claim exactly for that point
+onward.
+
+Issue #107 adds one narrow ownership rule to that reversible window.
+Each `activate()` remembers the asyncio task which most recently claimed
+the hard shutdown gate. A cancelled *older* shutdown task may therefore
+only reopen admission if it still owns that gate; if a replacement
+shutdown has already activated, the stale task's cleanup is ignored.
+The explicit SysOp cancel path remains valid because it first requests
+cancellation of the owning shutdown task and then calls `deactivate()`
+from the admin-session task -- an external caller may release the gate
+once its owner is already cancelling.
 """
 
 from __future__ import annotations
+
+import asyncio
 
 MAINTENANCE_MESSAGE = "This node is shutting down for maintenance. Please try again shortly."
 
@@ -51,26 +62,60 @@ LOCKDOWN_MESSAGE = "This node is in maintenance mode. Only SysOps may connect ri
 LOCKDOWN_NOTICE = "Note: this node is currently in maintenance mode. Only SysOps may log in right now."
 
 
+def _current_task() -> asyncio.Task | None:
+    """Return the current asyncio task, or ``None`` outside a running loop.
+
+    `MaintenanceMode` is exercised directly by some synchronous unit
+    tests as a plain state object, so ownership tracking must stay a
+    no-op rather than raising when there is no event loop.
+    """
+    try:
+        return asyncio.current_task()
+    except RuntimeError:
+        return None
+
+
 class MaintenanceMode:
     """One instance per running node (constructed once in
     `netbbs.__main__`, threaded down through `handle_session` the same
     way `throttle`/`presence` already are). Plain flags, not
     `asyncio.Event`s — nothing ever needs to *wait* for either to flip,
     only check current state at the relevant checkpoint (pre-login for
-    `is_active`, post-authentication for `is_lockdown_active`)."""
+    `is_active`, post-authentication for `is_lockdown_active`).
+
+    `_active_owner_task` is deliberately limited to the hard shutdown
+    gate. The separate SysOp-toggleable lockdown remains ordinary state
+    and is unaffected by shutdown replacement/cancellation semantics.
+    """
 
     def __init__(self) -> None:
         self._active = False
+        self._active_owner_task: asyncio.Task | None = None
         self._lockdown = False
 
     def activate(self) -> None:
         self._active = True
+        self._active_owner_task = _current_task()
 
     def deactivate(self) -> None:
-        """Reopens new-login admission -- see this class's own docstring
-        for the one narrow case this exists for (a scheduled graceful
-        shutdown cancelled before it fires)."""
+        """Reopen new-login admission when the caller still has authority.
+
+        A shutdown task may always undo the gate it most recently
+        activated. An external controller (today, the SysOp cancel path)
+        may also undo it after it has requested cancellation of the owner
+        task. A stale cancelled task from a replaced shutdown cannot undo
+        a gate now owned by a newer, still-running shutdown.
+        """
+        if not self._active:
+            return
+
+        owner = self._active_owner_task
+        current = _current_task()
+        if owner is not None and current is not owner and owner.cancelling() == 0:
+            return
+
         self._active = False
+        self._active_owner_task = None
 
     def is_active(self) -> bool:
         return self._active
