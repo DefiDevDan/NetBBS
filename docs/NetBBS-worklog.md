@@ -1223,14 +1223,25 @@ requester already knows what to ask about."
 
 ### WAN reachability and relay selection
 
-**The trust model and dial reliability are deliberately separate.** No Phase-4
-trust-signal, probation, trust-domain, or quarantine data model currently
-exists in code; design doc §12 specifies it, but implementation remains future
-work. `netbbs.link.reliability` is only a minimal direct-observation tracker
-(dial attempts/successes per fingerprint, neutral prior when unobserved) for
-fallback and relay selection. Its score must never become a security or content
-reputation input. Before reusing a documented mechanism, confirm its code and
-persistence actually exist rather than relying on a design cross-reference.
+**The trust model and dial reliability are deliberately separate.** Phase 4's
+local foundation lives in `netbbs.link.trust`: stable node/user subjects,
+dimension-scoped inputs, explicit reporter domains, vouches, overrides, and a
+transactionally maintained effective-state/audit projection. It accepts only
+inputs a caller has already authenticated; signed wire objects and ingestion
+remain the next protocol layer, not hidden inside this local domain API.
+`netbbs.link.reliability` remains a minimal direct-observation tracker (dial
+attempts/successes per fingerprint, neutral prior when unobserved) for fallback
+and relay selection. Its score must never become a security or content
+reputation input.
+
+Trust projections are derived caches, recomputed at node startup before any
+listener binds. Input mutation and projection/audit transition share one SQLite
+transaction. Inactive signals, observations, and vouches are pruned after 365
+days by default unless an explicit retention hold exists; decision audits keep
+the content IDs and rule explanation needed to understand historical
+enforcement without retaining unbounded evidence blobs. Unknown versioned
+categories may be retained for diagnostics but contribute no automatic policy
+effect.
 
 **Relay consent needed a synchronous route, not a gossiped event pair.** Every
 other mutual-consent exchange in this codebase (origin transfer, channel
@@ -1942,10 +1953,12 @@ belong in issues, commits, or Git history.
 This list is intentionally broad. GitHub issues are authoritative for current
 status, ownership, and acceptance criteria.
 
-Near-term Phase 3 work includes:
+Current work spans the Phase 3 operational-validation track and active Phase 4
+implementation:
 
-- closing protocol/interoperability findings before the Link v1 wire format is
-  frozen, then validating it with an independent implementation (issue #71);
+- independent non-Python interoperability validation is deprioritized and
+  deferred (issue #71); Python canonical vectors remain authoritative and
+  public external interoperability is unclaimed;
 - deciding and proving safe retention for event families which still require
   their accepted rows for restart reconstruction or inventory serving;
 - completing linked-channel and linked-file-area succession/governance where
@@ -1956,11 +1969,12 @@ Near-term Phase 3 work includes:
 - local search over carried board/file/channel content (issue #56's
   remaining piece -- read/unread cursors, follows, and `[N]ew scan` are
   done, see §6 below);
-- sustained multi-node dogfood, including restart and partition recovery
-  (issue #83);
-- implementing §12's trust signals, explicit reporter domains, probation,
-  local quarantine policy, explanation UI, and validation required before
-  public federation.
+- sustained multi-node dogfood continues independently, including restart and
+  partition recovery (issue #83);
+- implementing §12 in bounded slices: local persistence/policy is implemented
+  by #126; signed subscriptions (#127), enforcement (#128), SysOp workflows
+  (#129), remote attestation trust (#130), and adversarial validation (#131)
+  remain.
 
 Later work includes Link chat, advanced governance and Link Communities,
 door-game sandboxing/API versioning, and other roadmap phases defined in the

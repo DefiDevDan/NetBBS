@@ -96,8 +96,9 @@ but Phase-4 implementation remains);
 no tier-2 Link-message routing or client-side decryption; no real-time
 Link-wide chat (local direct chat is a separate feature); and no linked
 channel/file-area origin succession, delegated Link moderation, or Link
-Communities. Public interoperability also remains unclaimed until the
-independent implementation and sustained multi-node dogfood work are done.
+Communities. Public external interoperability remains unclaimed; issue #71's
+independent implementation is deferred, while sustained multi-node dogfood
+continues independently from active Phase-4 development.
 
 See [`docs/NetBBS-design-doc.md`](docs/NetBBS-design-doc.md) for the
 full architecture, rationale, and phased roadmap, and

@@ -2036,4 +2036,176 @@ MIGRATIONS = [
         ALTER TABLE session_history ADD COLUMN name_visible_fallback INTEGER NOT NULL DEFAULT 1;
         """,
     ),
+    Migration(
+        description=(
+            "Issue #126: Phase-4 local trust persistence. The tables keep "
+            "node/user subjects and the integrity/resource/content dimensions "
+            "separate; routing reliability remains in link_reliability and is "
+            "intentionally not referenced here. Inputs are immutable or "
+            "reversibly cleared/revoked, while link_trust_effective_states is "
+            "the restart-safe derived projection and link_trust_decision_audit "
+            "preserves every state transition. Reporter independence is an "
+            "explicit local trust-domain assignment rather than fingerprint "
+            "counting. Signed wire objects are deliberately not defined by "
+            "this migration -- issue #127 will validate their envelopes before "
+            "calling the local domain API introduced with this schema."
+        ),
+        sql="""
+        CREATE TABLE link_trust_domains (
+            domain_id      TEXT PRIMARY KEY,
+            display_name   TEXT NOT NULL,
+            weight         REAL NOT NULL DEFAULT 1.0 CHECK (weight >= 0.0 AND weight <= 1.0),
+            created_at     TEXT NOT NULL,
+            updated_at     TEXT NOT NULL
+        );
+
+        CREATE TABLE link_trust_anchors (
+            fingerprint    TEXT PRIMARY KEY,
+            reason         TEXT NOT NULL,
+            actor_user_id  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at     TEXT NOT NULL
+        );
+
+        CREATE TABLE link_trust_reporters (
+            fingerprint       TEXT PRIMARY KEY,
+            domain_id         TEXT NOT NULL REFERENCES link_trust_domains(domain_id),
+            can_vouch_nodes   INTEGER NOT NULL DEFAULT 0 CHECK (can_vouch_nodes IN (0, 1)),
+            can_vouch_users   INTEGER NOT NULL DEFAULT 0 CHECK (can_vouch_users IN (0, 1)),
+            created_at        TEXT NOT NULL,
+            updated_at        TEXT NOT NULL
+        );
+
+        CREATE TABLE link_trust_reporter_scopes (
+            reporter_fingerprint TEXT NOT NULL REFERENCES link_trust_reporters(fingerprint) ON DELETE CASCADE,
+            dimension            TEXT NOT NULL CHECK (dimension IN ('identity_integrity', 'resource_behavior', 'content_conduct')),
+            category             TEXT NOT NULL,
+            PRIMARY KEY (reporter_fingerprint, dimension, category)
+        );
+
+        CREATE TABLE link_trust_subjects (
+            subject_id             TEXT PRIMARY KEY,
+            subject_kind           TEXT NOT NULL CHECK (subject_kind IN ('node', 'user')),
+            node_fingerprint       TEXT NOT NULL,
+            opaque_user_id         TEXT,
+            first_accepted_at      TEXT NOT NULL,
+            first_verified_hello_at TEXT,
+            CHECK (
+                (subject_kind = 'node' AND opaque_user_id IS NULL AND first_verified_hello_at IS NOT NULL)
+                OR (subject_kind = 'user' AND opaque_user_id IS NOT NULL AND first_verified_hello_at IS NULL)
+            ),
+            UNIQUE (subject_kind, node_fingerprint, opaque_user_id)
+        );
+
+        CREATE TABLE link_trust_activity_days (
+            subject_id    TEXT NOT NULL REFERENCES link_trust_subjects(subject_id) ON DELETE CASCADE,
+            activity_date TEXT NOT NULL,
+            direct        INTEGER NOT NULL CHECK (direct IN (0, 1)),
+            PRIMARY KEY (subject_id, activity_date)
+        );
+
+        CREATE TABLE link_trust_signals (
+            content_id            TEXT PRIMARY KEY,
+            issuer_fingerprint    TEXT NOT NULL,
+            subject_id            TEXT NOT NULL REFERENCES link_trust_subjects(subject_id),
+            dimension             TEXT NOT NULL CHECK (dimension IN ('identity_integrity', 'resource_behavior', 'content_conduct')),
+            category              TEXT NOT NULL,
+            evidence_class        TEXT NOT NULL CHECK (evidence_class IN ('self_verifying', 'observer_attested', 'subjective')),
+            observed_at           TEXT NOT NULL,
+            issued_at             TEXT NOT NULL,
+            declared_expires_at   TEXT NOT NULL,
+            effective_expires_at  TEXT NOT NULL,
+            received_at           TEXT NOT NULL,
+            evidence_json         TEXT,
+            explanation           TEXT,
+            revoked_by_content_id TEXT,
+            revoked_at            TEXT,
+            retention_hold        INTEGER NOT NULL DEFAULT 0 CHECK (retention_hold IN (0, 1))
+        );
+        CREATE INDEX idx_link_trust_signals_active
+            ON link_trust_signals(subject_id, dimension, effective_expires_at);
+        CREATE INDEX idx_link_trust_signals_issuer
+            ON link_trust_signals(issuer_fingerprint, received_at);
+
+        CREATE TABLE link_trust_local_observations (
+            observation_id      TEXT PRIMARY KEY,
+            subject_id          TEXT NOT NULL REFERENCES link_trust_subjects(subject_id),
+            dimension           TEXT NOT NULL CHECK (dimension IN ('identity_integrity', 'resource_behavior', 'content_conduct')),
+            category            TEXT NOT NULL,
+            evidence_class      TEXT NOT NULL CHECK (evidence_class IN ('self_verifying', 'observer_attested', 'subjective')),
+            observed_at         TEXT NOT NULL,
+            expires_at          TEXT NOT NULL,
+            evidence_json       TEXT,
+            explanation         TEXT,
+            cleared_at          TEXT,
+            retention_hold      INTEGER NOT NULL DEFAULT 0 CHECK (retention_hold IN (0, 1))
+        );
+        CREATE INDEX idx_link_trust_observations_active
+            ON link_trust_local_observations(subject_id, dimension, expires_at);
+
+        CREATE TABLE link_trust_vouches (
+            content_id            TEXT PRIMARY KEY,
+            issuer_fingerprint    TEXT NOT NULL,
+            subject_id            TEXT NOT NULL REFERENCES link_trust_subjects(subject_id),
+            issued_at             TEXT NOT NULL,
+            declared_expires_at   TEXT NOT NULL,
+            effective_expires_at  TEXT NOT NULL,
+            received_at           TEXT NOT NULL,
+            explanation           TEXT,
+            revoked_by_content_id TEXT,
+            revoked_at            TEXT,
+            retention_hold        INTEGER NOT NULL DEFAULT 0 CHECK (retention_hold IN (0, 1))
+        );
+        CREATE INDEX idx_link_trust_vouches_active
+            ON link_trust_vouches(subject_id, effective_expires_at);
+
+        CREATE TABLE link_trust_overrides (
+            override_id    INTEGER PRIMARY KEY,
+            subject_id     TEXT NOT NULL REFERENCES link_trust_subjects(subject_id),
+            dimension      TEXT NOT NULL CHECK (dimension IN ('identity_integrity', 'resource_behavior', 'content_conduct')),
+            state          TEXT NOT NULL CHECK (state IN ('probationary', 'established', 'quarantined', 'blocked')),
+            reason         TEXT NOT NULL,
+            actor_user_id  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at     TEXT NOT NULL,
+            expires_at     TEXT,
+            cleared_at     TEXT
+        );
+        CREATE INDEX idx_link_trust_overrides_active
+            ON link_trust_overrides(subject_id, dimension, created_at);
+
+        CREATE TABLE link_trust_effective_states (
+            subject_id             TEXT NOT NULL REFERENCES link_trust_subjects(subject_id) ON DELETE CASCADE,
+            dimension              TEXT NOT NULL CHECK (dimension IN ('identity_integrity', 'resource_behavior', 'content_conduct')),
+            state                  TEXT NOT NULL CHECK (state IN ('probationary', 'established', 'quarantined', 'blocked')),
+            reason_code            TEXT NOT NULL,
+            recovery_started_at    TEXT,
+            explanation_json       TEXT NOT NULL,
+            evaluated_at           TEXT NOT NULL,
+            PRIMARY KEY (subject_id, dimension)
+        );
+
+        CREATE TABLE link_trust_decision_audit (
+            audit_id         INTEGER PRIMARY KEY,
+            subject_id       TEXT NOT NULL REFERENCES link_trust_subjects(subject_id),
+            dimension        TEXT NOT NULL CHECK (dimension IN ('identity_integrity', 'resource_behavior', 'content_conduct')),
+            previous_state   TEXT,
+            new_state        TEXT NOT NULL CHECK (new_state IN ('probationary', 'established', 'quarantined', 'blocked')),
+            reason_code      TEXT NOT NULL,
+            explanation_json TEXT NOT NULL,
+            actor_user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at       TEXT NOT NULL
+        );
+        CREATE INDEX idx_link_trust_decision_audit_subject
+            ON link_trust_decision_audit(subject_id, dimension, audit_id);
+
+        CREATE TABLE link_trust_config_audit (
+            audit_id       INTEGER PRIMARY KEY,
+            object_kind    TEXT NOT NULL CHECK (object_kind IN ('anchor', 'domain', 'reporter')),
+            object_id      TEXT NOT NULL,
+            action         TEXT NOT NULL,
+            details_json   TEXT NOT NULL,
+            actor_user_id  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at     TEXT NOT NULL
+        );
+        """,
+    ),
 ]

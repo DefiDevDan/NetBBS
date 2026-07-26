@@ -3500,23 +3500,25 @@ Implemented or substantially working:
   bytes still require an explicit fetch, only catalogue metadata is
   recoverable this way.
 
-Still required for Phase 3 completeness:
+Operational validation continuing independently of the development cycle:
 
 - broader real-world multi-node deployment validation (issue #83).
 
-### Phase 3 stabilization gate (issue #84)
+### Phase 3 stabilization status and Phase 4 transition
 
-Phase 3 already contains enough working federation behavior that later
-roadmap phases could plausibly begin opportunistically. They must not.
-Substantial *implementation* work on Phase 4 (trust/reputation), Phase 5
-(real-time Link chat), Phase 6 (advanced governance/Link Communities), or
-Phase 7 (doors) is deferred until this gate is met, unless a specific
-later-phase task is required to unblock or validate Phase 3 itself. Small
-preparatory design work for a later phase — for example, drafting the issue
-#55 or #63 threat models — is not blocked by this gate; committing
-engineering effort to *building* a later phase is.
+Phase 3 contains enough tested federation behavior to support Phase 4
+implementation. Issue #83's sustained dogfood continues as an independent
+operational-validation track: its findings remain roadmap evidence and produce
+focused fixes, but its calendar duration no longer blocks the development
+cycle. Issue #71's independent non-Python interoperability proof is explicitly
+deprioritized and remains open as deferred validation rather than a Phase 4
+dependency.
 
-The gate is met when all of the following hold:
+This decision advances trust/reputation implementation only. Phase 5
+(real-time Link chat), Phase 6 (advanced governance/Link Communities), and
+Phase 7 (doors) still require their own explicit sequencing decision.
+
+The Phase 3 validation record is:
 
 - every currently implemented Link product vertical (linked boards,
   linked channels, remote file areas, and Link mail) has at least one
@@ -3536,32 +3538,38 @@ The gate is met when all of the following hold:
   implemented: backup/restore and an upgrade/rollback have each been
   exercised against a real running node at least once beyond their original
   implementation test;
-- a sustained real-world multi-node dogfood deployment (issue #83) has run
-  long enough to exercise repeated sync cycles, at least one restart, and at
-  least one planned partition/recovery, with findings converted into issues
-  or worklog invariants rather than left as a diary;
+- a sustained real-world multi-node dogfood deployment (issue #83) is ongoing
+  independently, with findings converted into issues or worklog invariants
+  rather than left as a diary;
 - the README, this design document, and the worklog agree on Phase 3's
   actual boundary, and a newcomer can install and run a node from a
   documented path (issues #76, #82);
-- known protocol/interoperability correctness issues (issue #70, and issue
-  #71's independent-implementation proof) are either closed or explicitly
-  deferred here with a stated compatibility story.
+- known protocol correctness issue #70 is closed. Issue #71's independent
+  implementation is deferred: the Python reference implementation and checked
+  canonical vectors remain the Link-v1 compatibility authority for now;
+  external implementation interoperability remains explicitly unclaimed, and
+  every wire change still requires versioning and vector updates.
 
-Meeting this gate does not imply public federation. Phase 4 remains the
-public-readiness security gate regardless of Phase 3 stabilization, and
-completing this gate does not by itself authorize starting Phase 4
-implementation. The issue #55 threat model is now specified in §12, but its
-required persistence, protocol, enforcement, UI, and validation remain Phase-4
-implementation work subject to this stabilization gate.
+Advancing development does not imply public federation. Phase 4 is now active
+and remains the public-readiness security gate. The issue #55 threat model is
+specified in §12; its persistence, protocol, enforcement, UI, and validation
+must ship before any public/untrusted federation claim.
 
-### Phase 4 — Trust, reputation, and public readiness
+### Phase 4 — Trust, reputation, and public readiness — active
 
 - formal threat model from issue #55 — specified in §12;
-- node/user reputation;
-- probation and vouching;
-- objective evidence and subjective moderation separation;
-- local quarantine decisions and recovery;
-- remote attestation trust.
+- persisted local trust inputs, projections, probation, and policy evaluation
+  (issue #126) — implemented: separate anchors/reporters/domains, node/user
+  subjects, dimension-scoped evidence and vouches, transactional state/audit,
+  startup reconciliation, recovery hold, and bounded inactive retention;
+- signed trust-signal/vouch subscriptions and evidence verification (issue
+  #127);
+- enforcement across Link transport, sync, relay, content, and users (issue
+  #128);
+- SysOp explanation, overrides, and recovery workflows (issue #129);
+- remote attestation authority and local acceptance policy (issue #130);
+- adversarial distributed validation and the public-readiness gate (issue
+  #131).
 
 No public/untrusted federation claim precedes this phase.
 
