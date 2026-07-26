@@ -383,7 +383,11 @@ async def _sync_one_seed(
     # al.) now also returns anything it carries that's simply absent
     # from the request, which for an empty request means "everything."
     try:
-        inventory_request = await lane.run(build_inventory_request)
+        inventory_request = await lane.run(
+            build_inventory_request,
+            signing_identity=node.identity.signing_key,
+            requester_fingerprint=node.identity.fingerprint,
+        )
         events, _more_available = await request_inventory(node, session, seed_url, inventory_request)
         if events:
             try:

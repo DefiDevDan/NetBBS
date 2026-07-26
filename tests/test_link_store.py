@@ -930,7 +930,9 @@ def test_build_inventory_request_includes_self_originated_genesis_and_post(tmp_p
     post = create_post(db, board, creator, "hello", "world")
     board_post = queue_board_post_if_linked(db, post, board, node_identity=own_identity)
 
-    request = build_inventory_request(db)
+    request = build_inventory_request(
+        db, signing_identity=own_identity.signing_key, requester_fingerprint=own_identity.fingerprint
+    )
 
     assert board.board_id in request.boards
     assert set(request.boards[board.board_id]) == {genesis.content_id, board_post.content_id}
@@ -949,7 +951,9 @@ def test_build_inventory_request_includes_carried_content(tmp_path):
     post = _remote_post_for_store_tests(remote_identity)
     materialize_carried_post(db, post, sender_fingerprint=remote_identity.fingerprint)
 
-    request = build_inventory_request(db)
+    request = build_inventory_request(
+        db, signing_identity=own_identity.signing_key, requester_fingerprint=own_identity.fingerprint
+    )
 
     assert set(request.boards["remote-board-id"]) == {genesis.content_id, post.content_id}
     db.close()
@@ -1106,7 +1110,9 @@ def test_build_inventory_request_includes_self_originated_file_area_genesis_and_
     file_entry = upload_file(db, area, creator, "game.bin", b"file bytes")
     descriptor = queue_file_descriptor_if_linked(db, file_entry, area, node_identity=own_identity)
 
-    request = build_inventory_request(db)
+    request = build_inventory_request(
+        db, signing_identity=own_identity.signing_key, requester_fingerprint=own_identity.fingerprint
+    )
 
     assert area.area_id in request.file_areas
     assert set(request.file_areas[area.area_id]) == {genesis.content_id, descriptor.content_id}
@@ -1118,13 +1124,16 @@ def test_build_inventory_request_includes_carried_file_area_content(tmp_path):
     from netbbs.link.store import build_inventory_request
 
     db = Database(tmp_path / "node.db")
+    own_identity = bootstrap_node_identity("carrier")
     remote_identity = bootstrap_node_identity("elsewhere")
     genesis = _remote_file_area_genesis_for_store_tests(remote_identity)
     materialize_carried_file_area(db, genesis)
     descriptor = _remote_file_descriptor_for_store_tests(remote_identity)
     materialize_carried_file_descriptor(db, descriptor, sender_fingerprint=remote_identity.fingerprint)
 
-    request = build_inventory_request(db)
+    request = build_inventory_request(
+        db, signing_identity=own_identity.signing_key, requester_fingerprint=own_identity.fingerprint
+    )
 
     assert set(request.file_areas["remote-area-id"]) == {genesis.content_id, descriptor.content_id}
     db.close()

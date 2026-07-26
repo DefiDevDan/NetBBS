@@ -564,17 +564,27 @@ class LinkServer:
     async def _handle_inventory(self, request: web.Request) -> web.Response:
         """
         Design doc §8.8, issue #85: the responder side of pull-based
-        catch-up. Deliberately no signature/peer-membership check here,
-        unlike `_handle_events` -- this endpoint reads and returns
-        already-accepted, already-verified events (no new signed
-        content is being asserted), so there is nothing here for a
-        signature to attest to, the same "reachability/bootstrap data
-        isn't trust-gated" reasoning `_handle_peers` already applies,
-        extended to board *content* rather than endpoint addresses.
-        Board content this node carries is already pushed to every
-        configured seed indiscriminately (§12) -- answering an
-        inventory request is not a new confidentiality exposure beyond
-        that existing behavior, only a differently-shaped read of it.
+        catch-up.
+
+        **Issue #106: `fingerprint` (the URL path segment, previously
+        never even read here) now gates every response.** Before issue
+        #94, an arbitrary caller still had to already know a resource ID
+        to ask about, so the lack of a peer-membership/signature check
+        cost nothing worth gating. Issue #94 correctly made each `*_
+        event_diff` call also return anything this node carries that's
+        simply *absent* from the request -- which turned an all-empty
+        request into "list everything you have," i.e. unauthenticated
+        resource enumeration. `LinkNode.handle_inventory_request` now
+        requires `fingerprint` to already be a completed peer *and* the
+        request's signature to verify against that peer's current signing
+        key (proving current possession, not merely a publicly-
+        discoverable fingerprint) before any of the diff logic below
+        runs -- see that method's and `InventoryRequest`'s own docstrings
+        for the full before/after reasoning. A completed peer may still
+        send an empty inventory and discover everything; an
+        unauthenticated caller gets refused outright, not a truncated or
+        degraded answer.
+
         Bounded the same way every other route here is: the rate-limit
         middleware and `client_max_size`, plus `board_event_diff`'s own
         `limit` argument capping the response itself.
@@ -592,11 +602,17 @@ class LinkServer:
         ever included; chunk bytes stay outside inventory entirely (see
         `file_area_event_diff`'s own docstring).
         """
+        fingerprint = request.match_info["fingerprint"]
         try:
             body = await request.json(loads=strict_json_loads)
             inventory_request = InventoryRequest.from_dict(body)
         except (KeyError, ValueError, TypeError) as exc:
             return web.json_response({"error": f"malformed inventory request: {exc}"}, status=400)
+
+        try:
+            self._node.handle_inventory_request(fingerprint, inventory_request)
+        except LinkProtocolError as exc:
+            return web.json_response({"error": str(exc)}, status=403)
 
         # Issue #94: each `*_event_diff` call runs unconditionally, not
         # just when the *request* mentions boards/channels/file areas --

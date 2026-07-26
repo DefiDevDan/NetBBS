@@ -2005,6 +2005,71 @@ def verify_relay_consent_request(
     return verify_signature(signing_verify_key, canonical_bytes(request.envelope), request.signature)
 
 
+INVENTORY_REQUEST_OBJECT_TYPE = "inventory_request"
+
+
+def _inventory_request_payload(
+    requester_fingerprint: str,
+    boards: dict[str, tuple[str, ...]],
+    channels: dict[str, tuple[str, ...]],
+    file_areas: dict[str, tuple[str, ...]],
+) -> dict:
+    """The exact payload shape `sign_inventory_request`/`verify_inventory_
+    request` (issue #106) both build canonical bytes over — one shared
+    definition so the signer and verifier can never quietly drift apart
+    on what "the request" actually means."""
+    return {
+        "requester_fingerprint": requester_fingerprint,
+        "boards": {board_id: list(ids) for board_id, ids in boards.items()},
+        "channels": {channel_id: list(ids) for channel_id, ids in channels.items()},
+        "file_areas": {area_id: list(ids) for area_id, ids in file_areas.items()},
+    }
+
+
+def sign_inventory_request(
+    *,
+    signing_identity: Identity,
+    requester_fingerprint: str,
+    boards: dict[str, tuple[str, ...]],
+    channels: dict[str, tuple[str, ...]],
+    file_areas: dict[str, tuple[str, ...]],
+) -> bytes:
+    """Sign an `InventoryRequest` (design doc §8.8, issue #106) with the
+    requester's own current operational signing key -- the same "always
+    signed by the requester's own current key" shape `RelayConsentRequest`
+    already established, reused here rather than inventing a second
+    convention. `netbbs.link.protocol.InventoryRequest`'s own docstring
+    covers why this was added after the fact: issue #94 correctly let an
+    empty request discover every carried resource, which turned this
+    endpoint from "answer what you already had to know a resource ID to
+    ask about" into unauthenticated resource enumeration unless the
+    requester is now proven, not merely claimed."""
+    payload = _inventory_request_payload(requester_fingerprint, boards, channels, file_areas)
+    envelope = build_envelope(INVENTORY_REQUEST_OBJECT_TYPE, payload)
+    return signing_identity.sign(canonical_bytes(envelope))
+
+
+def verify_inventory_request(
+    *,
+    requester_fingerprint: str,
+    boards: dict[str, tuple[str, ...]],
+    channels: dict[str, tuple[str, ...]],
+    file_areas: dict[str, tuple[str, ...]],
+    signature: bytes,
+    signing_verify_key: nacl.signing.VerifyKey,
+) -> bool:
+    """Verify an `InventoryRequest`'s signature against the claimed
+    requester's *current signing key* -- resolving which key that
+    currently is, confirming the caller actually *is* the claimed
+    requester, and confirming the caller is already a completed peer at
+    all are all the caller's job (`netbbs.link.protocol.LinkNode.
+    handle_inventory_request`), same division of responsibility every
+    other `verify_*` function in this module already applies."""
+    payload = _inventory_request_payload(requester_fingerprint, boards, channels, file_areas)
+    envelope = build_envelope(INVENTORY_REQUEST_OBJECT_TYPE, payload)
+    return verify_signature(signing_verify_key, canonical_bytes(envelope), signature)
+
+
 @dataclass(frozen=True)
 class RelayConsentResponse:
     """

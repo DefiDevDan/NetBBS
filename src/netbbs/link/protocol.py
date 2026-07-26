@@ -116,6 +116,7 @@ from netbbs.link.events import (
     verify_endpoint_descriptor,
     verify_file_area_genesis,
     verify_file_descriptor,
+    verify_inventory_request,
     verify_link_message,
     verify_link_message_accepted,
     verify_link_message_bounced,
@@ -273,11 +274,30 @@ class InventoryRequest:
     already made: deliberately **not** a canonical `netbbs.link.events`
     envelope of its own. This is a bookkeeping request about what the
     requester already has, not durable authored content that needs
-    content-addressing, a signature, or gossip-replay semantics. A
-    stale or malformed request costs nothing beyond one wasted round
-    trip -- the responder's own diff query (`netbbs.link.store.
-    board_event_diff`) treats an unrecognized `board_id` exactly like
-    one it doesn't carry, silently skipped, never an error.
+    content-addressing or gossip-replay semantics -- there is still no
+    chain, no `content_id`, and a stale/duplicate request costs nothing
+    beyond one wasted round trip.
+
+    **Issue #106: signed, unlike when this docstring originally argued
+    a signature was unnecessary here.** That reasoning held only while
+    the responder still required the requester to already know every
+    resource ID it was asking about. Issue #94 correctly made the
+    responder additionally return anything it carries that's simply
+    *absent* from the request too (so a requester starting from zero can
+    discover its first board/channel/file area) -- but that turned an
+    all-empty request into "list everything you have," which an
+    unauthenticated caller could otherwise send to enumerate this node's
+    carried content without ever needing to guess a single ID. This
+    class now carries `requester_fingerprint` and `signature` (`sign_
+    inventory_request`/`verify_inventory_request`, `netbbs.link.events` --
+    same "always signed by the requester's own current operational key"
+    shape `RelayConsentRequest` already established) so `LinkNode.
+    handle_inventory_request` can require the caller to already be a
+    completed, cryptographically verified peer before answering an
+    empty-or-partial request with anything it wouldn't already have had
+    to be told an ID for. The invariant: a completed peer may still send
+    an empty inventory and discover everything this node carries; an
+    arbitrary unauthenticated HTTP client may not.
 
     `boards` is keyed by every `board_id` the requester currently
     carries (bounded by its own `max_carried_boards` quota, §13.9 --
@@ -297,12 +317,16 @@ class InventoryRequest:
     `request_inventory`).
     """
 
+    requester_fingerprint: str
+    signature: bytes
     boards: dict[str, tuple[str, ...]]
     channels: dict[str, tuple[str, ...]] = field(default_factory=dict)
     file_areas: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
+            "requester_fingerprint": self.requester_fingerprint,
+            "signature": base64.b64encode(self.signature).decode("ascii"),
             "boards": {board_id: list(ids) for board_id, ids in self.boards.items()},
             "channels": {channel_id: list(ids) for channel_id, ids in self.channels.items()},
             "file_areas": {area_id: list(ids) for area_id, ids in self.file_areas.items()},
@@ -311,6 +335,8 @@ class InventoryRequest:
     @classmethod
     def from_dict(cls, data: dict) -> "InventoryRequest":
         return cls(
+            requester_fingerprint=data["requester_fingerprint"],
+            signature=base64.b64decode(data["signature"]),
             boards={board_id: tuple(ids) for board_id, ids in data["boards"].items()},
             # .get(..., {}) rather than a required key -- accepts a
             # pre-issue-#87/#93 request shape too, harmless since an
@@ -324,15 +350,20 @@ class InventoryRequest:
 @dataclass
 class FileChunkRequest:
     """
-    "Send me chunk N of this file" (design doc §11.3, issue #89) -- the
-    same kind of decision `InventoryRequest` already made: deliberately
-    **not** a canonical `netbbs.link.events` envelope. This is a
-    bookkeeping request about what the requester wants next, not durable
-    authored content -- there is nothing here for a signature to attest
-    to that the *response*'s signed `FileChunkDescriptor` doesn't already
-    cover. A malformed or bogus request costs the responder nothing
-    beyond one wasted lookup, rejected outright (unknown `file_id`, an
-    out-of-range `chunk_index`, or a `max_chunk_size` this node refuses).
+    "Send me chunk N of this file" (design doc §11.3, issue #89) --
+    deliberately **not** a canonical `netbbs.link.events` envelope, the
+    same kind of decision `InventoryRequest` also makes: a bookkeeping
+    request about what the requester wants next, not durable authored
+    content, so it needs no content-addressing or chain semantics of its
+    own. Unlike `InventoryRequest` (issue #106), this one still carries
+    no signature of its own -- there is nothing here for a signature to
+    attest to that the *response*'s signed `FileChunkDescriptor` doesn't
+    already cover, and (unlike an empty inventory request) a chunk
+    request always names a specific already-known `file_id`/`chunk_
+    index`, never "give me everything." A malformed or bogus request
+    costs the responder nothing beyond one wasted lookup, rejected
+    outright (unknown `file_id`, an out-of-range `chunk_index`, or a
+    `max_chunk_size` this node refuses).
 
     `transfer_id` is deterministic (a content hash of `(file_id,
     requester_fingerprint)`, computed once by the requester) so a
@@ -1021,6 +1052,56 @@ class LinkNode:
         if not verify_relay_consent_response(response, signing_verify_key):
             raise LinkProtocolError(
                 f"relay_consent_response from {sender_fingerprint} does not verify against its "
+                "current signing key"
+            )
+
+    def handle_inventory_request(self, sender_fingerprint: str, request: InventoryRequest) -> None:
+        """
+        Issue #106: authenticate an inventory requester before allowing
+        the empty-request discovery issue #94 correctly added. Mirrors
+        `handle_relay_consent_request`'s own three-part check exactly:
+        the sender must already be a completed peer (the same "no pull
+        from a stranger" boundary `handle_events`/`handle_peer_list`
+        already enforce), the signed `requester_fingerprint` inside the
+        request must actually match `sender_fingerprint` (so a completed
+        peer can't enumerate on some *other* peer's behalf), and the
+        signature must verify against the sender's current resolved
+        signing key -- proving current possession of that identity, not
+        merely a previously-observed, publicly-discoverable fingerprint
+        (see `InventoryRequest`'s own docstring for the full history of
+        why this replaced the pre-#106 "no signature needed" reasoning).
+
+        Raises `LinkProtocolError` if anything doesn't check out. The
+        caller (`netbbs.link.transport`'s `/inventory` route handler)
+        turns that into an outright refusal, never partial/degraded
+        disclosure -- there is no "authenticated enough to get *some*
+        answer" tier here, matching every other pull/push route's own
+        all-or-nothing verification outcome.
+        """
+        if sender_fingerprint not in self.peers:
+            raise LinkProtocolError(
+                f"received an inventory_request from {sender_fingerprint}, which has no "
+                "completed hello -- refusing (no pull from a stranger)"
+            )
+        sender = self.peers[sender_fingerprint]
+
+        if request.requester_fingerprint != sender_fingerprint:
+            raise LinkProtocolError(
+                f"{sender_fingerprint} sent an inventory_request claiming a different "
+                f"requester_fingerprint ({request.requester_fingerprint!r}) -- refusing"
+            )
+
+        signing_verify_key = self._resolve_sender_signing_key(sender, sender_fingerprint, "inventory_request")
+        if not verify_inventory_request(
+            requester_fingerprint=request.requester_fingerprint,
+            boards=request.boards,
+            channels=request.channels,
+            file_areas=request.file_areas,
+            signature=request.signature,
+            signing_verify_key=signing_verify_key,
+        ):
+            raise LinkProtocolError(
+                f"inventory_request from {sender_fingerprint} does not verify against its "
                 "current signing key"
             )
 

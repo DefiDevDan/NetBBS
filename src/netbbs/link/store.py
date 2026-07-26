@@ -31,6 +31,7 @@ import base64
 import json
 from datetime import datetime, timedelta
 
+from netbbs.identity.keys import Identity
 from netbbs.link.events import (
     BOARD_CLOSURE_OBJECT_TYPE,
     BOARD_GENESIS_OBJECT_TYPE,
@@ -56,6 +57,7 @@ from netbbs.link.events import (
     FileDescriptor,
     KeyTransition,
     event_content_id,
+    sign_inventory_request,
 )
 from netbbs.link.node_identity import NodeIdentity
 from netbbs.link.protocol import InventoryRequest, LinkNode, PeerRecord
@@ -593,7 +595,7 @@ def carried_file_area_ids(db: Database) -> list[str]:
     ]
 
 
-def build_inventory_request(db: Database) -> InventoryRequest:
+def build_inventory_request(db: Database, *, signing_identity: Identity, requester_fingerprint: str) -> InventoryRequest:
     """
     This node's own `InventoryRequest` to send as requester (design doc
     §8.8, issue #85; §9.6, issue #87; §11, issue #93): every board/
@@ -604,13 +606,28 @@ def build_inventory_request(db: Database) -> InventoryRequest:
     those functions' own docstrings already give, since a requester's own
     gap-detection needs the identical complete picture a responder's diff
     needs, just read from the requester's own database instead of the
-    responder's."""
+    responder's.
+
+    Issue #106: `signing_identity` (the caller's own current operational
+    signing key, e.g. `node.identity.signing_key`) and `requester_
+    fingerprint` (`node.identity.fingerprint`) sign the request via
+    `sign_inventory_request` -- see `InventoryRequest`'s own docstring
+    for why a responder now requires this instead of answering anyone.
+    """
     boards = {board_id: tuple(_all_board_events(db, board_id)) for board_id in carried_board_ids(db)}
     channels = {channel_id: tuple(_all_channel_events(db, channel_id)) for channel_id in carried_channel_ids(db)}
     file_areas = {
         area_id: tuple(_all_file_area_events(db, area_id)) for area_id in carried_file_area_ids(db)
     }
-    return InventoryRequest(boards=boards, channels=channels, file_areas=file_areas)
+    signature = sign_inventory_request(
+        signing_identity=signing_identity,
+        requester_fingerprint=requester_fingerprint,
+        boards=boards, channels=channels, file_areas=file_areas,
+    )
+    return InventoryRequest(
+        requester_fingerprint=requester_fingerprint, signature=signature,
+        boards=boards, channels=channels, file_areas=file_areas,
+    )
 
 
 def _all_board_events(db: Database, board_id: str) -> dict[str, dict]:

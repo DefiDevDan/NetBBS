@@ -1190,16 +1190,23 @@ point-to-point by design (§10) and are explicitly excluded from any
 multi-hop relay, matching their existing "no relay from a stranger" routing
 boundary (§10.4) — nothing here changes how `link_message` is delivered.
 
-**`InventoryRequest` — a new unsigned bundle, not a canonical event.**
-Deliberately the same shape of decision `PeerListMessage` already made
-(§8.3): this is a bookkeeping request about what the requester already has,
-not durable authored content, so it needs no content-addressing, signature,
-or gossip-replay semantics of its own. A stale or malformed request costs
-nothing beyond a wasted round trip.
+**`InventoryRequest` — signed, not a canonical event (revised by issue
+#106; originally shipped unsigned).** This is a bookkeeping request about
+what the requester already has, not durable authored content, so it still
+needs no content-addressing or gossip-replay semantics of its own — no
+chain, no `content_id`, and a stale/duplicate request costs nothing beyond
+a wasted round trip. It **is** now always signed by the requester's own
+current operational signing key, the same "always signed by the
+requester's own current key" shape §12's `relay_consent_request` already
+established, for the reason below.
 
 ```
 InventoryRequest {
-  boards: { board_id: [known_content_id, ...], ... }
+  requester_fingerprint: string,
+  signature: bytes,
+  boards: { board_id: [known_content_id, ...], ... },
+  channels: { channel_id: [known_content_id, ...], ... },
+  file_areas: { area_id: [known_content_id, ...], ... }
 }
 ```
 
@@ -1207,34 +1214,68 @@ InventoryRequest {
 carries (bounded by its own `max_carried_boards` quota, §13.9 — the request
 size is therefore already bounded by an existing cap, not a new one) mapped
 to that board's full set of content IDs the requester already has for it.
+`channels`/`file_areas` (§9.6, §11) are the identical shape for linked
+channels and linked file-area catalogues respectively.
 
 **Route: `POST {LINK_PATH_PREFIX}/inventory/{fingerprint}`**, mirroring
 `/events/{fingerprint}`'s existing convention (`fingerprint` names the
-requester). The response is **not** a new envelope type either — it is the
-same raw JSON event-list shape `push_events`'s request body already uses:
+requester — and, since issue #106, is now actually checked: see below).
+The response is **not** a new envelope type either — it is the same raw
+JSON event-list shape `push_events`'s request body already uses:
 
 ```
 { "events": [ <raw event dict>, ... ], "more_available": bool }
 ```
 
-**Responder-side diff.** For each requested `board_id` this responder also
-currently carries, return every board-scoped event on file for that board
-whose `content_id` is not in the requester's declared list for it —
-unioning three differently-shaped sources, not `link_events` alone: this
-node's own self-originated genesis/lifecycle (`boards.link_genesis_json`/
-`link_lifecycle_json`, never routed through `handle_events` at all, so
-never in `link_events`), any post/edit a *local* user authored on any
-Linked board regardless of whether this node originated or merely carries
-it (`posts.link_event_json`, populated only by self-authorship, per
-`netbbs.link.boards.queue_board_post_if_linked`'s own scope), and every
-peer-received event this node has accepted (`link_events`, filtered by the
-new `board_id` column — see the schema change below). A `board_id` the
-responder does not itself carry is silently skipped, never an error — "not
-carrying this board" is already a legitimate, honestly-represented answer
-(§9.3). **This is the entire multi-hop mechanism**: a node that only
-*carries* board X (never originated it) can now answer an inventory
-request for X from a third node, because the diff draws from everything
-this node has on file for that board, not only what it originated.
+**Responder-side diff.** For each `board_id` this responder itself
+currently carries — whether or not it appears as a key in the request at
+all (see the discovery paragraph below) — return every board-scoped event
+on file for that board whose `content_id` is not in the requester's
+declared list for it (an absent key is treated as an empty declared
+list). The diff unions three differently-shaped sources, not `link_events`
+alone: this node's own self-originated genesis/lifecycle (`boards.
+link_genesis_json`/`link_lifecycle_json`, never routed through
+`handle_events` at all, so never in `link_events`), any post/edit a
+*local* user authored on any Linked board regardless of whether this node
+originated or merely carries it (`posts.link_event_json`, populated only
+by self-authorship, per `netbbs.link.boards.queue_board_post_if_linked`'s
+own scope), and every peer-received event this node has accepted
+(`link_events`, filtered by the new `board_id` column — see the schema
+change below). A `board_id` the responder does not itself carry is
+silently skipped, never an error — "not carrying this board" is already a
+legitimate, honestly-represented answer (§9.3). **This is the entire
+multi-hop mechanism**: a node that only *carries* board X (never
+originated it) can now answer an inventory request for X from a third
+node, because the diff draws from everything this node has on file for
+that board, not only what it originated.
+
+**Empty-request discovery (issue #94) and its authentication precondition
+(issue #106).** The diff above answers for every `board_id`/`channel_id`/
+`area_id` the *responder* carries, not only ones present as keys in the
+request — so a requester with nothing carried yet can send an entirely
+empty `InventoryRequest` and still discover its first Linked board/
+channel/file area, rather than being stuck needing to already know an ID
+it has no way to learn. Before this discovery behavior existed, the lack
+of any authentication on this route cost nothing: an arbitrary caller
+still had to already know a specific ID to ask about. Once an empty
+request could return *everything* a node carries, the same unauthenticated
+route became a resource-enumeration/content-disclosure endpoint for
+anyone on the network, not just configured/verified Link peers. `LinkNode.
+handle_inventory_request` therefore requires, before any diff logic runs:
+`fingerprint` (the URL path segment) must already be a completed peer (the
+same "no pull from a stranger" boundary `handle_events`/`handle_peer_list`
+already enforce); the signed `requester_fingerprint` inside the request
+must equal that same `fingerprint` (a completed peer cannot enumerate on
+some *other* peer's behalf); and `signature` must verify against that
+peer's current resolved signing key — proving current possession of the
+identity, not merely a previously-observed, publicly-discoverable
+fingerprint (fingerprints are exactly that: discoverable via the
+deliberately-unauthenticated `/peers` route, §8.3). The governing
+invariant: a completed, cryptographically verified peer may send an empty
+inventory and discover everything this node carries; an arbitrary
+unauthenticated HTTP client may not enumerate anything. A request failing
+any of these checks is refused outright (HTTP 403) — there is no
+degraded/partial-answer tier.
 
 **`handle_events` itself needs one correctness fix to make this
 verifiable, not zero changes.** Every board-scoped branch (`board_genesis`,

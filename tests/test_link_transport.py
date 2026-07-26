@@ -27,10 +27,14 @@ import json
 import aiohttp
 import pytest
 
+from netbbs.auth.users import create_user
+from netbbs.boards.boards import create_board
+from netbbs.boards.posts import create_post
+from netbbs.link.boards import link_board, queue_board_post_if_linked
 from netbbs.link.events import KeyTransition, build_board_genesis, build_endpoint_descriptor, build_link_message
 from netbbs.link.node_identity import bootstrap_node_identity, rotate_operational_key
 from netbbs.link.protocol import HelloMessage, LinkNode, LinkProtocolError
-from netbbs.link.store import load_link_node
+from netbbs.link.store import build_inventory_request, load_link_node
 from netbbs.link.transport import (
     LINK_PATH_PREFIX,
     LinkServer,
@@ -39,6 +43,7 @@ from netbbs.link.transport import (
     dial_hello,
     pickup_from_relay_mailbox,
     push_events,
+    request_inventory,
     request_peer_list,
     request_relay_consent,
 )
@@ -482,6 +487,107 @@ def test_push_events_raises_link_transport_error_for_a_stranger(tmp_path):
             asyncio.run(scenario())
     finally:
         bob.close()
+
+
+# -- inventory: real HTTP pull-based catch-up, authenticated (issue #106) ----
+
+
+def test_request_inventory_lets_a_completed_peer_discover_carried_content_from_an_empty_request(tmp_path):
+    """Issue #106's own acceptance criterion, over a real socket: a
+    completed peer sending a genuinely empty, signed `InventoryRequest`
+    still discovers a board bob carries -- the issue #94 discovery
+    behavior this fix must not undo, proved here at the real HTTP layer
+    rather than only via `handle_inventory_request`'s own unit tests
+    (`tests/test_link_inventory_auth.py`)."""
+    alice_identity = bootstrap_node_identity("alice")
+    bob_identity = bootstrap_node_identity("bob")
+    alice_node = LinkNode(identity=alice_identity)
+    bob_node = LinkNode(identity=bob_identity)
+    alice = _NodeDb(tmp_path, "alice")
+    bob = _NodeDb(tmp_path, "bob")
+
+    creator = create_user(bob.db, "carol", password="hunter2", user_level=10)
+    board = create_board(bob.db, "general", creator=creator)
+    genesis = link_board(bob.db, board, node_identity=bob_identity)
+    post = create_post(bob.db, board, creator, "hello", "world")
+    board_post = queue_board_post_if_linked(bob.db, post, board, node_identity=bob_identity)
+
+    async def scenario():
+        bob_server = await _run_server(bob_node, lambda: _hello_for(bob_node), bob.lane)
+        try:
+            async with aiohttp.ClientSession() as session:
+                await dial_hello(
+                    alice_node, session, f"http://127.0.0.1:{bob_server.port}", _hello_for(alice_node), alice.lane
+                )
+                # alice carries nothing -- a genuinely empty request, not
+                # a hand-injected board_id.
+                inventory_request = await alice.lane.run(
+                    build_inventory_request,
+                    signing_identity=alice_identity.signing_key,
+                    requester_fingerprint=alice_identity.fingerprint,
+                )
+                assert inventory_request.boards == {}
+                return await request_inventory(
+                    alice_node, session, f"http://127.0.0.1:{bob_server.port}", inventory_request
+                )
+        finally:
+            await bob_server.stop()
+
+    try:
+        events, more_available = asyncio.run(scenario())
+        assert more_available is False
+        content_ids = set()
+        for raw in events:
+            accepted = alice_node.handle_events(bob_identity.fingerprint, [raw])
+            content_ids.update(accepted)
+        assert {genesis.content_id, board_post.content_id} <= content_ids
+    finally:
+        alice.close()
+        bob.close()
+
+
+def test_request_inventory_is_refused_for_a_stranger_attempting_anonymous_enumeration(tmp_path):
+    """The exact vulnerability issue #106 closes: before this fix, an
+    all-empty inventory request from anyone -- not just a completed peer
+    -- returned every board bob carries. Mallory here never completes a
+    hello with bob at all, so her request must be refused outright (403,
+    surfaced as LinkTransportError) rather than disclosing bob's board,
+    even though her own request is validly self-signed."""
+    bob_identity = bootstrap_node_identity("bob")
+    mallory_identity = bootstrap_node_identity("mallory")
+    bob_node = LinkNode(identity=bob_identity)
+    mallory_node = LinkNode(identity=mallory_identity)
+    bob = _NodeDb(tmp_path, "bob")
+    mallory = _NodeDb(tmp_path, "mallory")
+
+    creator = create_user(bob.db, "carol", password="hunter2", user_level=10)
+    board = create_board(bob.db, "general", creator=creator)
+    link_board(bob.db, board, node_identity=bob_identity)
+
+    async def scenario():
+        bob_server = await _run_server(bob_node, lambda: _hello_for(bob_node), bob.lane)
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Mallory never dials bob's hello route -- no completed
+                # peer relationship exists on bob's side at all.
+                inventory_request = await mallory.lane.run(
+                    build_inventory_request,
+                    signing_identity=mallory_identity.signing_key,
+                    requester_fingerprint=mallory_identity.fingerprint,
+                )
+                assert inventory_request.boards == {}
+                await request_inventory(
+                    mallory_node, session, f"http://127.0.0.1:{bob_server.port}", inventory_request
+                )
+        finally:
+            await bob_server.stop()
+
+    try:
+        with pytest.raises(LinkTransportError):
+            asyncio.run(scenario())
+    finally:
+        bob.close()
+        mallory.close()
 
 
 # -- persistence survives a restart ------------------------------------
