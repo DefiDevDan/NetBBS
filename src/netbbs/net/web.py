@@ -179,6 +179,10 @@ class WebSession(Session):
         )
         self._input_error = "client disconnected"
         self.peer_address = peer_address
+        # NetBBS controls the client end-to-end (netbbs-terminal.js
+        # constructs the xterm.js Terminal directly), so truecolor support
+        # is a given, not something to negotiate — unlike Telnet/SSH.
+        self.supports_truecolor = True
         self._reader_task = asyncio.create_task(self._read_loop())
 
     def _signal_input_closed(self, message: str) -> None:

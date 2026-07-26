@@ -2039,8 +2039,10 @@ async def _preview_welcome_banner_screen(session: Session, lane: DatabaseLane) -
     login right now -- the same `load_welcome_banner` call, used as a
     smoke test of the loading path itself, not a separate rendering."""
 
+    truecolor = session.supports_truecolor
+
     def _load(db: Database) -> tuple:
-        return welcome_banner_status(db), load_welcome_banner(db)
+        return welcome_banner_status(db), load_welcome_banner(db, truecolor=truecolor)
 
     status, banner_text = await lane.run(_load)
     await session.write_line(colored("\r\nPreviewing welcome banner as shown at login:", fg_color=MUTED_COLOR))

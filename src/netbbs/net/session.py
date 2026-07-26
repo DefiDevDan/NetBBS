@@ -87,6 +87,20 @@ class Session(ABC):
     terminal_width: int = 80
     terminal_height: int = 24
 
+    #: Whether this session's client is known to support 24-bit
+    #: truecolor (`CSI 38;2;r;g;bm`), for `netbbs.rendering.gradient.
+    #: gradient_text` and any other truecolor-aware output. Conservative
+    #: default `False` — every transport either derives this
+    #: synchronously at construction (SSH, from a `COLORTERM` env value;
+    #: Web, hardcoded `True` since NetBBS controls the xterm.js client
+    #: end-to-end) or updates it in place once negotiation resolves
+    #: (Telnet NEW-ENVIRON, mirroring `terminal_width`/`terminal_height`'s
+    #: own NAWS lazy-resolution precedent above — see
+    #: `netbbs.net.telnet.TelnetSession`). A per-user manual override can
+    #: supersede this post-login — see
+    #: `netbbs.net.color_depth_preference.effective_truecolor`.
+    supports_truecolor: bool = False
+
     #: Best-known remote address (host only, no port) for this
     #: connection, or `None` if a transport genuinely has no such
     #: concept. Used for per-source login throttling (see

@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from netbbs.config import get_config, set_config
-from netbbs.rendering import HEADER_COLOR, RESET, colored, decode_ansi_bytes
+from netbbs.rendering import HEADER_COLOR, RESET, colored, decode_ansi_bytes, gradient_text
 from netbbs.storage.database import Database
 
 _logger = logging.getLogger(__name__)
@@ -50,6 +50,31 @@ DEFAULT_WELCOME_BANNER = colored(
     fg_color=HEADER_COLOR,
     bold=True,
 )
+
+
+def _default_welcome_banner(*, truecolor: bool) -> str:
+    """`DEFAULT_WELCOME_BANNER` stays a static, precomputed, 256-color-
+    safe constant -- correct for every client -- since it can't itself
+    depend on a per-session flag that doesn't exist at import time. This
+    builds the truecolor variant per-call instead: the "NetBBS" name
+    gets `gradient_text`'s per-character flair, composed alongside the
+    surrounding flat-`HEADER_COLOR` border/subtitle via concatenated
+    `colored()`/`gradient_text()` spans -- the same "one colored() call
+    per span, concatenated" shape `netbbs.rendering.reflow.
+    colored_truncate` already uses, just assembled by hand here since
+    this banner isn't a segment list."""
+    if not truecolor:
+        return DEFAULT_WELCOME_BANNER
+    border = colored(
+        "================================================", fg_color=HEADER_COLOR, bold=True
+    )
+    welcome_line = colored("  Welcome to ", fg_color=HEADER_COLOR, bold=True) + gradient_text(
+        "NetBBS", "blue", bold=True, truecolor=True
+    )
+    subtitle = colored(
+        "  NetBBS Link -- experimental federation", fg_color=HEADER_COLOR, bold=True
+    )
+    return "\r\n".join([border, welcome_line, subtitle, border])
 
 # Comfortably covers realistic ANSI art (typically a few KB, rarely
 # above ~150 KB even for elaborate multi-panel pieces) while bounding a
@@ -96,14 +121,23 @@ def welcome_banner_status(db: Database) -> WelcomeBannerStatus:
     )
 
 
-def load_welcome_banner(db: Database) -> str:
+def load_welcome_banner(db: Database, *, truecolor: bool = False) -> str:
     """
     Resolve the banner to show at login: the SysOp's custom file if
-    enabled and usable, `DEFAULT_WELCOME_BANNER` otherwise. Synchronous
+    enabled and usable, the default banner otherwise. Synchronous
     -- matches existing precedent (`netbbs.config.get_config`,
     `netbbs.net.ssh.ensure_host_key`) of plain blocking local disk/DB
     calls made directly from async functions; a sub-256KB read isn't
     worth `asyncio.to_thread`.
+
+    `truecolor` (default `False`, the safe universal choice) selects
+    whether the *default* banner's "NetBBS" name is rendered with a
+    truecolor gradient (`_default_welcome_banner`) -- callers should
+    pass their session's negotiated/effective truecolor support (see
+    `netbbs.net.session.Session.supports_truecolor`). Has no effect on
+    the SysOp's custom `.ans` file path: that content is trusted,
+    already-composed art, shown exactly as authored regardless of this
+    flag.
 
     Every fallback here is silent to the connecting user (never show a
     raw error to an anonymous pre-auth session -- every visitor would
@@ -116,12 +150,12 @@ def load_welcome_banner(db: Database) -> str:
     every login regardless of how the flag got set.
     """
     if not is_welcome_banner_enabled(db):
-        return DEFAULT_WELCOME_BANNER
+        return _default_welcome_banner(truecolor=truecolor)
 
     path = banner_path(db)
     if not path.exists():
         _logger.warning("welcome banner enabled but missing at %s -- using default", path)
-        return DEFAULT_WELCOME_BANNER
+        return _default_welcome_banner(truecolor=truecolor)
 
     try:
         size = path.stat().st_size
@@ -130,11 +164,11 @@ def load_welcome_banner(db: Database) -> str:
                 "welcome banner at %s is %d bytes, over the %d byte limit -- using default",
                 path, size, MAX_BANNER_SIZE_BYTES,
             )
-            return DEFAULT_WELCOME_BANNER
+            return _default_welcome_banner(truecolor=truecolor)
         data = path.read_bytes()
     except OSError:
         _logger.warning("could not read welcome banner at %s -- using default", path, exc_info=True)
-        return DEFAULT_WELCOME_BANNER
+        return _default_welcome_banner(truecolor=truecolor)
 
     # decode_ansi_bytes cannot raise (see its own docstring) -- no
     # decode-failure fallback is needed here, by construction.

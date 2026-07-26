@@ -129,6 +129,7 @@ from netbbs.net.admin_flow import admin_menu
 from netbbs.net.char_input import REDRAW_KEY, InputHistory
 from netbbs.net.confirm import prompt_yes_no
 from netbbs.net.chat_flow import browse_channels, has_visible_channels, list_visible_channels_for
+from netbbs.net.color_depth_preference import color_depth_override, set_color_depth_override
 from netbbs.net.editor_preference import fullscreen_editor_enabled, set_fullscreen_editor_enabled
 from netbbs.net.file_flow import browse_file_areas, enter_file_area, has_visible_areas
 from netbbs.net.mail_flow import browse_mail
@@ -367,7 +368,7 @@ async def _run_authenticated_session(
         return
 
     try:
-        await session.write_line(load_welcome_banner(db))
+        await session.write_line(load_welcome_banner(db, truecolor=session.supports_truecolor))
         # Design doc -- node management, Thiesi's own request: shown to
         # *every* connecting client, SysOp-to-be or not -- account level
         # isn't known until credentials verify below, so this can't be
@@ -2669,6 +2670,7 @@ async def _render_profile(session: Session, db: Database, user: User) -> bool:
     editor_on = fullscreen_editor_enabled(db, user)
     accepts_dm = accepts_direct_messages(db, user)
     history_name_visible = session_history_name_visible(db, user)
+    color_override = color_depth_override(db, user)
 
     await session.write_line(colored("\r\nYour profile:", fg_color=HEADER_COLOR, bold=True))
     if current_bio:
@@ -2685,6 +2687,12 @@ async def _render_profile(session: Session, db: Database, user: User) -> bool:
     await session.write_line(
         f"Name shown in Last sessions: {'yes' if history_name_visible else 'no (hidden)'}"
     )
+    if color_override is None:
+        detected = "truecolor" if session.supports_truecolor else "256-color"
+        color_status = f"auto (detected: {detected})"
+    else:
+        color_status = f"{color_override} (forced)"
+    await session.write_line(f"Color depth: {color_status}")
 
     options = "  ".join(
         [
@@ -2693,6 +2701,7 @@ async def _render_profile(session: Session, db: Database, user: User) -> bool:
             menu_key("F", "ullscreen editor"),
             menu_key("M", "essages"),
             menu_key("H", "istory visibility"),
+            menu_key("C", "olor depth"),
             menu_key("N", "ame & details"),
             menu_key("B", "ack"),
         ]
@@ -2754,6 +2763,13 @@ async def _edit_profile(session: Session, db: Database, user: User) -> None:
                 f"Name in Last sessions is now "
                 f"{'visible' if session_history_name_visible(db, user) else 'hidden'}."
             )
+            visible = await _render_profile(session, db, user)
+        elif choice == "c":
+            await session.write_line("")
+            current = color_depth_override(db, user) or "auto"
+            next_value = {"auto": "truecolor", "truecolor": "256", "256": "auto"}[current]
+            set_color_depth_override(db, user, next_value)
+            await session.write_line(f"Color depth is now {next_value}.")
             visible = await _render_profile(session, db, user)
         elif choice == "n":
             await session.write_line("")

@@ -29,6 +29,7 @@ class FakeSession:
         self.terminal_width = 80
         self.terminal_height = 24
         self.peer_address = "203.0.113.5"
+        self.supports_truecolor = False
 
     async def write(self, text: str) -> None:
         self.written.append(text)

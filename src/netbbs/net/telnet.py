@@ -49,7 +49,8 @@ from typing import Awaitable, Callable
 from netbbs.net import char_input
 from netbbs.net.session import Session, SessionClosedError, clamp_terminal_size
 
-# Telnet protocol constants (RFC 854, plus NAWS from RFC 1073).
+# Telnet protocol constants (RFC 854, plus NAWS from RFC 1073 and
+# NEW-ENVIRON from RFC 1572).
 IAC = 0xFF  # "Interpret As Command" — introduces every negotiation sequence
 WILL = 0xFB
 WONT = 0xFC
@@ -60,6 +61,12 @@ SE = 0xF0  # end subnegotiation
 ECHO = 0x01
 SUPPRESS_GO_AHEAD = 0x03
 NAWS = 0x1F  # Negotiate About Window Size (RFC 1073)
+NEW_ENVIRON = 0x27  # RFC 1572
+NEW_ENVIRON_IS = 0
+NEW_ENVIRON_SEND = 1
+NEW_ENVIRON_VAR = 0
+NEW_ENVIRON_VALUE = 1
+NEW_ENVIRON_USERVAR = 3
 
 _logger = logging.getLogger(__name__)
 
@@ -88,13 +95,19 @@ class TelnetSession(Session):
         # updated subnegotiation — simply keeps these values.
         self.terminal_width = 80
         self.terminal_height = 24
+        # Same conservative-default, update-in-place-if-negotiation-
+        # resolves approach, via NEW-ENVIRON/COLORTERM instead of NAWS —
+        # see negotiate_initial_options and _handle_subnegotiation.
+        self.supports_truecolor = False
         self.peer_address = peer_address
 
     async def negotiate_initial_options(self) -> None:
         """
         Ask the client to suppress "go ahead" turn-taking signaling,
         take over echoing ourselves (character mode — see module
-        docstring), and request window-size reporting (NAWS).
+        docstring), and request window-size reporting (NAWS) plus the
+        `COLORTERM` environment variable (NEW-ENVIRON, RFC 1572) for
+        truecolor detection.
 
         All fire-and-forget — we don't wait for or require a response.
         WILL ECHO is now sent once, persistently, for the whole session,
@@ -120,10 +133,26 @@ class TelnetSession(Session):
         is short, static text that doesn't meaningfully benefit from
         reflow, unlike board post bodies shown well after login, by which
         point NAWS negotiation has always already resolved.
+
+        NEW-ENVIRON has the identical fire-and-forget, lazily-resolved
+        limitation: `supports_truecolor` stays at its conservative
+        `False` default for the very first banner write, the same way
+        `terminal_width`/`terminal_height` stay at their 80x24 default
+        until `_handle_subnegotiation` processes a reply — accepted for
+        the same reason. Only `COLORTERM` is requested (`SEND VAR
+        "COLORTERM"`), not a full-environment dump, keeping the exchange
+        small and avoiding parsing an arbitrarily large environment from
+        an unauthenticated client.
         """
         self._writer.write(bytes([IAC, WILL, SUPPRESS_GO_AHEAD]))
         self._writer.write(bytes([IAC, WILL, ECHO]))
         self._writer.write(bytes([IAC, DO, NAWS]))
+        self._writer.write(bytes([IAC, DO, NEW_ENVIRON]))
+        self._writer.write(
+            bytes([IAC, SB, NEW_ENVIRON, NEW_ENVIRON_SEND, NEW_ENVIRON_VAR])
+            + b"COLORTERM"
+            + bytes([IAC, SE])
+        )
         await self._writer.drain()
 
     async def write(self, text: str) -> None:
@@ -278,7 +307,8 @@ class TelnetSession(Session):
         """
         Read a full subnegotiation (option byte + body, up to the
         terminating IAC SE) and act on it if it's one we understand —
-        currently just NAWS (window size).
+        currently NAWS (window size) and NEW-ENVIRON (COLORTERM, for
+        truecolor detection).
 
         The body is read via `_read_subnegotiation_body`, which correctly
         un-escapes IAC-doubling within the body — this matters
@@ -310,6 +340,15 @@ class TelnetSession(Session):
                 self.terminal_width, _ = clamp_terminal_size(width, self.terminal_height)
             if height > 0:
                 _, self.terminal_height = clamp_terminal_size(self.terminal_width, height)
+        elif option == NEW_ENVIRON and body[:1] == bytes([NEW_ENVIRON_IS]):
+            # Tolerant of malformed bodies -- worst case, `variables`
+            # ends up empty and supports_truecolor simply stays at its
+            # default, never a raise. Only an explicit COLORTERM value is
+            # trusted (see SSHSession's identical reasoning).
+            variables = _parse_new_environ_is(body[1:])
+            colorterm = variables.get("COLORTERM")
+            if colorterm in ("truecolor", "24bit"):
+                self.supports_truecolor = True
 
     async def _read_subnegotiation(self) -> tuple[int, bytes]:
         option = (await self._reader.readexactly(1))[0]
@@ -340,6 +379,51 @@ class TelnetSession(Session):
 
             if len(body) > _MAX_SUBNEGOTIATION_BODY:
                 raise SessionClosedError("Telnet subnegotiation body is too large")
+
+
+def _parse_new_environ_is(body: bytes) -> dict[str, str]:
+    """
+    Parse the VAR/USERVAR/VALUE-tagged payload of a NEW-ENVIRON `IS`
+    subnegotiation (RFC 1572) into a `{name: value}` dict, keeping only
+    `VAR` entries (`USERVAR` entries are a distinct namespace this
+    codebase has no use for). Untrusted, pre-authentication input:
+    ASCII-decoded with `errors="replace"` and never raises on a
+    malformed body — an unparseable or truncated payload simply yields
+    fewer (or zero) entries rather than an exception. Doesn't implement
+    RFC 1572's ESC-escaping for a literal VAR/VALUE/USERVAR byte inside a
+    name/value (a real edge case for arbitrary environment dumps, not
+    for the fixed `COLORTERM` request this module actually sends --
+    values like "truecolor"/"24bit" never contain those bytes).
+    """
+    variables: dict[str, str] = {}
+    name: bytearray | None = None
+    value: bytearray | None = None
+    current: bytearray | None = None
+
+    def flush() -> None:
+        if name is not None and value is not None:
+            variables[name.decode("ascii", errors="replace")] = value.decode(
+                "ascii", errors="replace"
+            )
+
+    i = 0
+    while i < len(body):
+        marker = body[i]
+        if marker == NEW_ENVIRON_VAR:
+            flush()
+            name, value, current = bytearray(), None, None
+            current = name
+        elif marker == NEW_ENVIRON_USERVAR:
+            flush()
+            name, value, current = None, None, None
+        elif marker == NEW_ENVIRON_VALUE:
+            value = bytearray()
+            current = value
+        elif current is not None:
+            current.append(marker)
+        i += 1
+    flush()
+    return variables
 
 
 SessionHandler = Callable[[Session], Awaitable[None]]

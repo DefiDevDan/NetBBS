@@ -13,6 +13,12 @@ richer than classic 16-color BBS ANSI art, at the cost of some very old
 or "dumb" clients not rendering it correctly. No fallback/downgrade path
 to 16-color is built here; if that turns out to matter in practice, it's
 a later addition, not a Phase 1 concern.
+
+`fg_rgb`/`bg_rgb` plus `netbbs.rendering.gradient` add a 24-bit truecolor
+tier on top of this — gated per-session
+(`netbbs.net.session.Session.supports_truecolor`), never assumed. 256-color
+remains the safe universal baseline every existing call site continues to
+target; truecolor is additive and opt-in, not a replacement for it.
 """
 
 from __future__ import annotations
@@ -39,11 +45,25 @@ def bg(color: int) -> str:
     return f"{CSI}48;5;{color}m"
 
 
+def fg_rgb(r: int, g: int, b: int) -> str:
+    """24-bit truecolor foreground SGR sequence (`38;2;r;g;b`). Each
+    component is 0-255. Only safe to send to a session known to support
+    truecolor — see `netbbs.net.session.Session.supports_truecolor`."""
+    _validate_rgb(r, g, b)
+    return f"{CSI}38;2;{r};{g};{b}m"
+
+
+def bg_rgb(r: int, g: int, b: int) -> str:
+    """24-bit truecolor background SGR sequence (`48;2;r;g;b`)."""
+    _validate_rgb(r, g, b)
+    return f"{CSI}48;2;{r};{g};{b}m"
+
+
 def colored(
     text: str,
     *,
-    fg_color: int | None = None,
-    bg_color: int | None = None,
+    fg_color: int | tuple[int, int, int] | None = None,
+    bg_color: int | tuple[int, int, int] | None = None,
     bold: bool = False,
     reverse: bool = False,
     underline: bool = False,
@@ -57,6 +77,12 @@ def colored(
     comes next is probably the single most common real-world bug with
     raw ANSI codes. Returns `text` unchanged if no formatting is
     requested, rather than emitting empty escape sequences.
+
+    `fg_color`/`bg_color` accept either a 256-color palette index (`int`,
+    routed through `fg`/`bg`) or a 24-bit `(r, g, b)` tuple (routed
+    through `fg_rgb`/`bg_rgb`) — this is the one recommended entry point
+    for both color depths, rather than a parallel `rgb_colored()`
+    function callers would have to remember to reach for instead.
 
     `reverse` (SGR 7, design doc) swaps foreground/background
     at the terminal level rather than picking specific colors for
@@ -82,9 +108,9 @@ def colored(
     if reverse:
         prefix += REVERSE
     if fg_color is not None:
-        prefix += fg(fg_color)
+        prefix += fg_rgb(*fg_color) if isinstance(fg_color, tuple) else fg(fg_color)
     if bg_color is not None:
-        prefix += bg(bg_color)
+        prefix += bg_rgb(*bg_color) if isinstance(bg_color, tuple) else bg(bg_color)
     if not prefix:
         return text
     return f"{prefix}{text}{RESET}"
@@ -183,3 +209,9 @@ def reject_keystroke(count: int = 1) -> str:
 def _validate_color(color: int) -> None:
     if not 0 <= color <= 255:
         raise ValueError(f"color must be 0-255, got {color}")
+
+
+def _validate_rgb(r: int, g: int, b: int) -> None:
+    for name, value in (("r", r), ("g", g), ("b", b)):
+        if not 0 <= value <= 255:
+            raise ValueError(f"{name} must be 0-255, got {value}")

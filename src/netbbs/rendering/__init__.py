@@ -16,10 +16,12 @@ from netbbs.rendering.ansi import (
     RESET,
     REVERSE,
     bg,
+    bg_rgb,
     clear_line,
     clear_screen,
     colored,
     fg,
+    fg_rgb,
     move_cursor,
     reject_keystroke,
     reset_scroll_region,
@@ -29,6 +31,7 @@ from netbbs.rendering.ansi import (
 )
 from netbbs.rendering.ansi_art import decode_ansi_bytes, encode_ansi_bytes
 from netbbs.rendering.ansi_parse import parse_ansi_into_buffer
+from netbbs.rendering.gradient import GRADIENTS, gradient_text
 from netbbs.rendering.menu import menu_key
 from netbbs.rendering.reflow import DEFAULT_WIDTH, colored_truncate, reflow, truncate
 from netbbs.rendering.sanitize import sanitize_text
@@ -55,6 +58,7 @@ __all__ = [
     "RESET",
     "REVERSE",
     "bg",
+    "bg_rgb",
     "clear_line",
     "clear_screen",
     "colored",
@@ -62,6 +66,9 @@ __all__ = [
     "encode_ansi_bytes",
     "parse_ansi_into_buffer",
     "fg",
+    "fg_rgb",
+    "GRADIENTS",
+    "gradient_text",
     "move_cursor",
     "reject_keystroke",
     "reset_scroll_region",

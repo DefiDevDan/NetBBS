@@ -114,6 +114,32 @@ def test_result_always_ends_with_reset_sequence(db):
     assert load_welcome_banner(db).endswith(RESET)
 
 
+# -- truecolor gradient variant ---------------------------------------------
+
+
+def test_truecolor_false_returns_the_static_default_banner(db):
+    assert load_welcome_banner(db, truecolor=False) == DEFAULT_WELCOME_BANNER
+
+
+def test_truecolor_true_gradients_the_bbs_name(db):
+    result = load_welcome_banner(db, truecolor=True)
+    assert result != DEFAULT_WELCOME_BANNER
+    assert "NetBBS" in result
+    assert "\x1b[38;2;" in result  # a real truecolor SGR sequence is present
+
+
+def test_truecolor_variant_still_ends_with_reset(db):
+    assert load_welcome_banner(db, truecolor=True).endswith("\x1b[0m")
+
+
+def test_truecolor_has_no_effect_on_a_custom_ans_banner(db):
+    # Trusted, SysOp-authored art is shown exactly as authored regardless
+    # of the caller's truecolor flag -- never routed through gradient_text.
+    banner_path(db).write_bytes("MY CUSTOM BANNER".encode("utf-8"))
+    set_welcome_banner_enabled(db, True)
+    assert load_welcome_banner(db, truecolor=False) == load_welcome_banner(db, truecolor=True)
+
+
 # -- welcome_banner_status -------------------------------------------------
 
 
@@ -162,6 +188,7 @@ class _LoginFakeSession:
         self.terminal_width = 80
         self.terminal_height = 24
         self.peer_address = "203.0.113.5"
+        self.supports_truecolor = False
 
     async def write(self, text: str) -> None:
         self.written.append(text)

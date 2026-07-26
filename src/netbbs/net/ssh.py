@@ -110,6 +110,17 @@ class SSHSession(Session):
             _, self.terminal_height = clamp_terminal_size(self.terminal_width, height)
         peer = process.get_extra_info("peername")
         self.peer_address = peer[0] if peer else None
+        # Unlike Telnet's NAWS-style fire-and-forget negotiation,
+        # asyncssh already awaits the client's pty-req (and any env
+        # requests bundled with it) before this process factory ever
+        # runs, so the client's forwarded environment is available here
+        # synchronously -- no lazy-resolution problem. Only an explicit
+        # COLORTERM is trusted; TERM alone (e.g. "xterm-256color") only
+        # proves 256-color support, not truecolor. Many SSH clients don't
+        # forward any env vars at all, in which case this stays at the
+        # Session base class's conservative `False` default.
+        colorterm = process.env.get("COLORTERM")
+        self.supports_truecolor = colorterm in ("truecolor", "24bit")
 
     async def write(self, text: str) -> None:
         # Same CRLF normalization TelnetSession.write performs, and the

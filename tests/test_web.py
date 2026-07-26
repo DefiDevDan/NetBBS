@@ -43,6 +43,28 @@ def test_session_handler_is_called_on_connect():
     assert calls == ["called"]
 
 
+def test_web_session_always_supports_truecolor():
+    # NetBBS controls the xterm.js client end-to-end, so truecolor
+    # support is unconditional here -- unlike Telnet/SSH, no
+    # negotiation is needed.
+    seen = []
+
+    async def handler(session: Session):
+        seen.append(session.supports_truecolor)
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            async with aiohttp.ClientSession() as client:
+                async with client.ws_connect(f"http://127.0.0.1:{server.port}/ws") as ws:
+                    await ws.close()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert seen == [True]
+
+
 def test_write_sends_output_message():
     async def handler(session: Session):
         await session.write_line("hello")

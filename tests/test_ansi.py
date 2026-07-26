@@ -6,10 +6,12 @@ import pytest
 
 from netbbs.rendering.ansi import (
     bg,
+    bg_rgb,
     clear_line,
     clear_screen,
     colored,
     fg,
+    fg_rgb,
     move_cursor,
     reset_scroll_region,
     restore_cursor,
@@ -41,6 +43,43 @@ def test_bg_rejects_out_of_range_color():
 def test_fg_accepts_boundary_values():
     fg(0)
     fg(255)  # must not raise
+
+
+def test_fg_rgb_produces_valid_truecolor_sgr_sequence():
+    assert fg_rgb(255, 0, 0) == "\x1b[38;2;255;0;0m"
+
+
+def test_bg_rgb_produces_valid_truecolor_sgr_sequence():
+    assert bg_rgb(0, 128, 255) == "\x1b[48;2;0;128;255m"
+
+
+def test_fg_rgb_rejects_out_of_range_component():
+    with pytest.raises(ValueError):
+        fg_rgb(256, 0, 0)
+    with pytest.raises(ValueError):
+        fg_rgb(0, -1, 0)
+    with pytest.raises(ValueError):
+        fg_rgb(0, 0, 300)
+
+
+def test_fg_rgb_accepts_boundary_values():
+    fg_rgb(0, 0, 0)
+    fg_rgb(255, 255, 255)  # must not raise
+
+
+def test_colored_with_tuple_fg_uses_truecolor():
+    result = colored("hello", fg_color=(255, 0, 0))
+    assert result == "\x1b[38;2;255;0;0mhello\x1b[0m"
+
+
+def test_colored_with_tuple_bg_uses_truecolor():
+    result = colored("hello", bg_color=(0, 128, 255))
+    assert result == "\x1b[48;2;0;128;255mhello\x1b[0m"
+
+
+def test_colored_combines_bold_with_tuple_fg():
+    result = colored("hello", fg_color=(255, 0, 0), bold=True)
+    assert result == "\x1b[1m\x1b[38;2;255;0;0mhello\x1b[0m"
 
 
 def test_colored_with_no_options_returns_text_unchanged():

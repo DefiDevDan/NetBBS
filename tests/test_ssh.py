@@ -438,6 +438,7 @@ def test_ssh_session_reports_the_authenticated_username():
 
     class _FakeProcess:
         term_size = (80, 24, 0, 0)
+        env: dict = {}
 
         def get_extra_info(self, name, default=None):
             if name == "username":
@@ -475,6 +476,50 @@ def test_session_reports_initial_terminal_size(db):
 
     asyncio.run(scenario())
     assert sizes == [(100, 40)]
+
+
+# -- truecolor capability detection -----------------------------------------
+
+
+def _colorterm_scenario(db, colorterm: str | None):
+    create_user(db, "alice", password="hunter2", user_level=10)
+    results = []
+
+    async def handler(session: Session):
+        results.append(session.supports_truecolor)
+
+    async def scenario():
+        server = await _run_server(db, handler)
+        try:
+            env = {"COLORTERM": colorterm} if colorterm is not None else {}
+            async with asyncssh.connect(
+                "127.0.0.1", server.port, username="alice", password="hunter2", known_hosts=None
+            ) as conn:
+                async with conn.create_process(
+                    term_type="ansi", term_size=(80, 24), encoding=None, env=env
+                ):
+                    pass
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    return results
+
+
+def test_session_supports_truecolor_when_colorterm_is_truecolor(db):
+    assert _colorterm_scenario(db, "truecolor") == [True]
+
+
+def test_session_supports_truecolor_when_colorterm_is_24bit(db):
+    assert _colorterm_scenario(db, "24bit") == [True]
+
+
+def test_session_does_not_support_truecolor_without_colorterm(db):
+    assert _colorterm_scenario(db, None) == [False]
+
+
+def test_session_does_not_support_truecolor_for_other_colorterm_values(db):
+    assert _colorterm_scenario(db, "256color") == [False]
 
 
 def test_terminal_resize_mid_session_updates_session_size(db):

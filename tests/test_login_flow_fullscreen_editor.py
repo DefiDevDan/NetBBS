@@ -120,6 +120,19 @@ def test_profile_toggle_switches_the_preference_on_and_off(db, alice):
     assert "now off" in _written_text(session)
 
 
+def test_profile_color_depth_toggle_cycles_auto_truecolor_256(db, alice):
+    from netbbs.net.color_depth_preference import color_depth_override
+
+    session = FakeSession(["c", "c", "c", "b"])
+    asyncio.run(login_flow._edit_profile(session, db, alice))
+    text = _written_text(session)
+    assert "Color depth is now truecolor" in text
+    assert "Color depth is now 256" in text
+    assert "Color depth is now auto" in text
+    # Three presses of a 3-state cycle return to the starting state.
+    assert color_depth_override(db, alice) is None
+
+
 # -- composing a new post ---------------------------------------------------
 
 
