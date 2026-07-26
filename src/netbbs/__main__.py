@@ -22,7 +22,7 @@ from pathlib import Path
 
 from netbbs.auth.users import count_sysops
 from netbbs.backup import remove_pid_file, write_pid_file
-from netbbs.chat import ChatHub, MessageMailbox, PresenceRegistry
+from netbbs.chat import ChatHub, DirectChatInvites, MessageMailbox, PresenceRegistry
 from netbbs.files.storage import purge_incoming_staging
 from netbbs.session_history import reconcile_interrupted_sessions
 from netbbs.link.boards import LinkConfigSnapshot, LinkContext
@@ -423,6 +423,7 @@ async def run(
     hub = ChatHub()
     presence = PresenceRegistry()
     mailbox = MessageMailbox()
+    direct_invites = DirectChatInvites()
     throttle = _build_throttle(config)
     throttle_config = config.throttle
     if session_registry is None:
@@ -522,6 +523,7 @@ async def run(
                     node_identity=node_identity, link_node=link_node, link_config=link_config_snapshot
                 ) if link_node is not None else None
             ),
+            direct_invites=direct_invites,
         )
 
     async def ssh_session_handler(session):
@@ -542,6 +544,7 @@ async def run(
                     node_identity=node_identity, link_node=link_node, link_config=link_config_snapshot
                 ) if link_node is not None else None
             ),
+            direct_invites=direct_invites,
         )
 
     servers: list = []

@@ -130,7 +130,8 @@ def test_presence_left_even_if_main_menu_raises(db, monkeypatch):
         return user
 
     async def broken_main_menu(
-        session, db, hub, presence, mailbox, history, user, *, node_controls=None, lane=None, link_context=None
+        session, db, hub, presence, mailbox, history, user, *,
+        node_controls=None, lane=None, link_context=None, direct_invites=None,
     ):
         raise RuntimeError("simulated failure")
 

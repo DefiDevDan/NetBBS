@@ -92,10 +92,10 @@ def db(tmp_path):
     return Database(tmp_path / "node.db")
 
 
-async def _run_main_menu(session, database, user, node_controls, *, keys=None):
+async def _run_main_menu(session, database, user, node_controls, *, keys=None, lane=None, direct_invites=None):
     await _main_menu(
         session, database, ChatHub(), PresenceRegistry(), MessageMailbox(), InputHistory(), user,
-        node_controls=node_controls,
+        node_controls=node_controls, lane=lane, direct_invites=direct_invites,
     )
 
 
@@ -246,7 +246,7 @@ def test_who_screen_delivers_a_message_to_the_selected_user(tmp_path):
         other_task = asyncio.create_task(_hold_registered(registry, other, "bob"))
         await asyncio.sleep(0)
 
-        session = FakeSession(["w", "0", "1", "Hi there!", "l", "y"])
+        session = FakeSession(["w", "0", "1", "m", "Hi there!", "l", "y"])
         registry.enter(session)
         registry.mark_authenticated(session, "alice")
         try:
@@ -275,7 +275,7 @@ def test_who_screen_blank_message_cancels_without_sending(tmp_path):
         other_task = asyncio.create_task(_hold_registered(registry, other, "bob"))
         await asyncio.sleep(0)
 
-        session = FakeSession(["w", "0", "1", "", "l", "y"])  # blank message
+        session = FakeSession(["w", "0", "1", "m", "", "l", "y"])  # blank message
         registry.enter(session)
         registry.mark_authenticated(session, "alice")
         try:

@@ -86,6 +86,7 @@ from netbbs.boards import (
 from netbbs.boards.categories import Category, list_subcategories, list_top_level_categories
 from netbbs.chat import (
     ChatHub,
+    DirectChatInvites,
     MessageMailbox,
     PresenceRegistry,
     format_with_preference,
@@ -128,7 +129,13 @@ from netbbs.moderation import BoardPermission, has_permission, is_blocked
 from netbbs.net.admin_flow import admin_menu
 from netbbs.net.char_input import REDRAW_KEY, InputHistory, reject_unhandled_key
 from netbbs.net.confirm import prompt_yes_no
-from netbbs.net.chat_flow import browse_channels, has_visible_channels, list_visible_channels_for
+from netbbs.net.chat_flow import (
+    browse_channels,
+    has_visible_channels,
+    list_visible_channels_for,
+    run_direct_chat_invite_flow,
+    run_direct_chat_loop,
+)
 from netbbs.net.color_depth_preference import color_depth_override, set_color_depth_override
 from netbbs.net.editor_preference import fullscreen_editor_enabled, set_fullscreen_editor_enabled
 from netbbs.net.file_flow import browse_file_areas, enter_file_area, has_visible_areas
@@ -221,6 +228,7 @@ async def handle_session(
     shutdown_scheduler: SequenceScheduler | None = None,
     lane: DatabaseLane | None = None,
     link_context: LinkContext | None = None,
+    direct_invites: DirectChatInvites | None = None,
 ) -> None:
     """
     Top-level per-connection entry point.
@@ -317,7 +325,7 @@ async def handle_session(
     try:
         await _run_authenticated_session(
             session, db, hub, presence, mailbox, throttle, throttle_config,
-            node_controls=node_controls, lane=lane, link_context=link_context,
+            node_controls=node_controls, lane=lane, link_context=link_context, direct_invites=direct_invites,
         )
     finally:
         session_registry.leave(session)
@@ -341,6 +349,7 @@ async def _run_authenticated_session(
     node_controls: NodeControls | None = None,
     lane: DatabaseLane | None = None,
     link_context: LinkContext | None = None,
+    direct_invites: DirectChatInvites | None = None,
 ) -> None:
     """The login-through-logoff body of a *Telnet/web* connection,
     wrapped by `handle_session`'s maintenance-mode check and session-
@@ -410,7 +419,7 @@ async def _run_authenticated_session(
 
     await run_authenticated_session(
         session, db, hub, presence, mailbox, login_result,
-        node_controls=node_controls, lane=lane, link_context=link_context,
+        node_controls=node_controls, lane=lane, link_context=link_context, direct_invites=direct_invites,
     )
 
 
@@ -487,6 +496,7 @@ async def run_authenticated_session(
     node_controls: NodeControls | None = None,
     lane: DatabaseLane | None = None,
     link_context: LinkContext | None = None,
+    direct_invites: DirectChatInvites | None = None,
 ) -> None:
     """
     The authenticated-through-logoff body of a connection (GitHub issue
@@ -589,7 +599,7 @@ async def run_authenticated_session(
     try:
         await _main_menu(
             session, db, hub, presence, mailbox, history, user,
-            node_controls=node_controls, lane=lane, link_context=link_context,
+            node_controls=node_controls, lane=lane, link_context=link_context, direct_invites=direct_invites,
         )
     finally:
         presence.leave(user.username)
@@ -662,6 +672,7 @@ async def handle_ssh_session(
     shutdown_scheduler: SequenceScheduler | None = None,
     lane: DatabaseLane | None = None,
     link_context: LinkContext | None = None,
+    direct_invites: DirectChatInvites | None = None,
 ) -> None:
     """
     SSH-specific top-level entry point (GitHub issue #25) — the
@@ -728,7 +739,7 @@ async def handle_ssh_session(
             return
         await run_authenticated_session(
             session, db, hub, presence, mailbox, result,
-            node_controls=node_controls, lane=lane, link_context=link_context,
+            node_controls=node_controls, lane=lane, link_context=link_context, direct_invites=direct_invites,
         )
     finally:
         session_registry.leave(session)
@@ -989,6 +1000,7 @@ async def _main_menu(
     node_controls: NodeControls | None = None,
     lane: DatabaseLane | None = None,
     link_context: LinkContext | None = None,
+    direct_invites: DirectChatInvites | None = None,
 ) -> None:
     """
     The main menu, now dispatching immediately on a single keystroke
@@ -1008,10 +1020,48 @@ async def _main_menu(
     unrecognized key (design doc): that just sounds a bell and
     leaves the screen exactly as it was, no reprinted prompt, since
     nothing was actually communicated worth a fresh line for.
+
+    `direct_invites` (design doc §6.3): every loop iteration races the
+    ordinary `read_key()` against `direct_invites.pending_for(session).
+    arrived_event` (when something is actually pending) via `asyncio.
+    wait(..., return_when=FIRST_COMPLETED)` -- the same cancel-a-live-
+    pending-read pattern `netbbs.net.chat_flow._chat_loop` already uses
+    for a kick, applied here to let an invite interrupt this specific
+    idle read the moment it arrives. One event that stays set until
+    consumed is what makes this cover both agreed behaviors for free:
+    idle right now -> the race resolves on the invite side immediately;
+    busy elsewhere when it arrived -> the event is already set by the
+    time this loop's next iteration starts racing again after returning
+    here, so that iteration's own race resolves just as instantly. No
+    separate queued-notice mechanism exists (or is needed) for this --
+    see `netbbs.chat.direct_invites.DirectChatInvite`'s own docstring.
+    Deliberately scoped to only this one loop, not any other hotkey read
+    elsewhere (the Who screen's own picker, admin screens, etc.) -- every
+    other screen simply falls under "shown once back here."
     """
     await _draw_main_menu(session, db, mailbox, user, node_controls=node_controls)
     while True:
-        choice = (await session.read_key()).lower()
+        key_task = asyncio.create_task(session.read_key())
+        if direct_invites is not None:
+            # Always races, every iteration -- not only when something
+            # already happens to be pending. `arrival_event` is a
+            # persistent per-session event a waiter can start waiting on
+            # before any invite has ever arrived at all; without that,
+            # an invite landing while this exact await is already in
+            # flight (idle, nothing racing it yet) would only be noticed
+            # on the *next* keystroke instead of interrupting immediately
+            # -- see that method's own docstring.
+            invite_task = asyncio.create_task(direct_invites.arrival_event(session).wait())
+            done, _pending = await asyncio.wait({key_task, invite_task}, return_when=asyncio.FIRST_COMPLETED)
+            if invite_task in done:
+                key_task.cancel()
+                await asyncio.gather(key_task, return_exceptions=True)
+                direct_invites.clear_arrival(session)
+                await _handle_incoming_invite(session, direct_invites, hub, presence, user)
+                continue
+            invite_task.cancel()
+            await asyncio.gather(invite_task, return_exceptions=True)
+        choice = (await key_task).lower()
 
         if not account_still_active(db, user):
             # GitHub issue #29: the cross-process revalidation
@@ -1052,6 +1102,7 @@ async def _main_menu(
             await _enter_communities(
                 session, db, hub, presence, mailbox, history, user,
                 node_controls=node_controls, lane=lane, link_context=link_context,
+                direct_invites=direct_invites,
             )
             await _draw_main_menu(session, db, mailbox, user, node_controls=node_controls)
         elif choice == "u" and _has_uncategorized_resources(db, user):
@@ -1059,6 +1110,7 @@ async def _main_menu(
             await _enter_uncategorized(
                 session, db, hub, presence, mailbox, history, user,
                 node_controls=node_controls, lane=lane, link_context=link_context,
+                direct_invites=direct_invites,
             )
             await _draw_main_menu(session, db, mailbox, user, node_controls=node_controls)
         elif choice == "j":
@@ -1066,6 +1118,7 @@ async def _main_menu(
             await _jump_to(
                 session, db, hub, presence, mailbox, history, user,
                 node_controls=node_controls, lane=lane, link_context=link_context,
+                direct_invites=direct_invites,
             )
             await _draw_main_menu(session, db, mailbox, user, node_controls=node_controls)
         elif choice == "n":
@@ -1124,7 +1177,7 @@ async def _main_menu(
             await _draw_main_menu(session, db, mailbox, user, node_controls=node_controls)
         elif choice == "w" and node_controls is not None:
             await session.write_line("")
-            await _caller_who_screen(session, db, node_controls, user)
+            await _caller_who_screen(session, db, node_controls, user, hub, presence, direct_invites, lane)
             await _draw_main_menu(session, db, mailbox, user, node_controls=node_controls)
         elif choice == "i" and list_pending_invitations_for_user(db, user):
             await session.write_line("")
@@ -1152,6 +1205,50 @@ async def _main_menu(
             await _draw_main_menu(session, db, mailbox, user, node_controls=node_controls)
         else:
             await session.write(reject_unhandled_key(choice))
+
+
+async def _handle_incoming_invite(
+    session: Session, direct_invites: DirectChatInvites, hub: ChatHub, presence: PresenceRegistry, user: User
+) -> None:
+    """
+    Runs once `_main_menu`'s own read/invite race (design doc §6.3,
+    that function's own docstring) resolves in favor of a pending
+    direct-chat invite -- shows the accept/decline prompt, records the
+    answer, and on acceptance runs `netbbs.net.chat_flow._direct_chat_
+    loop` directly (the same "blocking screen call, returns when done"
+    shape entering any other screen from `_main_menu` already has).
+
+    `direct_invites.pending_for(session)` can legitimately return `None`
+    here -- the arrival event fired, but the invite it signaled has
+    since expired (the inviter's own 60s wait timed out) before this
+    function got a chance to run, e.g. because this session was busy
+    elsewhere the whole time and only just returned to the main menu.
+    That's a safe no-op, not an error: there is nothing left to show.
+    """
+    invite = direct_invites.pending_for(session)
+    if invite is None:
+        return
+
+    await session.write_line(
+        colored(
+            f"\r\n*** {sanitize_text(invite.inviter.username)} wants to start a direct chat. ***",
+            fg_color=ALERT_COLOR, bold=True,
+        )
+    )
+    await session.write("Accept? [y/N]: ")
+    answer = (await session.read_key()).lower()
+    await session.write_line("")
+    accepted = answer == "y"
+    if not direct_invites.respond(session, accepted=accepted):
+        # Expired/cancelled between the prompt being shown and this
+        # answer -- same "no longer valid" tolerance as everywhere else
+        # in this feature (netbbs.chat.direct_invites's own docstrings).
+        await session.write_line(colored("That invitation is no longer valid.", fg_color=MUTED_COLOR))
+        return
+    if accepted:
+        await run_direct_chat_loop(session, hub, presence, user, invite.inviter, invite.room_token)
+    else:
+        await session.write_line(colored("Declined.", fg_color=MUTED_COLOR))
 
 
 @dataclass(frozen=True)
@@ -1694,6 +1791,7 @@ async def _resource_type_menu(
     title_prefix: str | None,
     lane: DatabaseLane | None = None,
     link_context: LinkContext | None = None,
+    direct_invites: DirectChatInvites | None = None,
 ) -> None:
     """
     Shared sub-menu for `[C]ommunities`/`[U]ncategorized`/`[J]ump to...`
@@ -1762,7 +1860,7 @@ async def _resource_type_menu(
                 await browse_channels(
                     session, lane, hub, presence, mailbox, history, user, session_registry=session_registry,
                     community_id=community_id, community_scoped=community_scoped, title_prefix=title_prefix,
-                    link_context=link_context,
+                    link_context=link_context, direct_invites=direct_invites,
                 )
             else:
                 await session.write_line(
@@ -1800,6 +1898,7 @@ async def _enter_communities(
     node_controls: NodeControls | None,
     lane: DatabaseLane | None = None,
     link_context: LinkContext | None = None,
+    direct_invites: DirectChatInvites | None = None,
 ) -> None:
     """`[C]ommunities` entry point -- pick one via the shared picker,
     then the shared resource-type sub-menu scoped to it."""
@@ -1818,6 +1917,7 @@ async def _enter_communities(
         session, db, hub, presence, mailbox, history, user, node_controls=node_controls,
         community_id=selected.id, community_scoped=True,
         menu_header=selected.name, title_prefix=selected.name, lane=lane, link_context=link_context,
+        direct_invites=direct_invites,
     )
 
 
@@ -1833,6 +1933,7 @@ async def _enter_uncategorized(
     node_controls: NodeControls | None,
     lane: DatabaseLane | None = None,
     link_context: LinkContext | None = None,
+    direct_invites: DirectChatInvites | None = None,
 ) -> None:
     """`[U]ncategorized` entry point -- straight into the shared
     resource-type sub-menu, no picker needed (there's only one
@@ -1841,6 +1942,7 @@ async def _enter_uncategorized(
         session, db, hub, presence, mailbox, history, user, node_controls=node_controls,
         community_id=None, community_scoped=True,
         menu_header="Uncategorized", title_prefix="Uncategorized", lane=lane, link_context=link_context,
+        direct_invites=direct_invites,
     )
 
 
@@ -1856,6 +1958,7 @@ async def _jump_to(
     node_controls: NodeControls | None,
     lane: DatabaseLane | None = None,
     link_context: LinkContext | None = None,
+    direct_invites: DirectChatInvites | None = None,
 ) -> None:
     """`[J]ump to...` entry point -- the shared resource-type sub-menu
     with no Community filter at all (`community_scoped=False`), reusing
@@ -1868,6 +1971,7 @@ async def _jump_to(
         session, db, hub, presence, mailbox, history, user, node_controls=node_controls,
         community_id=None, community_scoped=False,
         menu_header="Jump to...", title_prefix=None, lane=lane, link_context=link_context,
+        direct_invites=direct_invites,
     )
 
 
@@ -2535,7 +2639,14 @@ def _who_entry_description(db: Database, entry: SessionSummary) -> str:
 
 
 async def _caller_who_screen(
-    session: Session, db: Database, node_controls: NodeControls, user: User
+    session: Session,
+    db: Database,
+    node_controls: NodeControls,
+    user: User,
+    hub: ChatHub,
+    presence: PresenceRegistry,
+    direct_invites: DirectChatInvites | None,
+    lane: DatabaseLane | None,
 ) -> None:
     """
     Issue #99: the caller-facing counterpart to the SysOp `[N]ode`
@@ -2544,7 +2655,7 @@ async def _caller_who_screen(
     ordinary caller should actually see and do: no peer addresses (the
     SysOp version's unauthenticated-session fallback shows one; this
     never does), no disconnect action, just "who else is here" plus an
-    optional one-off message.
+    optional one-off message or (design doc §6.3) a direct-chat invite.
 
     Unauthenticated sessions (still at the login prompt) are excluded
     entirely -- there's no account to message, and `_who_entry_name`'s
@@ -2554,9 +2665,17 @@ async def _caller_who_screen(
     A target who has opted out (`netbbs.messaging_preferences.
     accepts_direct_messages`, default `True`) still appears in the list
     -- this screen answers "who's online", not "who's reachable" -- but
-    sending to them is refused up front, before even prompting for
-    message text, with a plain explanation rather than a silently
-    swallowed send.
+    acting on them at all is refused up front, before offering either
+    action, with a plain explanation rather than a silently swallowed
+    attempt. Choosing not to receive unsolicited direct messages
+    reasonably also means not receiving direct-chat invites -- one
+    check gates both, not two independent ones.
+
+    `[I]nvite to chat` is only offered when both `direct_invites` and
+    `lane` are given (`run_direct_chat_invite_flow` needs both) -- same
+    degrade-gracefully-in-tests shape every other optional feature on
+    this menu already has; the existing `[M]essage` action needs
+    neither and is always available.
     """
     async def _load_entries() -> list[SessionSummary]:
         return [
@@ -2591,6 +2710,27 @@ async def _caller_who_screen(
         await session.write_line(
             colored(f"{target.username} has opted out of receiving direct messages.", fg_color=MUTED_COLOR)
         )
+        return
+
+    offer_invite = direct_invites is not None and lane is not None
+    options = [menu_key("M", "essage")]
+    if offer_invite:
+        options.append(menu_key("I", "nvite to chat"))
+    options.append(menu_key("B", "ack"))
+    await session.write(f"{'  '.join(options)}: ")
+    action = (await session.read_key()).lower()
+    await session.write_line("")
+
+    if action == "b":
+        return
+    if offer_invite and action == "i":
+        assert direct_invites is not None and lane is not None  # offer_invite's own condition
+        await run_direct_chat_invite_flow(
+            session, lane, hub, presence, direct_invites, node_controls.session_registry, user, target,
+        )
+        return
+    if action != "m":
+        await session.write(reject_unhandled_key(action))
         return
 
     await session.write(f"Message to {selected.username}: ")

@@ -94,6 +94,8 @@ from netbbs.chat import (
     ChannelMessage,
     ChatHub,
     ChatModerationError,
+    DirectChatInvite,
+    DirectChatInvites,
     DurationError,
     MembershipError,
     MessageMailbox,
@@ -136,6 +138,7 @@ from netbbs.communities import get_effective_min_age, get_effective_name_require
 from netbbs.directory import VCard, get_vcard
 from netbbs.link.boards import LinkContext
 from netbbs.link.channels import queue_channel_message_if_linked
+from netbbs.messaging_preferences import accepts_direct_messages
 from netbbs.moderation import ChannelPermission, has_permission
 from netbbs.net.char_input import Completer, InputHistory, LiveInputBuffer
 from netbbs.net.char_input import move_cursor as relative_move_cursor
@@ -185,6 +188,7 @@ async def browse_channels(
     title_prefix: str | None = None,
     initial_channel: Channel | None = None,
     link_context: LinkContext | None = None,
+    direct_invites: DirectChatInvites | None = None,
 ) -> None:
     """
     Entry point: browse from the top level, then run the chat loop for
@@ -205,6 +209,13 @@ async def browse_channels(
     `netbbs.net.login_flow.handle_session`'s real node-wide registry
     entirely (mainly tests not exercising this specific feature); every
     real connection always has one.
+
+    `direct_invites` (design doc §6.3), passed straight through to
+    `_chat_loop`/`ChatCommandContext`, is what `/dm` uses to send a
+    mutual invite to a live, fullscreen 1:1 direct chat -- same
+    optional-with-`None`-default shape as `session_registry` above, for
+    the identical reason (a caller that bypasses real node-wide wiring
+    just gets `/dm` reporting itself unavailable rather than a crash).
 
     A small outer loop, not a single call (design doc §8): `/leave`
     returns here to pick again,
@@ -264,7 +275,7 @@ async def browse_channels(
 
         action = await _chat_loop(
             session, lane, hub, presence, mailbox, history, channel, user,
-            session_registry=session_registry, link_context=link_context,
+            session_registry=session_registry, link_context=link_context, direct_invites=direct_invites,
         )
         if isinstance(action, _SwitchTo):
             channel = action.channel
@@ -784,6 +795,7 @@ class ChatCommandContext:
     user: User
     participant_id: ParticipantId
     session_registry: ActiveSessionRegistry | None = None
+    direct_invites: DirectChatInvites | None = None
 
 
 @dataclass(frozen=True)
@@ -1061,6 +1073,42 @@ async def _handle_private(ctx: ChatCommandContext, args: str) -> ChatAction | No
 
 async def _handle_close(ctx: ChatCommandContext, args: str) -> ChatAction:
     return _ExitPrivate()
+
+
+async def _handle_dm(ctx: ChatCommandContext, args: str) -> None:
+    """
+    `/dm <user>` (design doc §6.3): sends a mutual invite to a live,
+    fullscreen 1:1 direct chat -- distinct from `/msg`/`/private`, both
+    one-sided (see `run_direct_chat_invite_flow`'s own docstring for the
+    full contrast: neither pulls the target into any shared view or asks
+    them to explicitly agree to anything). Suspends this channel chat
+    for the duration of the invite wait and, if accepted, the direct
+    chat itself -- the same "blocking screen call, returns when done"
+    shape entering any other screen from here would already have, not a
+    new kind of interruption.
+
+    `ctx.direct_invites`/`ctx.session_registry` are both optional on
+    `ChatCommandContext` (not every caller of `_chat_loop` threads a real
+    node-wide registry through -- see that dataclass's own docstring);
+    a caller that bypasses them entirely (mainly tests) gets a plain
+    "not available" message rather than a crash.
+    """
+    if ctx.direct_invites is None or ctx.session_registry is None:
+        await ctx.session.write_line(colored("Direct chat is not available from here.", fg_color=MUTED_COLOR))
+        return
+
+    target_name = args.split(maxsplit=1)[0] if args.split() else ""
+    if not target_name:
+        await _show_usage(ctx.session, "dm")
+        return
+
+    target = await _resolve_target(ctx.session, ctx.lane, target_name)
+    if target is None:
+        return
+
+    await run_direct_chat_invite_flow(
+        ctx.session, ctx.lane, ctx.hub, ctx.presence, ctx.direct_invites, ctx.session_registry, ctx.user, target,
+    )
 
 
 async def _handle_help(ctx: ChatCommandContext, args: str) -> None:
@@ -1900,6 +1948,7 @@ _COMMAND_INFO: dict[str, tuple[str, str]] = {
     "msg": ("/msg <user> <text>", "Send a one-off private message to an online user."),
     "private": ("/private <user>", "Enter a private conversation with an online user."),
     "close": ("/close", "Leave the current private conversation."),
+    "dm": ("/dm <user>", "Invite an online user to a live, fullscreen direct chat."),
     "help": ("/help [command]", "List available commands, or show detail for one."),
     "me": ("/me <action>", 'Send an action message (e.g. "* alice waves").'),
     "nick": ("/nick [name]", "Set your display alias; a bare /nick clears it."),
@@ -1930,6 +1979,7 @@ _COMMANDS: dict[str, CommandHandler] = {
     "msg": _handle_msg,
     "private": _handle_private,
     "close": _handle_close,
+    "dm": _handle_dm,
     "help": _handle_help,
     "?": _handle_help,  # terse alias (design doc) -- a genuinely
                          # distinct trigger for /help, not a second name
@@ -2734,6 +2784,7 @@ async def _chat_loop(
     *,
     session_registry: ActiveSessionRegistry | None = None,
     link_context: LinkContext | None = None,
+    direct_invites: DirectChatInvites | None = None,
 ) -> ChatAction:
     """
     Real-time chat within `channel`, until the user types /quit, /leave,
@@ -3081,6 +3132,7 @@ async def _chat_loop(
                                 user=user,
                                 participant_id=participant_id,
                                 session_registry=session_registry,
+                                direct_invites=direct_invites,
                             )
                             action = await _dispatch_command(ctx, line)
                             if isinstance(action, _EnterPrivate):
@@ -3121,6 +3173,7 @@ async def _chat_loop(
                                 user=user,
                                 participant_id=participant_id,
                                 session_registry=session_registry,
+                                direct_invites=direct_invites,
                             )
                             if not presence.is_online(private_target.username):
                                 await session.write_line(
@@ -3335,3 +3388,375 @@ async def _chat_loop(
             record_message, channel, kind="leave", author_label=user.username, author_fingerprint=user.fingerprint
         )
         await hub.broadcast(channel.name, recorded_leave, exclude={participant_id})
+
+
+# -- direct chat: mutual invite/accept 1:1 fullscreen chat (design doc §6.3) --
+
+# Namespaces a DirectChatInvite's own room_token as a ChatHub channel
+# name -- ChatHub itself needs no changes for this (channel_name is
+# already just a string key); the prefix only exists so a direct-chat
+# room can never collide with a real, named channel someone created.
+_DM_CHANNEL_PREFIX = "__dm__:"
+
+
+@dataclass(frozen=True)
+class _DirectChatClosedNotice:
+    """Delivered through `ChatHub.broadcast` when one side of a direct
+    chat leaves (`/close`, a dropped connection, or account revocation
+    disconnecting them elsewhere) -- lets the *other* side's own
+    `receive_loop` end the room for them too, the same `_KickNotice`-
+    shaped "a distinct object routed through the same queue, recognized
+    as ending the loop" idiom `_chat_loop` already uses. Broadcasting
+    this is harmless even when nobody is left to receive it (the common
+    case: the other side already left first, via their own identical
+    broadcast) -- `ChatHub.broadcast` to an empty channel is a no-op."""
+
+
+def _render_direct_chat_status_line(other_user: User, presence: PresenceRegistry) -> list[_StatusGroup]:
+    """The direct-chat pinned status row's content -- deliberately far
+    smaller than `_render_chat_status_line`: no topic, no roster, no
+    moderator privileges/mute state, none of which mean anything for
+    exactly two already-consenting participants. Just who this room is
+    with, and whether they're currently away."""
+    groups: list[_StatusGroup] = [
+        [
+            _StatusSpan("Direct chat with ", fg_color=MUTED_COLOR),
+            _StatusSpan(sanitize_text(other_user.username), fg_color=ACCENT_COLOR, bold=True),
+        ],
+    ]
+    if presence.is_away(other_user.username):
+        groups.append([_StatusSpan("(away)", fg_color=MUTED_COLOR)])
+    return groups
+
+
+async def _repaint_direct_chat_status_line(
+    session: Session, user: User, other_user: User, presence: PresenceRegistry
+) -> None:
+    """Direct-chat sibling of `_repaint_status_line` -- no `lane.run`
+    round trip at all, since nothing here needs a database read (see
+    `_render_direct_chat_status_line`'s own docstring). `user` is the
+    viewer (controls the row's own active/away background look, same as
+    `_repaint_status_line`'s identical parameter); `other_user` is who
+    this room is with."""
+    height = session.terminal_height
+    if height < _PINNED_UI_MIN_HEIGHT:
+        return
+    groups = _render_direct_chat_status_line(other_user, presence)
+    line = _compose_status_line(groups, session.terminal_width, active=not presence.is_away(user.username))
+    await session.write(
+        save_cursor()
+        + set_scroll_region(1, height - 2)
+        + move_cursor(height - 1, 1)
+        + clear_line()
+        + line
+        + restore_cursor()
+    )
+
+
+@dataclass
+class _DirectChatPinnedUIState:
+    """Direct-chat sibling of `_PinnedUIState` (GitHub issue #46) -- same
+    resize-tracking shape, calling this module's own DM status-line
+    repaint instead of the channel one. Kept as its own small class
+    rather than generalizing `_PinnedUIState` itself: the two would
+    otherwise need an injectable repaint callback for one caller, and
+    touching that already-proven, heavily-exercised channel-chat class
+    isn't worth the risk for what a dozen-line sibling already covers."""
+
+    active: bool
+
+    async def sync(
+        self, session: Session, user: User, other_user: User, presence: PresenceRegistry, live_buffer: LiveInputBuffer
+    ) -> bool:
+        now_active = session.terminal_height >= _PINNED_UI_MIN_HEIGHT
+        if now_active != self.active:
+            if now_active:
+                await session.write(clear_screen() + set_scroll_region(1, session.terminal_height - 2))
+                await _repaint_direct_chat_status_line(session, user, other_user, presence)
+                await _repaint_input_row(session, live_buffer, session.terminal_height)
+            else:
+                await session.write(reset_scroll_region() + clear_screen())
+            self.active = now_active
+        return self.active
+
+
+async def run_direct_chat_loop(
+    session: Session,
+    hub: ChatHub,
+    presence: PresenceRegistry,
+    user: User,
+    other_user: User,
+    room_token: str,
+) -> None:
+    """
+    Real-time 1:1 direct chat, until either side types `/close`, the
+    connection drops, or the other side leaves first -- design doc
+    §6.3's mutual invite/accept direct chat. Entered only once both sides
+    have already agreed via `netbbs.chat.direct_invites.
+    DirectChatInvites` (`netbbs.net.login_flow._handle_incoming_invite`
+    and `run_direct_chat_invite_flow` below both call this directly once
+    accepted) -- there is nothing left to negotiate by the time this
+    function starts, and nothing here knows or cares how the invite was
+    delivered (live interrupt or queued until the next checkpoint).
+
+    A deliberately smaller sibling of `_chat_loop`: no channel, no
+    persistence/scrollback (design doc: direct chat is fully ephemeral,
+    the same "chat is inherently ephemeral" stance `netbbs.chat.hub`'s
+    own module docstring already takes for channels), no moderation/
+    mute/ban (no such concept for exactly two already-consenting
+    participants), and no command surface beyond `/close` -- reuses the
+    same pinned-status-row/pinned-input-row VT100 scroll-region
+    machinery `_chat_loop` already established (`_repaint_input_row`/
+    `_print_and_redraw_input`/`_print_candidates_and_redraw_input`/
+    `_enter_content_region`, `netbbs.rendering`'s scroll-region helpers)
+    rather than duplicating it, with its own much smaller status-line
+    renderer (`_render_direct_chat_status_line`) in place of the
+    channel-specific one, and no command-dispatch table at all (`/close`
+    is recognized directly in `send_loop`, not routed through
+    `ChatCommandContext`/`_dispatch_command`, both of which require a
+    real persisted `Channel` this ephemeral room deliberately has none
+    of).
+
+    No account-revocation re-check at this boundary, unlike `_chat_loop`'s
+    own send_loop -- `netbbs.net.login_flow._watch_for_account_
+    revocation`'s background watcher (started once, for the whole
+    authenticated session, regardless of which screen is currently
+    active) already enforces this everywhere a session might be,
+    including here; `_chat_loop`'s own explicit check is a *tighter*
+    bound at its own particular checkpoint, not the only enforcement, so
+    skipping it here doesn't reopen any gap.
+
+    `room_token` (from the `DirectChatInvite` both sides already share a
+    reference to -- see that class's own docstring) names a synthetic
+    `ChatHub` channel scoped to exactly this one pair for exactly this
+    one conversation's lifetime. `ParticipantId.session_key=id(session)`
+    matches `_chat_loop`'s own single existing call site's convention --
+    unlike the Who picker's own `(#N)` reference (issue #113), nothing
+    here ever displays this value to a user, so there is no stability/
+    opacity concern to fix.
+    """
+    room = f"{_DM_CHANNEL_PREFIX}{room_token}"
+    participant_id = ParticipantId(username=user.username, session_key=id(session))
+    queue = hub.join(room, participant_id)
+    try:
+        pinned_ui_enabled = session.terminal_height >= _PINNED_UI_MIN_HEIGHT
+        live_buffer = LiveInputBuffer()
+        lock = asyncio.Lock()
+        pinned_ui = _DirectChatPinnedUIState(active=pinned_ui_enabled)
+        if pinned_ui_enabled:
+            await session.write(clear_screen() + set_scroll_region(1, session.terminal_height - 2))
+
+        close_hint = menu_key("/close", " to leave")
+        await session.write_line(
+            f"\r\nDirect chat with "
+            f"{colored(sanitize_text(other_user.username), fg_color=ACCENT_COLOR, bold=True)}. "
+            f"Type {close_hint}."
+        )
+        if pinned_ui_enabled:
+            await _repaint_direct_chat_status_line(session, user, other_user, presence)
+            # Neither task is running yet (both are created below) -- no
+            # concurrent writer exists at this exact point, so this first
+            # paint needs no lock, matching _chat_loop's own entry.
+            await _repaint_input_row(session, live_buffer, session.terminal_height)
+
+        async def deliver(text: str) -> None:
+            """Same shape as `_chat_loop`'s own `deliver` closure --
+            installed as `session.pinned_notice_hook` for the identical
+            reason (an out-of-band system notice, e.g. a node-shutdown
+            broadcast, must reach this session through the pinned-row-
+            aware path too, not a raw write that assumes a plain
+            scrolling prompt)."""
+            async with lock:
+                if not await pinned_ui.sync(session, user, other_user, presence, live_buffer):
+                    await session.write_line(text)
+                    return
+                await _print_and_redraw_input(session, text, live_buffer, session.terminal_height)
+
+        session.pinned_notice_hook = deliver
+
+        async def receive_loop() -> None:
+            while True:
+                message = await queue.get()
+                if isinstance(message, _DirectChatClosedNotice):
+                    await deliver(
+                        colored(
+                            f"\r\n*** {sanitize_text(other_user.username)} has left the direct chat.",
+                            fg_color=MUTED_COLOR,
+                        )
+                    )
+                    return
+                if isinstance(message, QueueOverflowNotice):
+                    await deliver(
+                        colored(
+                            f"\r\n*** {message.dropped_count} message(s) dropped -- you fell behind. ***",
+                            fg_color=MUTED_COLOR,
+                        )
+                    )
+                    continue
+                # Anything else is already a fully rendered/colored
+                # string -- the other side's own message, built by their
+                # own send_loop below before broadcasting. No structured
+                # envelope/self-message-flag distinction is needed here
+                # the way _chat_loop's ChannelMessage handling needs one
+                # (no scrollback replay to stay consistent with -- see
+                # this function's own docstring).
+                await deliver(message)
+
+        async def send_loop() -> None:
+            while True:
+                line = (await session.read_line(live_buffer=live_buffer, lock=lock)).strip()
+
+                async with lock:
+                    pinned_ui_enabled_now = await pinned_ui.sync(session, user, other_user, presence, live_buffer)
+                    if pinned_ui_enabled_now:
+                        await _enter_content_region(session, session.terminal_height)
+
+                    if not line:
+                        continue
+                    if line.lower() == "/close":
+                        return
+
+                    await session.write_line(colored(f"you: {sanitize_text(line)}", fg_color=SELF_COLOR))
+                    rendered_for_other = colored(
+                        f"{sanitize_text(user.username)}: {sanitize_text(line)}", fg_color=ACCENT_COLOR
+                    )
+                    await hub.broadcast(room, rendered_for_other, exclude={participant_id})
+
+        receive_task = asyncio.create_task(receive_loop())
+        send_task = asyncio.create_task(send_loop())
+        try:
+            done, pending = await asyncio.wait({receive_task, send_task}, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            # Same reasoning as _chat_loop's own identical handling:
+            # asyncio.wait() being cancelled does not cancel the tasks it
+            # was waiting on.
+            for task in (receive_task, send_task):
+                task.cancel()
+            await asyncio.gather(receive_task, send_task, return_exceptions=True)
+            raise
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        for task in done:
+            task.result()  # re-raise, e.g. SessionClosedError from a dropped connection
+
+        if receive_task in done and pinned_ui.active:
+            try:
+                await session.write(
+                    reset_scroll_region() + "\r\n" + colored("Press any key to continue...", fg_color=MUTED_COLOR)
+                )
+                await session.read_key()
+            except SessionClosedError:
+                pass
+    finally:
+        session.pinned_notice_hook = None
+        if pinned_ui.active:
+            try:
+                await session.write(reset_scroll_region() + clear_screen())
+            except SessionClosedError:
+                pass
+        hub.leave(room, participant_id)
+        await hub.broadcast(room, _DirectChatClosedNotice(), exclude={participant_id})
+
+
+async def run_direct_chat_invite_flow(
+    session: Session,
+    lane: DatabaseLane,
+    hub: ChatHub,
+    presence: PresenceRegistry,
+    direct_invites: DirectChatInvites,
+    session_registry: ActiveSessionRegistry,
+    user: User,
+    target: User,
+) -> None:
+    """
+    Send a mutual direct-chat invite to `target` and run the whole
+    handshake to its conclusion, on `session`'s own behalf (design doc
+    §6.3) -- shared by the Who screen's own `[I]nvite to chat` action
+    (`netbbs.net.login_flow._caller_who_screen`) and `/dm` (this
+    module's own `_handle_dm`), so the two entry points can never drift
+    on behavior.
+
+    Distinct from `/msg`/`/private`: those are one-sided (the sender's
+    own lines get redirected or delivered once; the target never agrees
+    to anything and is never pulled into any shared view). This sends
+    every one of `target`'s currently live sessions
+    (`ActiveSessionRegistry.sessions_for_username` -- the same "every
+    active session, not just one" reasoning `_deliver_private_message`
+    already established for `/msg`) an invite, shows `session`'s own
+    blocking "waiting for accept" screen, and -- if more than one of
+    `target`'s sessions received an invite -- cancels whichever ones
+    didn't resolve first the moment any one of them does, so accepting
+    (or declining) from one of an account's several simultaneous
+    sessions can never leave the others in limbo.
+    """
+    if not await lane.run(accepts_direct_messages, target):
+        await session.write_line(
+            colored(f"{sanitize_text(target.username)} has opted out of direct messages.", fg_color=MUTED_COLOR)
+        )
+        return
+    if not presence.is_online(target.username):
+        await session.write_line(
+            colored(f"{sanitize_text(target.username)} is not currently online.", fg_color=MUTED_COLOR)
+        )
+        return
+
+    invites: dict[object, DirectChatInvite] = {}
+    for target_session in session_registry.sessions_for_username(target.username):
+        invite = direct_invites.send(user, target_session)
+        if invite is not None:
+            invites[target_session] = invite
+
+    if not invites:
+        await session.write_line(
+            colored(
+                f"{sanitize_text(target.username)} is currently deciding on another invite -- try again shortly.",
+                fg_color=MUTED_COLOR,
+            )
+        )
+        return
+
+    future_to_session = {invite.outcome: target_session for target_session, invite in invites.items()}
+
+    await session.write_line(
+        colored(f"\r\nWaiting for {sanitize_text(target.username)} to accept your invitation...", fg_color=MUTED_COLOR)
+    )
+    await session.write(f"{menu_key('C', 'ancel')}: ")
+    cancel_key_task = asyncio.create_task(session.read_key())
+    try:
+        done, _pending = await asyncio.wait(
+            set(future_to_session) | {cancel_key_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+    except asyncio.CancelledError:
+        cancel_key_task.cancel()
+        for target_session in invites:
+            direct_invites.cancel(target_session)
+        raise
+
+    if cancel_key_task in done:
+        for target_session in invites:
+            direct_invites.cancel(target_session)
+        await session.write_line(colored("\r\nInvitation cancelled.", fg_color=MUTED_COLOR))
+        return
+    cancel_key_task.cancel()
+    await asyncio.gather(cancel_key_task, return_exceptions=True)
+
+    # Prefer an acceptance if it happens to land in the same wait cycle
+    # as a decline/timeout from a different one of target's sessions --
+    # see this function's own docstring on why more than one may have
+    # been sent at all.
+    resolved = [(future_to_session[future], future.result()) for future in done]
+    accepted_session, outcome = next((r for r in resolved if r[1] == "accepted"), resolved[0])
+    for target_session, invite in invites.items():
+        if target_session != accepted_session:
+            direct_invites.cancel(target_session)
+
+    if outcome == "accepted":
+        await session.write_line(colored(f"\r\n{sanitize_text(target.username)} accepted.", fg_color=MUTED_COLOR))
+        await run_direct_chat_loop(session, hub, presence, user, target, invites[accepted_session].room_token)
+    elif outcome == "declined":
+        await session.write_line(colored(f"\r\n{sanitize_text(target.username)} declined.", fg_color=MUTED_COLOR))
+    else:  # "timed_out" -- "cancelled" never reaches here (that's only ever this same inviter's own cancel_key_task path above)
+        await session.write_line(
+            colored(f"\r\n{sanitize_text(target.username)} didn't respond in time.", fg_color=MUTED_COLOR)
+        )

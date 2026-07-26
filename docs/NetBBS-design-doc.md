@@ -537,6 +537,20 @@ state, invitations/membership, `/who`, `/whois`, `/names`, `/list`, `/join`,
 `/msg` and `/private` remain ephemeral and online-only. They never silently
 fall back to asynchronous mail.
 
+A separate mutual invite/accept direct chat also exists, alongside `/msg`/
+`/private` rather than replacing either: unlike both (one-off, or a one-sided
+redirect the target never agrees to), both sides must explicitly be in the
+same room at the same time. Reachable from the Who screen (`[I]nvite to
+chat`) or `/dm <user>` from an active channel. Exclusive with channel chat --
+one active chat screen per session, the same scope Phase 2's one-channel-at-
+a-time limit already establishes below. Fully ephemeral, the same as `/msg`/
+`/private`: no persistence, no scrollback. An invite interrupts the main
+menu live only when the recipient is idle there; otherwise it is shown the
+next time they return to it, never inside an unrelated in-progress screen.
+An unanswered invite expires automatically after a short fixed window, with
+an explicit accepted/declined/timed-out outcome always shown to the inviter
+-- never a silent no-op.
+
 Phase 2 uses one active channel per session. Multiple simultaneous memberships,
 background delivery, and Link-wide presence wait for Phase 5.
 

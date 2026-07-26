@@ -530,7 +530,7 @@ def test_shutdown_event_and_graceful_delay_reach_handle_session(tmp_path, monkey
 
     async def spy(
         session, db, hub, presence, mailbox, throttle, throttle_config,
-        *, node_controls=None, lane=None, link_context=None,
+        *, node_controls=None, lane=None, link_context=None, direct_invites=None,
     ):
         captured["node_controls"] = node_controls
 
