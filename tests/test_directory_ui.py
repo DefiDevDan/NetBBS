@@ -14,6 +14,7 @@ import asyncio
 from netbbs.auth.users import create_user
 from netbbs.directory import get_bio, is_bio_visible, set_bio, set_bio_visible
 from netbbs.net.login_flow import _browse_directory, _edit_profile
+from netbbs.rendering import ACCENT_COLOR, LABEL_COLOR, VALUE_COLOR, colored
 from netbbs.storage.database import Database
 
 
@@ -106,6 +107,9 @@ def test_selecting_a_directory_entry_shows_their_vcard(tmp_path):
     asyncio.run(_browse_directory(session, db, viewer))
 
     assert "Retro computing enthusiast" in session.output
+    assert colored("bob", fg_color=ACCENT_COLOR, bold=True) in session.output
+    assert colored("Member since: ", fg_color=LABEL_COLOR) in session.output
+    assert colored("Retro computing enthusiast", fg_color=VALUE_COLOR) in session.output
     db.close()
 
 
@@ -149,7 +153,8 @@ def test_edit_profile_shows_current_state(tmp_path):
     asyncio.run(_edit_profile(session, db, user))
 
     assert "no bio set" in session.output
-    assert "Visibility: private" in session.output
+    assert colored("Visibility: ", fg_color=LABEL_COLOR) in session.output
+    assert colored("private", fg_color=VALUE_COLOR) in session.output
     db.close()
 
 

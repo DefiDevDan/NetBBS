@@ -155,9 +155,15 @@ from netbbs.rendering import (
     ACCENT_COLOR,
     ALERT_COLOR,
     CLOCK_COLOR,
+    ERROR_COLOR,
     HEADER_COLOR,
+    LABEL_COLOR,
+    METADATA_COLOR,
     MUTED_COLOR,
+    SUCCESS_COLOR,
+    VALUE_COLOR,
     colored,
+    colored_truncate,
     menu_key,
     reflow,
     sanitize_text,
@@ -2637,12 +2643,18 @@ async def _show_vcard(session: Session, db: Database, target: User, requesting_u
     target has opted in)."""
     vcard = get_vcard(db, target, requesting_user=requesting_user)
     when = format_for_display(vcard.created_at, db)
-    header = colored(sanitize_text(vcard.username), fg_color=HEADER_COLOR, bold=True)
+    header = colored("User profile: ", fg_color=HEADER_COLOR, bold=True) + colored(
+        sanitize_text(vcard.username), fg_color=ACCENT_COLOR, bold=True
+    )
     await session.write_line(f"\r\n{header}")
-    await session.write_line(f"Member since: {when}")
+    await session.write_line(
+        colored("Member since: ", fg_color=LABEL_COLOR)
+        + colored(when, fg_color=METADATA_COLOR)
+    )
     if vcard.bio is not None:
+        bio = reflow(sanitize_text(vcard.bio, allow_newlines=True), width=session.terminal_width)
         await session.write_line(
-            reflow(sanitize_text(vcard.bio, allow_newlines=True), width=session.terminal_width)
+            colored(bio, fg_color=VALUE_COLOR)
         )
     else:
         await session.write_line(colored("(no public bio)", fg_color=MUTED_COLOR))
@@ -2722,7 +2734,7 @@ async def _caller_who_screen(
     try:
         target = get_user_by_username(db, selected.username)
     except AuthError:
-        await session.write_line(colored("That account no longer exists.", fg_color=MUTED_COLOR))
+        await session.write_line(colored("That account no longer exists.", fg_color=ERROR_COLOR))
         return
 
     if not accepts_direct_messages(db, target):
@@ -2763,9 +2775,9 @@ async def _caller_who_screen(
         colored(f"\r\n*** Message from {user.username}: {sanitize_text(message)} ***", fg_color=ALERT_COLOR, bold=True),
     )
     if delivered:
-        await session.write_line("Message sent.")
+        await session.write_line(colored("Message sent.", fg_color=SUCCESS_COLOR))
     else:
-        await session.write_line(colored(f"{selected.username} is no longer online.", fg_color=MUTED_COLOR))
+        await session.write_line(colored(f"{selected.username} is no longer online.", fg_color=ERROR_COLOR))
 
 
 # How many recent sessions [L]ast sessions shows -- generous enough to
@@ -2844,12 +2856,34 @@ async def _last_sessions_screen(session: Session, db: Database, user: User) -> N
         connected = format_for_display(entry.connected_at, db)
         if entry.disconnected_at is not None:
             status = f"until {format_for_display(entry.disconnected_at, db)}"
+            status_color = METADATA_COLOR
         elif entry.interrupted_at is not None:
             status = "connection lost -- session did not end cleanly"
+            status_color = ERROR_COLOR
         else:
             status = "still connected"
-        line = f"  {sanitize_text(name)} -- connected {connected}, {status}"
-        await session.write_line(truncate(line, session.terminal_width))
+            status_color = SUCCESS_COLOR
+        name_color = MUTED_COLOR if name == "(name hidden)" else ACCENT_COLOR
+        await session.write_line(
+            colored_truncate(
+                [
+                    ("  ", None),
+                    (sanitize_text(name), name_color),
+                    (" -- connected ", LABEL_COLOR),
+                    (connected, METADATA_COLOR),
+                    (", ", LABEL_COLOR),
+                    (status, status_color),
+                ],
+                session.terminal_width,
+            )
+        )
+
+
+def _profile_field(label: str, value: str, *, value_color: int = VALUE_COLOR) -> str:
+    """Compose one trusted label with a separately sanitized value span."""
+    return colored(f"{label}: ", fg_color=LABEL_COLOR) + colored(
+        sanitize_text(value), fg_color=value_color
+    )
 
 
 async def _render_profile(session: Session, db: Database, user: User) -> bool:
@@ -2872,20 +2906,27 @@ async def _render_profile(session: Session, db: Database, user: User) -> bool:
         )
     else:
         await session.write_line(colored("(no bio set)", fg_color=MUTED_COLOR))
-    await session.write_line(f"Visibility: {'public' if visible else 'private'}")
-    await session.write_line(f"Fullscreen editor for posts/bio: {'on' if editor_on else 'off'}")
+    await session.write_line(_profile_field("Visibility", "public" if visible else "private"))
+    await session.write_line(_profile_field("Fullscreen editor for posts/bio", "on" if editor_on else "off"))
     await session.write_line(
-        f"Direct messages (Who's online): {'accepted' if accepts_dm else 'not accepted'}"
+        _profile_field("Direct messages (Who's online)", "accepted" if accepts_dm else "not accepted")
     )
     await session.write_line(
-        f"Name shown in Last sessions: {'yes' if history_name_visible else 'no (hidden)'}"
+        _profile_field("Name shown in Last sessions", "yes" if history_name_visible else "no (hidden)")
     )
     if color_override is None:
         detected = "truecolor" if session.supports_truecolor else "256-color"
         color_status = f"auto (detected: {detected})"
     else:
         color_status = f"{color_override} (forced)"
-    await session.write_line(f"Color depth: {color_status}")
+    await session.write_line(_profile_field("Color depth", color_status))
+    await session.write_line(
+        _profile_field(
+            "Transport report",
+            getattr(session, "truecolor_diagnostic", "capability report unavailable"),
+            value_color=METADATA_COLOR,
+        )
+    )
 
     options = "  ".join(
         [

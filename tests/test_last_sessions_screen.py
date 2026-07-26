@@ -9,11 +9,19 @@ point and the profile screen's own visibility toggle.
 from __future__ import annotations
 
 import asyncio
+import re
 
 from netbbs.auth.users import SYSOP_LEVEL, create_user
 from netbbs.chat import ChatHub, MessageMailbox, PresenceRegistry
 from netbbs.net.char_input import InputHistory
 from netbbs.net.login_flow import _main_menu
+from netbbs.rendering import (
+    ACCENT_COLOR,
+    LABEL_COLOR,
+    METADATA_COLOR,
+    SUCCESS_COLOR,
+    colored,
+)
 from netbbs.session_history import (
     reconcile_interrupted_sessions,
     record_session_start,
@@ -82,6 +90,8 @@ def test_history_screen_shows_a_recorded_session(tmp_path):
     asyncio.run(_run_main_menu(session, database, alice))
 
     assert "bob" in _written_text(session)
+    assert colored("bob", fg_color=ACCENT_COLOR) in _written_text(session)
+    assert colored(" -- connected ", fg_color=LABEL_COLOR) in _written_text(session)
     database.close()
 
 
@@ -94,6 +104,7 @@ def test_history_screen_shows_still_connected_for_an_open_session(tmp_path):
     asyncio.run(_run_main_menu(session, database, alice))
 
     assert "still connected" in _written_text(session)
+    assert colored("still connected", fg_color=SUCCESS_COLOR) in _written_text(session)
     database.close()
 
 
@@ -234,4 +245,39 @@ def test_profile_screen_toggles_session_history_name_visibility(tmp_path):
 
     assert session_history_name_visible(database, alice) is False
     assert "Name in Last sessions is now hidden." in _written_text(session)
+    database.close()
+
+
+def test_profile_shows_color_capability_provenance(tmp_path):
+    database = db_(tmp_path)
+    alice = create_user(database, "alice", password="hunter2", user_level=10)
+    session = FakeSession(["p", "b", "l", "y"])
+    session.truecolor_diagnostic = "SSH client did not forward COLORTERM; using 256-color"
+
+    asyncio.run(_run_main_menu(session, database, alice))
+
+    text = _written_text(session)
+    assert colored("Color depth: ", fg_color=LABEL_COLOR) in text
+    assert colored("Transport report: ", fg_color=LABEL_COLOR) in text
+    assert colored(session.truecolor_diagnostic, fg_color=METADATA_COLOR) in text
+    database.close()
+
+
+def test_history_narrow_truncation_preserves_complete_ansi_sequences(tmp_path):
+    database = db_(tmp_path)
+    alice = create_user(database, "alice", password="hunter2", user_level=10)
+    bob = create_user(database, "bob", password="hunter2", user_level=10)
+    record_session_start(database, bob)
+    session = FakeSession(["h", "l", "y"])
+    session.terminal_width = 28
+
+    asyncio.run(_run_main_menu(session, database, alice))
+
+    ansi = re.compile(r"\x1b\[[0-9;]*m")
+    history_lines = [chunk for chunk in session.written if "connected" in chunk]
+    assert history_lines
+    for line in history_lines:
+        visible = ansi.sub("", line).rstrip("\n")
+        assert len(visible) <= session.terminal_width
+        assert "\x1b" not in visible
     database.close()

@@ -191,8 +191,12 @@ from netbbs.net.welcome_banner import (
 )
 from netbbs.rendering import (
     ALERT_COLOR,
+    ERROR_COLOR,
     HEADER_COLOR,
+    LABEL_COLOR,
+    METADATA_COLOR,
     MUTED_COLOR,
+    SUCCESS_COLOR,
     WARNING_COLOR,
     colored,
     colored_truncate,
@@ -1786,14 +1790,16 @@ async def _who_screen(session: Session, lane: DatabaseLane, actor: User, node_co
 
     disconnected = await node_controls.session_registry.disconnect_one(selected.session)
     if not disconnected:
-        await session.write_line(colored("That session is already gone.", fg_color=MUTED_COLOR))
+        await session.write_line(colored("That session is already gone.", fg_color=ERROR_COLOR))
         return
 
     await lane.run(
         record_action, actor=actor, action="disconnect_session",
         target_user_id=target_user_id, detail=f"{detail}, message={message!r}",
     )
-    await session.write_line(f"{_session_name(selected)!r} disconnected.")
+    await session.write_line(
+        colored(f"{_session_name(selected)!r} disconnected.", fg_color=SUCCESS_COLOR)
+    )
 
 
 async def _shutdown_screen(session: Session, lane: DatabaseLane, actor: User, node_controls: NodeControls) -> None:
@@ -2220,7 +2226,14 @@ async def _draw_welcome_banner_menu(session: Session, lane: DatabaseLane) -> Non
     else:
         file_state = "missing"
     header = colored("Welcome banner:", fg_color=HEADER_COLOR, bold=True)
-    detail = f"{state} -- file: {status.path} ({file_state})"
+    state_color = SUCCESS_COLOR if status.enabled else MUTED_COLOR
+    file_color = METADATA_COLOR if status.exists else ERROR_COLOR
+    detail = (
+        colored(state, fg_color=state_color, bold=status.enabled)
+        + colored(" -- file: ", fg_color=LABEL_COLOR)
+        + colored(str(status.path), fg_color=METADATA_COLOR)
+        + colored(f" ({file_state})", fg_color=file_color)
+    )
     options = "  ".join(
         [
             menu_key("P", "review"),
@@ -2246,13 +2259,26 @@ async def _preview_welcome_banner_screen(session: Session, lane: DatabaseLane) -
 
     status, banner_text = await lane.run(_load)
     await session.write_line(colored("\r\nPreviewing welcome banner as shown at login:", fg_color=MUTED_COLOR))
+    await session.write_line(
+        colored("Capability: ", fg_color=LABEL_COLOR)
+        + colored(
+            getattr(session, "truecolor_diagnostic", "capability report unavailable"),
+            fg_color=METADATA_COLOR,
+        )
+    )
     await session.write_line(banner_text)
     if status.enabled and status.exists and (status.size_bytes or 0) <= MAX_BANNER_SIZE_BYTES:
-        await session.write_line(colored("(showing your custom file)", fg_color=MUTED_COLOR))
-    else:
         await session.write_line(
             colored(
-                f"(showing the DEFAULT banner -- enabled={status.enabled}, file exists={status.exists})",
+                "(showing your custom file) -- generated truecolor/256-color showcase is intentionally bypassed",
+                fg_color=MUTED_COLOR,
+            )
+        )
+    else:
+        depth = "truecolor gradient" if truecolor else "256-color fallback"
+        await session.write_line(
+            colored(
+                f"(showing the DEFAULT banner -- rendering: {depth}; enabled={status.enabled}, file exists={status.exists})",
                 fg_color=MUTED_COLOR,
             )
         )

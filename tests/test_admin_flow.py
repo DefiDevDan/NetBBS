@@ -23,6 +23,7 @@ from netbbs.net.maintenance import MaintenanceMode
 from netbbs.net.session import Session
 from netbbs.net.session_registry import ActiveSessionRegistry
 from netbbs.net.shutdown import NodeControls
+from netbbs.rendering import ACCENT_COLOR, MENU_KEY_COLOR, METADATA_COLOR, colored
 from netbbs.storage.database import Database
 from netbbs.storage.execution import DatabaseLane
 from tests.test_shutdown import _hold_registered
@@ -633,7 +634,12 @@ def test_who_lists_and_disconnects_another_session(db, lane, sysop):
             registry.leave(admin_session)
 
         assert other_task.cancelled() or other_task.done()
-        assert "disconnected" in _written_text(admin_session)
+        text = _written_text(admin_session)
+        assert "disconnected" in text
+        # Same pick_item semantic field palette asserted by caller Who.
+        assert colored("  01. ", fg_color=MENU_KEY_COLOR) in text
+        assert f"\x1b[38;5;{ACCENT_COLOR}m(unauthenticated)" in text
+        assert f"\x1b[38;5;{METADATA_COLOR}m - connected since " in text
 
     asyncio.run(scenario())
 
@@ -2334,6 +2340,7 @@ def test_preview_screen_renders_resolved_banner_content(db, lane, sysop):
     text = _written_text(session)
     assert "MY DISTINCTIVE BANNER TEXT" in text
     assert "(showing your custom file)" in text
+    assert "generated truecolor/256-color showcase is intentionally bypassed" in text
 
 
 def test_preview_screen_when_disabled_shows_default_and_says_so(db, lane, sysop):
@@ -2341,6 +2348,7 @@ def test_preview_screen_when_disabled_shows_default_and_says_so(db, lane, sysop)
     _run(session, lane, sysop)
     text = _written_text(session)
     assert "showing the DEFAULT banner" in text
+    assert "rendering: 256-color fallback" in text
     assert "enabled=False" in text
 
 

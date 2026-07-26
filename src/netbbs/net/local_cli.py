@@ -48,6 +48,7 @@ class LocalCLISession(Session):
         self.terminal_width = size.columns
         self.terminal_height = size.lines
         self.peer_address = None
+        self.truecolor_diagnostic = "local CLI does not negotiate COLORTERM; using 256-color"
 
     async def write(self, text: str) -> None:
         # Same CRLF normalization TelnetSession.write performs, and for

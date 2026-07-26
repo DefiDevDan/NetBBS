@@ -39,6 +39,26 @@ async def _run_server(session_handler):
     return server
 
 
+def test_web_session_reports_built_in_truecolor_capability():
+    captured = []
+
+    async def handler(session: Session):
+        captured.append((session.supports_truecolor, session.truecolor_diagnostic))
+        await session.write_line("done")
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            async with aiohttp.ClientSession() as client:
+                async with client.ws_connect(f"http://127.0.0.1:{server.port}/ws") as ws:
+                    await ws.receive_json(timeout=2)
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert captured == [(True, "NetBBS web/xterm.js client has built-in truecolor support")]
+
+
 def test_single_key_confirmation_echoes_uppercase_and_ends_its_row():
     results = []
 

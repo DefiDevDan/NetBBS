@@ -118,14 +118,18 @@ def test_result_always_ends_with_reset_sequence(db):
 
 
 def test_truecolor_false_returns_the_static_default_banner(db):
-    assert load_welcome_banner(db, truecolor=False) == DEFAULT_WELCOME_BANNER
+    result = load_welcome_banner(db, truecolor=False)
+    assert result == DEFAULT_WELCOME_BANNER
+    assert "\x1b[38;2;" not in result
 
 
 def test_truecolor_true_gradients_the_bbs_name(db):
     result = load_welcome_banner(db, truecolor=True)
     assert result != DEFAULT_WELCOME_BANNER
     assert "NetBBS" in result
-    assert "\x1b[38;2;" in result  # a real truecolor SGR sequence is present
+    # The showcase spans both 48-character borders plus the name, making
+    # negotiated truecolor unmistakable rather than a six-character novelty.
+    assert result.count("\x1b[38;2;") >= 96
 
 
 def test_truecolor_variant_still_ends_with_reset(db):

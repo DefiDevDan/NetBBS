@@ -709,6 +709,26 @@ after an embedded reset.
 ANSI art is trusted SysOp content and intentionally bypasses ordinary
 untrusted-text sanitization. Keep that trust distinction explicit.
 
+Shared semantic roles (`LABEL_COLOR`, `VALUE_COLOR`, `METADATA_COLOR`,
+`SUCCESS_COLOR`, and `ERROR_COLOR`) are the presentation contract for mature
+line-oriented surfaces. Caller and SysOp Who use the same picker palette;
+mail detail and outcomes, vCards and profiles, Last sessions, picker feedback,
+and welcome-banner administration use the shared roles instead of inventing
+screen-local colors. When styled fields must fit a terminal width, build the
+trusted ANSI segments independently and use `colored_truncate`; slicing the
+completed string by Python length can split an escape sequence and counts SGR
+bytes as visible columns.
+
+Truecolor support is transport capability, not a guarantee inferred from the
+configured preference. SSH records `COLORTERM`, web declares its built-in
+xterm.js support, local CLI reports that it has no negotiation, and Telnet
+records the NEW-ENVIRON result. Expose this provenance through the profile and
+welcome-banner preview so fallback behavior is diagnosable. The Telnet login
+banner is rendered before the bounded lazy NEW-ENVIRON reply may arrive and
+therefore must remain safe at 256 colors; later screens can use and report the
+negotiated result. A custom SysOp welcome file intentionally bypasses the
+generated truecolor showcase and its preview must say so.
+
 ### Text and byte boundaries
 
 Core text utilities use `\n`. CRLF normalization belongs in the transport.
@@ -2008,10 +2028,9 @@ status, ownership, and acceptance criteria.
 Current work spans the Phase 3 operational-validation track and active Phase 4
 implementation:
 
-- before #127, complete the remaining bounded product-track dogfood interleave:
-  confirmation consistency (#135) and visual/capability verification plus
-  named-surface polish (#136); direct-chat polish (#134) and safe composition
-  (#133) are implemented;
+- the bounded product-track dogfood interleave before #127 is implemented:
+  direct-chat polish (#134), safe composition (#133), confirmation consistency
+  (#135), and visual/capability verification plus named-surface polish (#136);
 
 - independent non-Python interoperability validation is deprioritized and
   deferred (issue #71); Python canonical vectors remain authoritative and

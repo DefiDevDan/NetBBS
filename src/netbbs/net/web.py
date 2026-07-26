@@ -184,6 +184,7 @@ class WebSession(Session):
         # constructs the xterm.js Terminal directly), so truecolor support
         # is a given, not something to negotiate — unlike Telnet/SSH.
         self.supports_truecolor = True
+        self.truecolor_diagnostic = "NetBBS web/xterm.js client has built-in truecolor support"
         self._reader_task = asyncio.create_task(self._read_loop())
 
     def _signal_input_closed(self, message: str) -> None:

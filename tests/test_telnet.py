@@ -706,6 +706,7 @@ def _new_environ_scenario(colorterm_value: bytes | None):
     async def handler(session: Session):
         await session.read_line()
         captured["supports_truecolor"] = session.supports_truecolor
+        captured["diagnostic"] = session.truecolor_diagnostic
 
     async def scenario():
         server = await _run_server(handler)
@@ -730,23 +731,31 @@ def _new_environ_scenario(colorterm_value: bytes | None):
             await server.stop()
 
     asyncio.run(scenario())
-    return captured["supports_truecolor"]
+    return captured["supports_truecolor"], captured["diagnostic"]
 
 
 def test_new_environ_is_with_colorterm_truecolor_sets_supports_truecolor():
-    assert _new_environ_scenario(b"truecolor") is True
+    assert _new_environ_scenario(b"truecolor") == (
+        True, "Telnet NEW-ENVIRON reported COLORTERM=truecolor; truecolor available"
+    )
 
 
 def test_new_environ_is_with_colorterm_24bit_sets_supports_truecolor():
-    assert _new_environ_scenario(b"24bit") is True
+    assert _new_environ_scenario(b"24bit") == (
+        True, "Telnet NEW-ENVIRON reported COLORTERM=24bit; truecolor available"
+    )
 
 
 def test_new_environ_is_with_other_colorterm_value_leaves_default():
-    assert _new_environ_scenario(b"256color") is False
+    assert _new_environ_scenario(b"256color") == (
+        False, "Telnet NEW-ENVIRON reported COLORTERM=256color; using 256-color"
+    )
 
 
 def test_no_new_environ_reply_leaves_default():
-    assert _new_environ_scenario(None) is False
+    supported, diagnostic = _new_environ_scenario(None)
+    assert supported is False
+    assert "negotiation pending" in diagnostic
 
 
 def test_malformed_new_environ_subnegotiation_does_not_raise():

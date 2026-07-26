@@ -63,7 +63,20 @@ from netbbs.net.editor_preference import fullscreen_editor_enabled
 from netbbs.net.picker import pick_item
 from netbbs.net.prose_editor import edit_prose
 from netbbs.net.session import Session
-from netbbs.rendering import HEADER_COLOR, MUTED_COLOR, colored, menu_key, reflow, sanitize_text
+from netbbs.rendering import (
+    ACCENT_COLOR,
+    ERROR_COLOR,
+    HEADER_COLOR,
+    LABEL_COLOR,
+    METADATA_COLOR,
+    MUTED_COLOR,
+    SUCCESS_COLOR,
+    VALUE_COLOR,
+    colored,
+    menu_key,
+    reflow,
+    sanitize_text,
+)
 from netbbs.storage.execution import DatabaseLane
 from netbbs.timeutil import format_for_display, resolve_display_preferences
 
@@ -113,7 +126,7 @@ async def browse_mail(
 async def _render_mail_menu(session: Session, lane: DatabaseLane, user: User) -> None:
     unread = await lane.run(unread_count, user)
     header = colored("\r\nMail:", fg_color=HEADER_COLOR, bold=True)
-    suffix = f" ({unread} unread)" if unread else ""
+    suffix = colored(f" ({unread} unread)", fg_color=METADATA_COLOR) if unread else ""
     await session.write_line(f"{header}{suffix}")
 
     options = "  ".join(
@@ -194,18 +207,31 @@ async def _show_sent(session: Session, lane: DatabaseLane, user: User) -> None:
 async def _render_message(
     session: Session, lane: DatabaseLane, *, message: MailMessage, to_label: str | None
 ) -> None:
-    header = colored(f"\r\nSubject: {sanitize_text(message.subject)}", fg_color=HEADER_COLOR, bold=True)
+    header = colored("\r\nSubject: ", fg_color=LABEL_COLOR, bold=True) + colored(
+        sanitize_text(message.subject), fg_color=ACCENT_COLOR, bold=True
+    )
     await session.write_line(header)
     if to_label is not None:
-        await session.write_line(f"To: {sanitize_text(to_label)}")
+        await session.write_line(
+            colored("To: ", fg_color=LABEL_COLOR)
+            + colored(sanitize_text(to_label), fg_color=ACCENT_COLOR)
+        )
     else:
-        await session.write_line(f"From: {sanitize_text(message.sender_label)}")
+        await session.write_line(
+            colored("From: ", fg_color=LABEL_COLOR)
+            + colored(sanitize_text(message.sender_label), fg_color=ACCENT_COLOR)
+        )
     display_format, display_timezone = await lane.run(resolve_display_preferences)
+    displayed_date = format_for_display(
+        message.created_at, override_format=display_format, override_timezone=display_timezone
+    )
     await session.write_line(
-        f"Date: {format_for_display(message.created_at, override_format=display_format, override_timezone=display_timezone)}"
+        colored("Date: ", fg_color=LABEL_COLOR)
+        + colored(displayed_date, fg_color=METADATA_COLOR)
     )
     await session.write_line("")
-    await session.write_line(reflow(sanitize_text(message.body, allow_newlines=True), width=session.terminal_width))
+    body = reflow(sanitize_text(message.body, allow_newlines=True), width=session.terminal_width)
+    await session.write_line(colored(body, fg_color=VALUE_COLOR))
 
 
 async def _show_inbox_message(session: Session, lane: DatabaseLane, user: User, message: MailMessage) -> None:
@@ -224,7 +250,7 @@ async def _show_inbox_message(session: Session, lane: DatabaseLane, user: User, 
         elif choice == "d":
             await session.write_line("")
             await lane.run(delete_for_recipient, user, message)
-            await session.write_line("Message deleted.")
+            await session.write_line(colored("Message deleted.", fg_color=SUCCESS_COLOR))
             return
         elif choice == "r":
             await session.write_line("")
@@ -235,7 +261,7 @@ async def _show_inbox_message(session: Session, lane: DatabaseLane, user: User, 
             )
             if sender is None:
                 await session.write_line(
-                    colored("That sender's account no longer exists -- can't reply.", fg_color=MUTED_COLOR)
+                    colored("That sender's account no longer exists -- can't reply.", fg_color=ERROR_COLOR)
                 )
                 continue
             reply_subject = message.subject if message.subject.lower().startswith("re:") else f"Re: {message.subject}"
@@ -261,7 +287,7 @@ async def _show_sent_message(session: Session, lane: DatabaseLane, user: User, m
         elif choice == "d":
             await session.write_line("")
             await lane.run(delete_for_sender, user, message)
-            await session.write_line("Message deleted.")
+            await session.write_line(colored("Message deleted.", fg_color=SUCCESS_COLOR))
             return
         else:
             await session.write(reject_unhandled_key(choice))
@@ -299,7 +325,7 @@ async def _compose_mail(
                 await lane.run(get_user_by_username, recipient_text)
             except AuthError:
                 await session.write_line(
-                    colored(f"No such user: {sanitize_text(recipient_text)!r}", fg_color=MUTED_COLOR)
+                    colored(f"No such user: {sanitize_text(recipient_text)!r}", fg_color=ERROR_COLOR)
                 )
                 return
 
@@ -310,7 +336,7 @@ async def _compose_mail(
         await session.write("Subject: ")
         subject = (await session.read_line()).strip()
     if not subject:
-        await session.write_line(colored("Cancelled -- a subject is required.", fg_color=MUTED_COLOR))
+        await session.write_line(colored("Cancelled -- a subject is required.", fg_color=ERROR_COLOR))
         return
 
     body = await _compose_mail_body(session, lane, user, initial_text=None)
@@ -353,16 +379,16 @@ async def _compose_mail(
                     node_identity=link_context.node_identity,
                 )
             except (LinkMailError, MailError) as exc:
-                await session.write_line(colored(f"Could not send: {exc}", fg_color=MUTED_COLOR))
+                await session.write_line(colored(f"Could not send: {exc}", fg_color=ERROR_COLOR))
                 continue
-            await session.write_line("Message sent.")
+            await session.write_line(colored("Message sent.", fg_color=SUCCESS_COLOR))
             return
 
         try:
             recipient = await lane.run(get_user_by_username, recipient_text)
         except AuthError:
             await session.write_line(
-                colored(f"Could not send: no such user {sanitize_text(recipient_text)!r}.", fg_color=MUTED_COLOR)
+                colored(f"Could not send: no such user {sanitize_text(recipient_text)!r}.", fg_color=ERROR_COLOR)
             )
             continue
         try:
@@ -371,14 +397,14 @@ async def _compose_mail(
             await session.write_line(
                 colored(
                     f"{recipient.username}'s mailbox is full and cannot accept new mail right now.",
-                    fg_color=MUTED_COLOR,
+                    fg_color=ERROR_COLOR,
                 )
             )
             continue
         except MailError as exc:
-            await session.write_line(colored(f"Could not send: {exc}", fg_color=MUTED_COLOR))
+            await session.write_line(colored(f"Could not send: {exc}", fg_color=ERROR_COLOR))
             continue
-        await session.write_line("Message sent.")
+        await session.write_line(colored("Message sent.", fg_color=SUCCESS_COLOR))
         return
 
 

@@ -46,6 +46,7 @@ from netbbs.net.char_input import REDRAW_KEY, REFRESH_KEY, Completer, reject_unh
 from netbbs.net.session import Session
 from netbbs.rendering import (
     ACCENT_COLOR,
+    ERROR_COLOR,
     HEADER_COLOR,
     MENU_KEY_COLOR,
     MUTED_COLOR,
@@ -146,7 +147,7 @@ async def pick_item(
     never written to the terminal.
     """
     if not items and refresh is None:
-        await session.write_line(f"\r\n{empty_message}")
+        await session.write_line(colored(f"\r\n{empty_message}", fg_color=MUTED_COLOR))
         return None
 
     working_set: Sequence[T] = items
@@ -159,7 +160,7 @@ async def pick_item(
         nonlocal page_index
         if not working_set:
             page_index = 0
-            await session.write_line(f"\r\n{empty_message}")
+            await session.write_line(colored(f"\r\n{empty_message}", fg_color=MUTED_COLOR))
             trailer = f"{menu_key('B', 'ack')} — Ctrl-L: redraw"
             if refresh is not None:
                 trailer += ", Ctrl-R: refresh"
@@ -284,7 +285,7 @@ async def pick_item(
                 continue
             matches = [item for item in items if query.lower() in name_of(item).lower()]
             if not matches:
-                await session.write_line("No matches.")
+                await session.write_line(colored("No matches.", fg_color=ERROR_COLOR))
                 await session.write("Choice: ")
                 continue
             if len(matches) == 1:
@@ -301,7 +302,7 @@ async def pick_item(
             try:
                 target_id = int(raw)
             except ValueError:
-                await session.write_line("Not a number.")
+                await session.write_line(colored("Not a number.", fg_color=ERROR_COLOR))
                 await session.write("Choice: ")
                 continue
             # Always searches `items` (the full original list) by
@@ -315,7 +316,7 @@ async def pick_item(
             for item in items:
                 if stable_id_of(item) == target_id:
                     return item
-            await session.write_line("Out of range.")
+            await session.write_line(colored("Out of range.", fg_color=ERROR_COLOR))
             await session.write("Choice: ")
             continue
 

@@ -121,6 +121,12 @@ class SSHSession(Session):
         # Session base class's conservative `False` default.
         colorterm = process.env.get("COLORTERM")
         self.supports_truecolor = colorterm in ("truecolor", "24bit")
+        if self.supports_truecolor:
+            self.truecolor_diagnostic = f"SSH environment reported COLORTERM={colorterm}; truecolor available"
+        elif colorterm:
+            self.truecolor_diagnostic = f"SSH environment reported COLORTERM={colorterm}; using 256-color"
+        else:
+            self.truecolor_diagnostic = "SSH client did not forward COLORTERM; using 256-color"
 
     async def write(self, text: str) -> None:
         # Same CRLF normalization TelnetSession.write performs, and the
