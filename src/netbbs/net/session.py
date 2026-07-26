@@ -226,6 +226,16 @@ class Session(ABC):
         neither of the other two read methods has a use for.
         """
 
+    async def discard_buffered_enter(self) -> None:
+        """Discard an Enter already buffered behind a completed hotkey.
+
+        Confirmation prompts use this after accepting Y/N so callers who
+        habitually type ``y`` plus Enter do not accidentally apply that Enter
+        to the following prompt. Interactive transports override this with a
+        bounded, pushback-safe peek. The no-op default preserves compatibility
+        for non-interactive and lightweight Session adapters.
+        """
+
     @abstractmethod
     async def close(self) -> None:
         """Close the underlying connection."""

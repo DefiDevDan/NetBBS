@@ -44,6 +44,7 @@ def test_single_key_confirmation_echoes_uppercase_and_ends_its_row():
 
     async def handler(session: Session):
         results.append(await prompt_yes_no(session, "Confirm?", default=False))
+        results.append(await prompt_yes_no(session, "Again?", default=True))
         await session.write_line("NEXT")
 
     async def scenario():
@@ -52,16 +53,23 @@ def test_single_key_confirmation_echoes_uppercase_and_ends_its_row():
             async with aiohttp.ClientSession() as client:
                 async with client.ws_connect(f"http://127.0.0.1:{server.port}/ws") as ws:
                     prompt = await ws.receive_json(timeout=2)
-                    await ws.send_json({"type": "key", "data": "Y"})
+                    await ws.send_json({"type": "key", "data": "Y\rN"})
                     accepted = await ws.receive_json(timeout=2)
+                    second_prompt = await ws.receive_json(timeout=2)
+                    second_accepted = await ws.receive_json(timeout=2)
                     next_row = await ws.receive_json(timeout=2)
-                    return [prompt["data"], accepted["data"], next_row["data"]]
+                    return [
+                        prompt["data"], accepted["data"], second_prompt["data"],
+                        second_accepted["data"], next_row["data"],
+                    ]
         finally:
             await server.stop()
 
     output = asyncio.run(scenario())
-    assert results == [True]
-    assert output == ["Confirm? [y/N]: ", "Y\r\n", "NEXT\r\n"]
+    assert results == [True, False]
+    assert output == [
+        "Confirm? [y/N]: ", "Y\r\n", "Again? [Y/n]: ", "N\r\n", "NEXT\r\n",
+    ]
 
 
 def _read_line_result(data: str, *, history: InputHistory | None = None) -> str:

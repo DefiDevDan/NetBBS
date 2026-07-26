@@ -236,6 +236,9 @@ class TelnetSession(Session):
         logic lives in `netbbs.net.char_input.read_editor_key`."""
         return await char_input.read_editor_key(self)
 
+    async def discard_buffered_enter(self) -> None:
+        await char_input.discard_buffered_enter(self)
+
     async def close(self) -> None:
         if not self._writer.is_closing():
             self._writer.close()

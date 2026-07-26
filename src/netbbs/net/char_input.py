@@ -947,6 +947,21 @@ async def read_editor_key(source: ByteSource) -> EditorKey:
         return EditorKey(EditorKeyKind.CHAR, char=char)
 
 
+async def discard_buffered_enter(source: ByteSource) -> None:
+    """Discard a CR/LF already queued behind a completed hotkey.
+
+    The bounded peek happens before the next prompt is rendered, so an Enter
+    arriving in this window belongs to the just-completed response. Ordinary
+    input is pushed back unchanged for the next logical read. CRLF and CR-NUL
+    pairs are consumed as one line ending through the existing helper.
+    """
+    peek = await _read_byte_with_timeout(source, _FOLLOWUP_BYTE_TIMEOUT)
+    if peek == _CR:
+        await _consume_optional_lf_or_nul(source)
+    elif peek is not None and peek != _LF:
+        _push_back(source, peek)
+
+
 async def _read_utf8_continuation(source: ByteSource, lead_byte: int) -> str | None:
     """
     Given a UTF-8 multi-byte lead byte already read, read the appropriate

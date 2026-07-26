@@ -96,7 +96,8 @@ def test_single_key_confirmation_uses_enter_default_and_ends_its_row(db):
     results = []
 
     async def handler(session: Session):
-        results.append(await prompt_yes_no(session, "Confirm?", default=True))
+        results.append(await prompt_yes_no(session, "Confirm?", default=False))
+        results.append(await prompt_yes_no(session, "Again?", default=True))
         await session.write_line("NEXT")
 
     async def scenario():
@@ -107,15 +108,15 @@ def test_single_key_confirmation_uses_enter_default_and_ends_its_row(db):
             ) as conn:
                 async with conn.create_process(term_type="ansi", term_size=(80, 24), encoding=None) as proc:
                     prompt = await _read_until(proc.stdout, ": ")
-                    proc.stdin.write(b"\r")
+                    proc.stdin.write(b"Y\rN")
                     remainder = await _read_until(proc.stdout, "NEXT\r\n")
                     return prompt + remainder
         finally:
             await server.stop()
 
     output = asyncio.run(scenario())
-    assert results == [True]
-    assert output.endswith("Confirm? [Y/n]: \r\nNEXT\r\n")
+    assert results == [True, False]
+    assert output.endswith("Confirm? [y/N]: Y\r\nAgain? [Y/n]: N\r\nNEXT\r\n")
 
 
 def test_password_auth_honors_shared_login_throttle(db):

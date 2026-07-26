@@ -86,6 +86,7 @@ def test_single_key_confirmation_rejects_invalid_input_and_ends_its_row():
 
     async def handler(session: Session):
         results.append(await prompt_yes_no(session, "Confirm?", default=False))
+        results.append(await prompt_yes_no(session, "Again?", default=True))
         await session.write_line("NEXT")
 
     async def scenario():
@@ -94,7 +95,10 @@ def test_single_key_confirmation_rejects_invalid_input_and_ends_its_row():
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
             await skip_initial_negotiation(reader)
             prompt = await reader.readuntil(b": ")
-            writer.write(b"xY")
+            # The CR after Y models a caller's habitual "Y then Enter".
+            # It belongs to the first response and must not select the
+            # second prompt's True default; the following N answers that.
+            writer.write(b"xY\rN")
             await writer.drain()
             remainder = await reader.readuntil(b"NEXT\r\n")
             writer.close()
@@ -104,8 +108,8 @@ def test_single_key_confirmation_rejects_invalid_input_and_ends_its_row():
             await server.stop()
 
     output = asyncio.run(scenario())
-    assert results == [True]
-    assert output == b"Confirm? [y/N]: \x07Y\r\nNEXT\r\n"
+    assert results == [True, False]
+    assert output == b"Confirm? [y/N]: \x07Y\r\nAgain? [Y/n]: N\r\nNEXT\r\n"
 
 
 # -- initial negotiation -----------------------------------------------

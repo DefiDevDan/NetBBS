@@ -44,6 +44,9 @@ async def read_confirmation_choice(session: Session) -> bool | None:
         if key.kind is EditorKeyKind.CHAR and key.char is not None:
             answer = key.char.lower()
             if answer in ("y", "n"):
+                discard_buffered_enter = getattr(session, "discard_buffered_enter", None)
+                if discard_buffered_enter is not None:
+                    await discard_buffered_enter()
                 await session.write(f"{key.char}\r\n")
                 return answer == "y"
         await session.write("\a")

@@ -177,6 +177,7 @@ class WebSession(Session):
         self._char_queue: asyncio.Queue[str | _SpecialKey | None] = asyncio.Queue(
             maxsize=_MAX_QUEUED_CHARS
         )
+        self._pushed_back_item: str | _SpecialKey | None = None
         self._input_error = "client disconnected"
         self.peer_address = peer_address
         # NetBBS controls the client end-to-end (netbbs-terminal.js
@@ -266,7 +267,11 @@ class WebSession(Session):
         key alike — used by `read_line`'s cursor-aware path, which
         needs to tell them apart. `_read_char` (below) is the
         char-only view `read_key` and masked reads still want."""
-        item = await self._char_queue.get()
+        if self._pushed_back_item is not None:
+            item = self._pushed_back_item
+            self._pushed_back_item = None
+        else:
+            item = await self._char_queue.get()
         if item is None:
             raise SessionClosedError(self._input_error)
         return item
@@ -569,6 +574,27 @@ class WebSession(Session):
         if len(char) == 1 and ord(char) < 0x20:
             return EditorKey(EditorKeyKind.CTRL, char=chr(ord(char) + 0x60))
         return EditorKey(EditorKeyKind.CHAR, char=char)
+
+    async def discard_buffered_enter(self) -> None:
+        """Web counterpart to ``char_input.discard_buffered_enter``.
+
+        xterm.js may deliver ``Y\r`` in one websocket event. Give the reader
+        task one scheduling turn to enqueue that event, then use the same
+        bounded lookahead/pushback rule as byte-oriented transports.
+        """
+        try:
+            item = await asyncio.wait_for(self._read_item(), timeout=0.05)
+        except asyncio.TimeoutError:
+            return
+        if isinstance(item, str) and item == _CR:
+            try:
+                continuation = await asyncio.wait_for(self._read_item(), timeout=0.05)
+            except asyncio.TimeoutError:
+                return
+            if not (isinstance(continuation, str) and continuation == _LF):
+                self._pushed_back_item = continuation
+        elif not (isinstance(item, str) and item == _LF):
+            self._pushed_back_item = item
 
     async def close(self) -> None:
         self._reader_task.cancel()

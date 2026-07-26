@@ -877,7 +877,10 @@ menu hotkeys. Standard yes/no prompts therefore read the already-shared
 structured editor-key vocabulary instead: it preserves Enter on Telnet, SSH,
 web, and local CLI without adding a second transport decoder. The confirmation
 primitive owns accepted-key echo and the terminating CRLF because editor keys
-are intentionally unechoed; invalid keys bell and retry. Keep typed-name
+are intentionally unechoed; invalid keys bell and retry. After Y/N, each
+interactive transport performs one bounded, pushback-safe lookahead to absorb
+a habitual trailing Enter (``y`` plus Enter) without losing non-Enter input or
+letting the leftover line ending select the next prompt. Keep typed-name
 destructive confirmations separate and stronger.
 
 Current `main` already field-colors every ordinary `pick_item` row, so caller
