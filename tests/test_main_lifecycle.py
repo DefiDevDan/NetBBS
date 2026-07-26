@@ -22,7 +22,12 @@ import sys
 
 import pytest
 
-from netbbs.__main__ import StartupError, _install_signal_handlers, run
+from netbbs.__main__ import (
+    StartupError,
+    _create_log_file_handler,
+    _install_signal_handlers,
+    run,
+)
 from netbbs.net.shutdown import SequenceScheduler
 from netbbs.auth.users import SYSOP_LEVEL, create_user
 from netbbs.link.node_identity import bootstrap_node_identity
@@ -933,3 +938,30 @@ def test_signal_handler_registration_triggers_shutdown_event():
         await asyncio.wait_for(shutdown_event.wait(), timeout=2.0)
 
     asyncio.run(scenario())
+
+
+def test_default_log_file_rotates_instead_of_growing_without_bound(tmp_path):
+    """Issue #114: the default `netbbs.log` (issue #98) must be
+    self-bounding. `_create_log_file_handler` is exercised directly with
+    a deliberately tiny `maxBytes` override -- proving the rotation
+    wiring itself is correct doesn't require ever writing a real
+    multi-megabyte file."""
+    log_path = tmp_path / "netbbs.log"
+    handler = _create_log_file_handler(log_path)
+    handler.maxBytes = 200  # tiny, so a handful of records force a rollover
+    handler.backupCount = 2
+
+    logger = logging.getLogger("test_default_log_file_rotates_instead_of_growing_without_bound")
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    try:
+        for i in range(50):
+            logger.info("padding line %d to exceed the tiny rollover threshold", i)
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+    assert log_path.exists()
+    rotated = sorted(tmp_path.glob("netbbs.log.*"))
+    assert rotated, "expected at least one rotated backup file"
+    assert len(rotated) <= 2, "backupCount=2 must cap the number of retained backups"

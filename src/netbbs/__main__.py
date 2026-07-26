@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import logging.handlers
 import signal
 import sys
+from pathlib import Path
 
 from netbbs.auth.users import count_sysops
 from netbbs.backup import remove_pid_file, write_pid_file
@@ -45,6 +47,39 @@ _logger = logging.getLogger(__name__)
 # Every logged event -- console or file -- carries a timestamp (issue
 # #98); `basicConfig`'s own default format has none.
 _LOG_FORMAT = "%(asctime)s %(levelname)s:%(name)s:%(message)s"
+
+# Issue #114: the default `netbbs.log` this module creates (issue #98)
+# must be self-bounding rather than growing without limit -- the same
+# "continuously/externally influenced resources need an explicit bound"
+# rule the structured `link_diagnostic_log` table already follows
+# (`netbbs.link.diagnostics`), just via stdlib rotation instead of a
+# row-count cap, since this is a plain text file, not a table. NetBBS
+# owns this file's retention itself (rather than deferring entirely to
+# journald/logrotate) because NetBSD -- this project's Tier-1 target --
+# has no systemd, and the file is created by NetBBS's own zero-
+# configuration default, not something an operator opted into. 10 MiB x
+# 5 backups (50 MiB worst case) is a conservative, hardcoded default,
+# deliberately not (yet) config-exposed -- dogfood can motivate a real
+# tunable later, but there's no evidence of a need for one yet.
+_LOG_FILE_MAX_BYTES = 10 * 1024 * 1024
+_LOG_FILE_BACKUP_COUNT = 5
+
+
+def _create_log_file_handler(log_path: Path) -> logging.Handler:
+    """Bounded rotating file handler for the default `netbbs.log`.
+
+    Split out from `main()` purely so tests can exercise the rotation
+    configuration directly (tiny `maxBytes`) without needing a
+    multi-megabyte real file or invoking the rest of node startup.
+    """
+    handler = logging.handlers.RotatingFileHandler(
+        log_path,
+        maxBytes=_LOG_FILE_MAX_BYTES,
+        backupCount=_LOG_FILE_BACKUP_COUNT,
+        encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+    return handler
 
 
 class StartupError(Exception):
@@ -838,9 +873,7 @@ async def main() -> None:
     # own CWD-relative default, and one less thing to configure for a
     # deployment that hasn't asked for anything fancier.
     log_path = config.db_path.parent / "netbbs.log"
-    file_handler = logging.FileHandler(log_path, encoding="utf-8")
-    file_handler.setFormatter(logging.Formatter(_LOG_FORMAT))
-    logging.getLogger().addHandler(file_handler)
+    logging.getLogger().addHandler(_create_log_file_handler(log_path))
 
     shutdown_event = asyncio.Event()
     session_registry = ActiveSessionRegistry()

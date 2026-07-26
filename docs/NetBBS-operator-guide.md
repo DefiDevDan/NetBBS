@@ -159,9 +159,11 @@ back up all of it together, not just the database (see §5):
 | SSH host key | `<db-stem>_ssh_host_key` |
 | Welcome banner (if customized) | `<db-stem>_welcome_banner.ans` |
 | Config file | wherever `--config` points (not derived from `--db`) |
-| Logs | not written to a file by NetBBS itself — captured by your
-  service supervisor (`journalctl -u netbbs` under systemd; syslog/
-  `daemon` facility under NetBSD's `rc.d`, see `examples/netbbs.rc`) |
+| Logs | `netbbs.log` next to the database, self-rotating at 10 MiB
+  with 5 backups kept (50 MiB worst case, never unbounded) — also
+  visible via your service supervisor (`journalctl -u netbbs` under
+  systemd; syslog/`daemon` facility under NetBSD's `rc.d`, see
+  `examples/netbbs.rc`) since NetBBS still logs to stderr/stdout too |
 | Backups | wherever you choose with `--to` (§5) — not a fixed path |
 
 Uninstalling the package (`pip uninstall netbbs`, or removing a pkgsrc
