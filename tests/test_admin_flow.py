@@ -707,6 +707,96 @@ def test_who_screen_with_no_custom_message_sends_nothing_extra_to_the_target(db,
     asyncio.run(scenario())
 
 
+def test_who_screen_shows_the_real_persisted_session_id_not_a_recomputed_position(db, lane, sysop):
+    """Issue #113: the "(#N)" reference `pick_item` shows must be
+    `ActiveSessionRegistry`'s own persistent, never-reused session_id --
+    not something merely derived from current page position (which would
+    always just be 1, 2, 3... and could never actually distinguish this
+    from the pre-#113 id(session) behavior in a test). Session A enters
+    and leaves first, freeing session_id 1; B and C then enter and stay,
+    getting session_id 2 and 3. On a page listing only [B, C], a
+    position-based scheme would show 01/02 -- the real IDs are 2 and 3."""
+    async def scenario():
+        node_controls = _node_controls()
+        registry = node_controls.session_registry
+
+        a_task = asyncio.create_task(_hold_registered(registry, FakeSession()))
+        await asyncio.sleep(0)
+        a_task.cancel()
+        await asyncio.gather(a_task, return_exceptions=True)
+
+        b, c = FakeSession(), FakeSession()
+        b_task = asyncio.create_task(_hold_registered(registry, b))
+        c_task = asyncio.create_task(_hold_registered(registry, c))
+        await asyncio.sleep(0)
+
+        # One extra "b" versus other Who-screen tests: those select a
+        # session (which returns control to _who_screen without needing
+        # its own "b"), this one backs straight out of the picker itself
+        # first, then unwinds node/sysop menus same as always.
+        admin_session = FakeSession(["s", "n", "w", "b", "b", "b", "b"])
+        registry.enter(admin_session)
+        try:
+            await admin_menu(admin_session, lane, sysop, node_controls=node_controls)
+        finally:
+            registry.leave(admin_session)
+
+        text = _written_text(admin_session)
+        assert "(#2)" in text
+        assert "(#3)" in text
+        assert "(#1)" not in text
+
+        for task in (b_task, c_task):
+            task.cancel()
+        await asyncio.gather(b_task, c_task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_who_screen_goto_targets_the_exact_session_by_its_real_id(db, lane, sysop):
+    """SysOp disconnect must still target the exact selected session
+    (issue #113's own acceptance criterion) when reached via `Go to #`
+    rather than a 2-digit page position -- proving the number shown is
+    genuinely usable as `pick_item`'s own permanent per-item reference,
+    not merely cosmetic."""
+    async def scenario():
+        node_controls = _node_controls()
+        registry = node_controls.session_registry
+
+        # A leaves first, so B and C's real session_id (2, 3) diverges
+        # from their page position (1, 2) -- same setup as the display
+        # test above, reused here to prove goto, not just display, uses
+        # the real ID.
+        a_task = asyncio.create_task(_hold_registered(registry, FakeSession()))
+        await asyncio.sleep(0)
+        a_task.cancel()
+        await asyncio.gather(a_task, return_exceptions=True)
+
+        b, c = FakeSession(), FakeSession()
+        b_task = asyncio.create_task(_hold_registered(registry, b))
+        c_task = asyncio.create_task(_hold_registered(registry, c))
+        await asyncio.sleep(0)
+
+        # "g" (goto), target session_id 2 (b, page position 01 here --
+        # but selection must be driven by the typed ID, not position),
+        # then confirm disconnecting it with no custom message.
+        admin_session = FakeSession(["s", "n", "w", "g", "2", "y", "", "b", "b", "b"])
+        registry.enter(admin_session)
+        try:
+            await admin_menu(admin_session, lane, sysop, node_controls=node_controls)
+        finally:
+            registry.leave(admin_session)
+
+        await asyncio.sleep(0)
+        assert b_task.cancelled() or b_task.done()
+        assert not (c_task.cancelled() or c_task.done())
+
+        c_task.cancel()
+        await asyncio.gather(c_task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
 async def _run_admin_session_as_its_own_task(session, lane, actor, node_controls, registry):
     """
     Runs `admin_menu` as an independent task with its own `enter()`/

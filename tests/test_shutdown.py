@@ -467,6 +467,67 @@ def test_list_entries_reflects_peer_address_and_connected_at():
     asyncio.run(scenario())
 
 
+# -- session_id (issue #113): compact, NetBBS-owned, never reused -----------
+
+
+def test_session_id_is_a_small_sequential_number_not_a_python_object_id():
+    """Issue #113's own point: this must be a compact, NetBBS-owned
+    identifier, not `id(session)` (routinely a large, memory-address-
+    like number on CPython). Two freshly entered sessions in an
+    otherwise-empty registry get 1 and 2 -- `id()` values have no such
+    guarantee."""
+    registry = ActiveSessionRegistry()
+
+    async def scenario():
+        first, second = _FakeSession(), _FakeSession()
+        tasks = [asyncio.create_task(_hold_registered(registry, s)) for s in (first, second)]
+        await asyncio.sleep(0)
+
+        entries = {e.session: e.session_id for e in registry.list_entries()}
+        assert entries[first] == 1
+        assert entries[second] == 2
+
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_session_id_is_never_reused_after_a_session_leaves():
+    """The actual safety property a Who picker relies on (issue #113's
+    own acceptance criterion): if a freed session's id() were ever
+    reused for a *different*, later-connecting session, a SysOp who read
+    a picker page before the swap could disconnect/message the wrong
+    live session. A plain monotonic counter that never resets on leave()
+    closes this off entirely, unlike relying on however CPython happens
+    to reuse addresses."""
+    registry = ActiveSessionRegistry()
+
+    async def scenario():
+        first = _FakeSession()
+        first_task = asyncio.create_task(_hold_registered(registry, first))
+        await asyncio.sleep(0)
+        first_id = registry.list_entries()[0].session_id
+
+        first_task.cancel()
+        await asyncio.gather(first_task, return_exceptions=True)
+        assert len(registry) == 0
+
+        second = _FakeSession()
+        second_task = asyncio.create_task(_hold_registered(registry, second))
+        await asyncio.sleep(0)
+        second_id = registry.list_entries()[0].session_id
+
+        assert second_id != first_id
+        assert second_id > first_id
+
+        second_task.cancel()
+        await asyncio.gather(second_task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
 # -- sessions_for_username / disconnect_username (GitHub issue #29) --------
 
 

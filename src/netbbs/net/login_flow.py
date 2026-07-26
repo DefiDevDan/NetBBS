@@ -2568,7 +2568,7 @@ async def _caller_who_screen(
     selected = await pick_item(
         session, await _load_entries(),
         name_of=_who_entry_name,
-        stable_id_of=lambda e: id(e.session),
+        stable_id_of=lambda e: e.session_id,
         description_of=lambda e: _who_entry_description(db, e),
         title="Who's online",
         empty_message="No one else is online right now.",

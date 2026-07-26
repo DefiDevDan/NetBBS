@@ -33,9 +33,14 @@ class _Entry:
     for exactly the same reason: an unauthenticated or ordinary-account
     session is correctly treated as "not a SysOp" by `broadcast_to_all`/
     `disconnect_all`'s `exclude_sysops` filter without needing its own
-    special case."""
+    special case.
+
+    `session_id` (issue #113) has no default -- `enter()` is the only
+    place one is ever minted, from `ActiveSessionRegistry`'s own
+    monotonic counter, so there is no sensible value to fall back to."""
 
     task: asyncio.Task
+    session_id: int
     username: str | None = None
     is_sysop: bool = False
     connected_at: str = field(default_factory=utc_now_iso)
@@ -46,9 +51,23 @@ class SessionSummary:
     """A read-only snapshot of one registered session, for admin
     display — deliberately
     doesn't expose the raw `Task`, only what a "who's connected" view
-    needs."""
+    needs.
+
+    `session_id` (issue #113): a compact, NetBBS-owned, node-lifetime
+    identifier -- what the shared picker's `(#N)`/`Go to #` should
+    display and accept for a Who screen, replacing `id(session)`
+    (Python's own process-local object identity, memory-address-like on
+    CPython and entirely accidental as a *stable* value -- it only
+    happens to stay fixed for as long as nothing else reuses that
+    address, not a guarantee this registry can rely on or that means
+    anything to a caller). Assigned once, in `enter()`, and never reused
+    within this registry's own process lifetime (see that method's own
+    docstring) -- `session` itself is kept alongside it, unchanged, for
+    every actual disconnect/notify operation, which still need the real
+    object, not just its display number."""
 
     session: Session
+    session_id: int
     username: str | None
     connected_at: str
     peer_address: str | None
@@ -61,14 +80,38 @@ class ActiveSessionRegistry:
 
     def __init__(self) -> None:
         self._sessions: dict[Session, _Entry] = {}
+        # Issue #113: a plain incrementing counter, node-lifetime only --
+        # never persisted, never reset except by a process restart (which
+        # also empties self._sessions itself, so there is no stale ID
+        # left over to collide with). Deliberately never reused even
+        # after a session leaves -- see enter()'s own docstring for why
+        # reuse, not merely uniqueness among *currently* connected
+        # sessions, is the property that actually matters here.
+        self._next_session_id = 1
 
     def enter(self, session: Session) -> None:
         """Register `session` as connected. Records the *current*
         asyncio task (the one running this connection's handler) so
-        `disconnect_all`/`disconnect_one` can cancel it directly later."""
+        `disconnect_all`/`disconnect_one` can cancel it directly later.
+
+        Also mints this session's own `session_id` (issue #113) from
+        this registry's monotonic counter -- unique for the lifetime of
+        this process, and specifically never reused even once a session
+        leaves and a later one connects. Reuse, not just uniqueness among
+        currently-listed sessions, is the property a Who picker actually
+        needs: `pick_item`'s own page is a snapshot, and a SysOp reading
+        a page, having someone disconnect, then someone new connect and
+        receive that same now-freed number, before pressing a key, could
+        otherwise target the wrong live session entirely -- exactly the
+        class of bug `id(session)` was already immune to only by
+        accident (a freed object's address isn't reliably reused that
+        quickly), which a plain `len(self._sessions)`-style counter would
+        not be."""
         task = asyncio.current_task()
         assert task is not None, "enter() must be called from within the connection's own task"
-        self._sessions[session] = _Entry(task=task)
+        session_id = self._next_session_id
+        self._next_session_id += 1
+        self._sessions[session] = _Entry(task=task, session_id=session_id)
 
     def leave(self, session: Session) -> None:
         self._sessions.pop(session, None)
@@ -96,6 +139,7 @@ class ActiveSessionRegistry:
         return [
             SessionSummary(
                 session=session,
+                session_id=entry.session_id,
                 username=entry.username,
                 connected_at=entry.connected_at,
                 peer_address=session.peer_address,

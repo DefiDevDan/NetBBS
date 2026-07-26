@@ -1331,7 +1331,7 @@ async def _link_status_screen(
     selected = await pick_item(
         session, list(node.peers.values()),
         name_of=lambda peer: peer.fingerprint,
-        stable_id_of=lambda peer: id(peer),  # in-memory only, same idiom _who_screen uses for sessions
+        stable_id_of=lambda peer: id(peer),  # in-memory only, no persisted/NetBBS-owned identifier exists here
         description_of=_peer_description,
         title="Verified peers",
         empty_message="No verified peers.",
@@ -1750,7 +1750,7 @@ async def _who_screen(session: Session, lane: DatabaseLane, actor: User, node_co
     selected = await pick_item(
         session, entries,
         name_of=_session_name,
-        stable_id_of=lambda e: id(e.session),
+        stable_id_of=lambda e: e.session_id,
         description_of=lambda e: _session_description(e, display_format, display_timezone),
         title="Active sessions",
         empty_message="No active sessions.",
