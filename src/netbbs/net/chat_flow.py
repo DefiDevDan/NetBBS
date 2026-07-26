@@ -148,8 +148,10 @@ from netbbs.net.session_registry import ActiveSessionRegistry
 from netbbs.permissions import meets_level
 from netbbs.rendering import (
     ACCENT_COLOR,
+    CHAT_BODY_COLOR,
     CHANNEL_TYPE_COLOR,
     HEADER_COLOR,
+    MENU_KEY_COLOR,
     MUTED_COLOR,
     NICK_COLOR,
     PRIVILEGE_COLOR,
@@ -3465,8 +3467,18 @@ def _render_direct_chat_status_line(other_user: User, presence: PresenceRegistry
     smaller than `_render_chat_status_line`: no topic, no roster, no
     moderator privileges/mute state, none of which mean anything for
     exactly two already-consenting participants. Just who this room is
-    with, and whether they're currently away."""
+    with, whether they're currently away, and the persistent leave
+    command. The leave group comes first because `_compose_status_line`
+    retains groups from left to right as width shrinks: `/close` is the
+    safety/navigation affordance users must not have to remember. Its
+    second span is expendable, so a narrow row keeps the compact
+    `/close` form before eventually truncating only on terminals too
+    narrow to display the command itself."""
     groups: list[_StatusGroup] = [
+        [
+            _StatusSpan("/close", fg_color=MENU_KEY_COLOR, bold=True),
+            _StatusSpan(" leave", fg_color=MUTED_COLOR),
+        ],
         [
             _StatusSpan("Direct chat with ", fg_color=MUTED_COLOR),
             _StatusSpan(sanitize_text(other_user.username), fg_color=ACCENT_COLOR, bold=True),
@@ -3475,6 +3487,27 @@ def _render_direct_chat_status_line(other_user: User, presence: PresenceRegistry
     if presence.is_away(other_user.username):
         groups.append([_StatusSpan("(away)", fg_color=MUTED_COLOR)])
     return groups
+
+
+def _render_direct_chat_message(label: str, body: str, *, self_message: bool) -> str:
+    """Render a direct-chat line as independently sanitized/styled
+    identity and body spans.
+
+    Direct chat has no persisted message envelope or database-backed
+    display-name lookup, so this intentionally remains a small renderer
+    over the two strings the room already owns. Sanitizing each segment
+    before styling it preserves the same trust boundary as channel chat:
+    neither a username nor message text can inject terminal controls,
+    and one span's SGR reset cannot erase the other's intended color.
+    """
+    label_color = SELF_COLOR if self_message else ACCENT_COLOR
+    safe_label = sanitize_text(label)
+    safe_body = sanitize_text(body)
+    return (
+        colored(f"{safe_label}:", fg_color=label_color, bold=self_message)
+        + " "
+        + colored(safe_body, fg_color=CHAT_BODY_COLOR)
+    )
 
 
 async def _repaint_direct_chat_status_line(
@@ -3657,6 +3690,12 @@ async def run_direct_chat_loop(
                 async with lock:
                     pinned_ui_enabled_now = await pinned_ui.sync(session, user, other_user, presence, live_buffer)
                     if pinned_ui_enabled_now:
+                        # `read_line` has atomically cleared live_buffer
+                        # after echoing Enter. Paint that empty state
+                        # before the committed line is rendered in the
+                        # content region, otherwise the old input remains
+                        # visible below an identical `you:` line.
+                        await _repaint_input_row(session, live_buffer, session.terminal_height)
                         await _enter_content_region(session, session.terminal_height)
 
                     if not line:
@@ -3664,10 +3703,8 @@ async def run_direct_chat_loop(
                     if line.lower() == "/close":
                         return
 
-                    await session.write_line(colored(f"you: {sanitize_text(line)}", fg_color=SELF_COLOR))
-                    rendered_for_other = colored(
-                        f"{sanitize_text(user.username)}: {sanitize_text(line)}", fg_color=ACCENT_COLOR
-                    )
+                    await session.write_line(_render_direct_chat_message("you", line, self_message=True))
+                    rendered_for_other = _render_direct_chat_message(user.username, line, self_message=False)
                     await hub.broadcast(room, rendered_for_other, exclude={participant_id})
 
         receive_task = asyncio.create_task(receive_loop())

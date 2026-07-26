@@ -3586,7 +3586,10 @@ must ship before any public/untrusted federation claim.
 After #126, Phase 4 deliberately pauses for a bounded product-track interleave
 from issue #83's real-user dogfood feedback before foundation issue #127:
 
-- direct-chat discoverability, single rendering, and field color (#134);
+- direct-chat discoverability, single rendering, and field color (#134) —
+  implemented: the pinned status row retains `/close` with a compact narrow-
+  width form, submitted input is cleared before its committed rendering, and
+  identity/message spans are independently sanitized and colored;
 - safe line-mode composition and review-before-commit (#133);
 - truthful single-key yes/no confirmations with Enter defaults (#135);
 - current-build visual/capability verification plus bounded semantic-color
