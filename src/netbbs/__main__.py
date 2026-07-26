@@ -31,6 +31,7 @@ from netbbs.link.node_identity import NodeIdentityError, load_or_bootstrap_node_
 from netbbs.link.protocol import HelloMessage, LinkNode
 from netbbs.link.seedlist import run_scheduled_seed_refresh
 from netbbs.link.store import load_link_node
+from netbbs.link.trust import maintain_trust_state
 from netbbs.net.daybreak import run_daybreak_announcer
 from netbbs.net.login_flow import handle_session, handle_ssh_session
 from netbbs.net.maintenance import MaintenanceMode
@@ -419,6 +420,15 @@ async def run(
     reconciled = reconcile_interrupted_sessions(db)
     if reconciled:
         _logger.info("marked %d interrupted session(s) from a previous run", reconciled)
+
+    # Design doc §12.9, issue #126: effective trust is a persisted cache,
+    # never an authority which may silently go stale while the node was
+    # offline. Re-evaluate expiry/recovery against current local time before
+    # listeners accept anything, then prune only inputs which have been
+    # inactive beyond the bounded retention window and carry no explicit hold.
+    trust_pruned = maintain_trust_state(db)
+    if any(trust_pruned.values()):
+        _logger.info("pruned inactive Link trust inputs at startup: %s", trust_pruned)
 
     hub = ChatHub()
     presence = PresenceRegistry()

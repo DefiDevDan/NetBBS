@@ -17,7 +17,9 @@ readiness. Phase 3 remains private/experimental federation regardless
 of how this goes; implementing and validating design doc §12's Phase-4
 trust/quarantine model is the actual public-readiness gate. This dogfood run
 only proves Phase 3's existing behavior holds up under sustained real
-operation.
+operation. Its calendar duration is intentionally independent from the active
+Phase-4 development cycle; findings still become focused issues and durable
+engineering lessons as they arise.
 
 ## 1. Topology (at least three nodes)
 
