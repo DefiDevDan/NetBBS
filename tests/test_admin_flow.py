@@ -157,7 +157,7 @@ def test_sysop_menu_reaches_trust_domain_configuration(db, lane, sysop):
     domains = list_trust_domains(db)
     assert [(item.domain_id, item.weight) for item in domains] == [("friends", 0.75)]
     text = _written_text(session)
-    assert "Trust policy:" in text
+    assert "NetBBS / System / Trust policy" in text
     assert "Trust domain saved and audited." in text
 
 
@@ -2657,7 +2657,9 @@ def test_update_screen_reports_up_to_date(db, lane, sysop, monkeypatch):
     session = FakeSession(["s", "u", "y", "n", "b", "b"])
     _run(session, lane, sysop)
 
-    assert f"Already up to date ({__version__})" in _written_text(session)
+    text = _written_text(session)
+    assert "[UP TO DATE]" in text
+    assert __version__ in text
     _, outcome = get_last_check_summary(db)
     assert outcome == f"up to date ({__version__})"
 
@@ -2675,7 +2677,8 @@ def test_update_screen_reports_newer_release_without_auto_applying(db, lane, sys
     _run(session, lane, sysop)
 
     text = _written_text(session)
-    assert "A newer release is available: v999.0.0" in text
+    assert "[UPDATE AVAILABLE]" in text
+    assert "v999.0.0" in text
     assert "Automatic download/apply is not yet available" in text
     _, outcome = get_last_check_summary(db)
     assert outcome == "newer release available: v999.0.0"
@@ -2921,7 +2924,8 @@ def test_link_status_screen_shows_summary_counts(db, lane, sysop):
 
     text = _written_text(session)
     assert link_context.node_identity.fingerprint in text
-    assert "Mode: outgoing-only" in text
+    assert "Mode: " in text
+    assert "[OUTGOING ONLY]" in text
     assert "Configured seeds: 1" in text
     assert "Linked boards: 1" in text
     assert "Known events: 1" in text

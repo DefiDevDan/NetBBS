@@ -39,6 +39,10 @@ single-node BBS:
 - A fullscreen WYSIWYG ANSI art editor (for welcome banners) and a
   nano-keybound prose editor (for post bodies/bios), both reachable as
   an opt-in per-user preference over any of the three transports.
+- A cohesive terminal interface with responsive screen hierarchy,
+  semantic status badges, guided empty states, and width-aware action
+  bars. The same presentation degrades cleanly from truecolor through
+  256-color terminals and remains readable when color is unavailable.
 - SysOp admin tooling: user/board/area/channel management, node
   management (who's online, disconnect a session, graceful shutdown),
   and reference-aware garbage collection for uploaded file storage.

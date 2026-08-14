@@ -163,6 +163,7 @@ from netbbs.rendering import (
     MUTED_COLOR,
     SUCCESS_COLOR,
     VALUE_COLOR,
+    WARNING_COLOR,
     action_bar,
     badge,
     colored,
@@ -223,6 +224,29 @@ class LoginOutcome(Enum):
     BLOCKED = auto()
     THROTTLED = auto()
     IDLE_TIMEOUT = auto()
+
+
+async def _write_connection_notice(
+    session: Session,
+    title: str,
+    detail: str,
+    *,
+    tone: str = "warning",
+) -> None:
+    """Render a terminal connection state without changing its outcome."""
+    width = getattr(session, "terminal_width", 80)
+    await session.write_line(
+        "\r\n"
+        + screen_title(
+            title,
+            breadcrumb=(),
+            width=width,
+        )
+    )
+    await session.write_line(badge(title.upper(), tone=tone))
+    await session.write_line(
+        colored(reflow(detail, width=width), fg_color=METADATA_COLOR)
+    )
 
 
 async def handle_session(
@@ -319,11 +343,11 @@ async def handle_session(
     when `config.link.enabled`.
     """
     if maintenance.is_active():
+        detail = MAINTENANCE_MESSAGE
         if shutdown_scheduler is not None and shutdown_scheduler.is_scheduled():
             remaining = shutdown_scheduler.remaining_seconds()
-            await session.write_line(f"{MAINTENANCE_MESSAGE} (going down in {format_remaining_seconds(remaining)})")
-        else:
-            await session.write_line(MAINTENANCE_MESSAGE)
+            detail = f"{detail} (going down in {format_remaining_seconds(remaining)})"
+        await _write_connection_notice(session, "Maintenance", detail)
         return
 
     node_controls = NodeControls(
@@ -412,20 +436,28 @@ async def _run_authenticated_session(
                 timeout=throttle_config.login_deadline_seconds,
             )
         except asyncio.TimeoutError:
-            await session.write_line("\r\nLogin timed out. Goodbye.")
+            await _write_connection_notice(session, "Session ended", "Login timed out. Goodbye.")
             return
     finally:
         throttle.leave_unauthenticated()
 
     if login_result is LoginOutcome.ATTEMPTS_EXHAUSTED:
-        await session.write_line("Too many failed attempts. Goodbye.")
+        await _write_connection_notice(
+            session,
+            "Sign-in failed",
+            "Too many failed attempts. Goodbye.",
+            tone="error",
+        )
         return
     if login_result is LoginOutcome.IDLE_TIMEOUT:
-        await session.write_line("\r\nTimed out waiting for input. Goodbye.")
+        await _write_connection_notice(session, "Session ended", "Timed out waiting for input. Goodbye.")
         return
     if login_result is LoginOutcome.THROTTLED:
-        await session.write_line(
-            "\r\nToo many login attempts. Please try again later."
+        await _write_connection_notice(
+            session,
+            "Please wait",
+            "Too many login attempts. Please try again later.",
+            tone="error",
         )
         return
     if login_result is LoginOutcome.BLOCKED:
@@ -638,7 +670,7 @@ async def run_authenticated_session(
             except asyncio.CancelledError:
                 pass
 
-    await session.write_line("\r\nGoodbye!")
+    await _write_connection_notice(session, "Signed out", "Goodbye!", tone="success")
 
 
 async def _authorize_ssh_authenticated_user(
@@ -666,13 +698,28 @@ async def _authorize_ssh_authenticated_user(
     try:
         user = get_user_by_username(db, username)
     except AuthError:
-        await session.write_line("\r\nYour account is no longer available. Goodbye.")
+        await _write_connection_notice(
+            session,
+            "Access unavailable",
+            "Your account is no longer available. Goodbye.",
+            tone="error",
+        )
         return LoginOutcome.BLOCKED
     if user.disabled_at is not None:
-        await session.write_line("\r\nYour account is no longer available. Goodbye.")
+        await _write_connection_notice(
+            session,
+            "Access unavailable",
+            "Your account is no longer available. Goodbye.",
+            tone="error",
+        )
         return LoginOutcome.BLOCKED
     if is_blocked(db, user):
-        await session.write_line("\r\nYour access to this system has been revoked.")
+        await _write_connection_notice(
+            session,
+            "Access revoked",
+            "Your access to this system has been revoked.",
+            tone="error",
+        )
         return LoginOutcome.BLOCKED
     return user
 
@@ -726,11 +773,11 @@ async def handle_ssh_session(
     docstring for the reasoning, not repeated here.
     """
     if maintenance.is_active():
+        detail = MAINTENANCE_MESSAGE
         if shutdown_scheduler is not None and shutdown_scheduler.is_scheduled():
             remaining = shutdown_scheduler.remaining_seconds()
-            await session.write_line(f"{MAINTENANCE_MESSAGE} (going down in {format_remaining_seconds(remaining)})")
-        else:
-            await session.write_line(MAINTENANCE_MESSAGE)
+            detail = f"{detail} (going down in {format_remaining_seconds(remaining)})"
+        await _write_connection_notice(session, "Maintenance", detail)
         return
 
     node_controls = NodeControls(
@@ -751,7 +798,12 @@ async def handle_ssh_session(
             # validate_password/validate_public_key -- but refusing
             # cleanly here is cheaper than trusting that invariant
             # blindly.
-            await session.write_line("\r\nSSH authentication did not complete. Goodbye.")
+            await _write_connection_notice(
+                session,
+                "SSH sign-in failed",
+                "SSH authentication did not complete. Goodbye.",
+                tone="error",
+            )
             return
 
         result = await _authorize_ssh_authenticated_user(session, db, username)
@@ -1636,7 +1688,10 @@ async def _login(
             # therefore always-failing) username lookup.
             if registration_mode == RegistrationMode.CLOSED:
                 await session.write_line(
-                    "This system does not accept public registrations. Contact the SysOp for an account."
+                    colored(
+                        "This system does not accept public registrations. Contact the SysOp for an account.",
+                        fg_color=WARNING_COLOR,
+                    )
                 )
                 continue
             new_user = await _register_new_account(
@@ -1669,9 +1724,14 @@ async def _login(
         except AuthError:
             remaining = max_attempts - attempt - 1
             if remaining > 0:
-                await session.write_line(f"Login failed. {remaining} attempt(s) remaining.")
+                await session.write_line(
+                    colored(
+                        f"Login failed. {remaining} attempt(s) remaining.",
+                        fg_color=ERROR_COLOR,
+                    )
+                )
             else:
-                await session.write_line("Login failed.")
+                await session.write_line(colored("Login failed.", fg_color=ERROR_COLOR))
             continue
 
         if is_blocked(db, user):
@@ -1681,7 +1741,9 @@ async def _login(
             # an anonymous prober still guessing passwords, so there's no
             # username-enumeration concern in telling them specifically
             # why they can't proceed.
-            await session.write_line("Your access to this system has been revoked.")
+            await session.write_line(
+                colored("Your access to this system has been revoked.", fg_color=ERROR_COLOR)
+            )
             return LoginOutcome.BLOCKED
 
         return user
@@ -1726,20 +1788,29 @@ async def _register_new_account(
     admin screen, if a SysOp adds it by hand).
     """
     await session.write_line(
-        colored(
-            "\r\nCreating a new account. Press Enter with a blank username to cancel.",
-            fg_color=MUTED_COLOR,
+        "\r\n"
+        + screen_title(
+            "Create account",
+            breadcrumb=(),
+            subtitle="Choose your credentials. A blank username cancels.",
+            width=session.terminal_width,
         )
     )
     try:
-        await session.write("Desired username: ")
+        await session.write(colored("Desired username: ", fg_color=LABEL_COLOR, bold=True))
         username = (await asyncio.wait_for(session.read_line(), timeout=idle_timeout)).strip()
         if not username:
             return None
 
-        await session.write(f"Password (min {MIN_REGISTRATION_PASSWORD_LENGTH} characters): ")
+        await session.write(
+            colored(
+                f"Password (min {MIN_REGISTRATION_PASSWORD_LENGTH} characters): ",
+                fg_color=LABEL_COLOR,
+                bold=True,
+            )
+        )
         password = await asyncio.wait_for(session.read_line(echo=False), timeout=idle_timeout)
-        await session.write("Confirm password: ")
+        await session.write(colored("Confirm password: ", fg_color=LABEL_COLOR, bold=True))
         confirm = await asyncio.wait_for(session.read_line(echo=False), timeout=idle_timeout)
     except asyncio.TimeoutError:
         return None
@@ -1748,12 +1819,12 @@ async def _register_new_account(
         await session.write_line(
             colored(
                 f"Password must be at least {MIN_REGISTRATION_PASSWORD_LENGTH} characters.",
-                fg_color=MUTED_COLOR,
+                fg_color=ERROR_COLOR,
             )
         )
         return None
     if password != confirm:
-        await session.write_line(colored("Passwords did not match.", fg_color=MUTED_COLOR))
+        await session.write_line(colored("Passwords did not match.", fg_color=ERROR_COLOR))
         return None
 
     # Same node-wide budget _login's own password attempts consume
@@ -1764,7 +1835,7 @@ async def _register_new_account(
     # before authenticate_password_async.
     if not throttle.allow_attempt(source=session.peer_address, username=username):
         await session.write_line(
-            colored("Too many registration attempts. Please try again later.", fg_color=MUTED_COLOR)
+            colored("Too many registration attempts. Please try again later.", fg_color=ERROR_COLOR)
         )
         return None
 
@@ -1772,16 +1843,22 @@ async def _register_new_account(
     try:
         new_user = await create_user_async(db, username, password=password, pending_approval=require_approval)
     except AuthError as exc:
-        await session.write_line(colored(f"Could not create account: {exc}", fg_color=MUTED_COLOR))
+        await session.write_line(colored(f"Could not create account: {exc}", fg_color=ERROR_COLOR))
         return None
 
     if require_approval:
         await session.write_line(
-            f"Account {new_user.username!r} created. A SysOp must approve it before you can log in."
+            colored(
+                f"Account {new_user.username!r} created. A SysOp must approve it before you can log in.",
+                fg_color=WARNING_COLOR,
+                bold=True,
+            )
         )
         return None
 
-    await session.write_line(f"Account {new_user.username!r} created.")
+    await session.write_line(
+        colored(f"Account {new_user.username!r} created.", fg_color=SUCCESS_COLOR, bold=True)
+    )
     return new_user
 
 

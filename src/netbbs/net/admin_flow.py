@@ -232,12 +232,16 @@ from netbbs.rendering import (
     MUTED_COLOR,
     SUCCESS_COLOR,
     WARNING_COLOR,
+    action_bar,
+    badge,
     colored,
     colored_truncate,
+    empty_state,
     menu_key,
     reflow,
     reject_keystroke,
     sanitize_text,
+    screen_title,
     truncate,
 )
 from netbbs.storage.database import Database
@@ -502,22 +506,31 @@ async def _draw_system_menu(
 async def _trust_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
     while True:
         authorities = await lane.run(list_sole_authorities)
-        header = colored("\r\nTrust policy:", fg_color=HEADER_COLOR, bold=True)
-        options = "  ".join(
-            [
-                menu_key("S", "ubjects"), menu_key("D", "omains"),
-                menu_key("A", "nchors"), menu_key("R", "eporters"),
-                menu_key("I", "dentity authorities"), menu_key("E", "xceptions"),
-                menu_key("H", "istory"),
-                menu_key("B", "ack"),
-            ]
+        await session.write_line(
+            "\r\n"
+            + screen_title(
+                "Trust policy",
+                breadcrumb=("NetBBS", "System"),
+                subtitle="Inspect policy, explain restrictions, and manage trusted authorities.",
+                width=session.terminal_width,
+            )
         )
-        await session.write_line(f"{header} {options}")
+        options = [
+            menu_key("S", "ubjects"), menu_key("D", "omains"),
+            menu_key("A", "nchors"), menu_key("R", "eporters"),
+            menu_key("I", "dentity authorities"), menu_key("E", "xceptions"),
+            menu_key("H", "istory"),
+            menu_key("B", "ack"),
+        ]
+        await session.write_line(action_bar(options, width=session.terminal_width))
         if authorities:
             await session.write_line(
-                colored(
-                    f"SAFETY DEVIATION: {len(authorities)} sole-authority exception(s) active.",
-                    fg_color=ALERT_COLOR, bold=True,
+                badge("SAFETY DEVIATION", tone="error")
+                + " "
+                + colored(
+                    f"{len(authorities)} sole-authority exception(s) active.",
+                    fg_color=ALERT_COLOR,
+                    bold=True,
                 )
             )
         await session.write("Choice: ")
@@ -1653,14 +1666,30 @@ async def _update_settings_screen(session: Session, lane: DatabaseLane, actor: U
 
     auto_enabled, checked_at, outcome = await lane.run(_load)
 
-    header = colored("\r\nSelf-update:", fg_color=HEADER_COLOR, bold=True)
-    await session.write_line(header)
-    await session.write_line(f"Running version: {current_version}")
-    await session.write_line(f"Daily automatic check: {'ON' if auto_enabled else 'off'}")
+    await session.write_line(
+        "\r\n"
+        + screen_title(
+            "Self-update",
+            breadcrumb=("NetBBS", "System"),
+            subtitle="Release checks only; applying an update remains an operator action.",
+            width=session.terminal_width,
+        )
+    )
+    await session.write_line(
+        colored("Running version: ", fg_color=LABEL_COLOR)
+        + colored(current_version, fg_color=METADATA_COLOR)
+    )
+    auto_badge = badge("ON", tone="success") if auto_enabled else badge("OFF", tone="warning")
+    await session.write_line(
+        colored("Daily automatic check: ", fg_color=LABEL_COLOR) + auto_badge
+    )
     if checked_at is not None:
         display_format, display_timezone = await lane.run(resolve_display_preferences)
         when = format_for_display(checked_at, override_format=display_format, override_timezone=display_timezone)
-        await session.write_line(f"Last check: {when} -- {sanitize_text(outcome or '')}")
+        await session.write_line(
+            colored("Last check: ", fg_color=LABEL_COLOR)
+            + colored(f"{when} -- {sanitize_text(outcome or '')}", fg_color=METADATA_COLOR)
+        )
     else:
         await session.write_line(colored("No check has been run on this node yet.", fg_color=MUTED_COLOR))
 
@@ -1669,13 +1698,17 @@ async def _update_settings_screen(session: Session, lane: DatabaseLane, actor: U
             release = await check_latest_release()
         except UpdateError as exc:
             await lane.run(record_check_outcome, f"check failed: {exc}")
-            await session.write_line(colored(f"Could not check for updates: {exc}", fg_color=MUTED_COLOR))
+            await session.write_line(colored(f"Could not check for updates: {exc}", fg_color=ERROR_COLOR))
         else:
             if is_newer(current_version, release.tag_name):
                 await lane.run(record_check_outcome, f"newer release available: {release.tag_name}")
                 await session.write_line(
-                    f"A newer release is available: {release.tag_name} "
-                    f"(published {release.published_at})."
+                    badge("UPDATE AVAILABLE", tone="warning")
+                    + " "
+                    + colored(
+                        f"{release.tag_name} (published {release.published_at}).",
+                        fg_color=WARNING_COLOR,
+                    )
                 )
                 await session.write_line(
                     colored(
@@ -1686,7 +1719,11 @@ async def _update_settings_screen(session: Session, lane: DatabaseLane, actor: U
                 )
             else:
                 await lane.run(record_check_outcome, f"up to date ({current_version})")
-                await session.write_line(f"Already up to date ({current_version}).")
+                await session.write_line(
+                    badge("UP TO DATE", tone="success")
+                    + " "
+                    + colored(current_version, fg_color=SUCCESS_COLOR)
+                )
 
     new_state = "off" if auto_enabled else "ON"
     if not await prompt_yes_no(session, f"\r\nTurn daily automatic check {new_state}?", default=False):
@@ -1718,14 +1755,34 @@ async def _backup_status_screen(session: Session, lane: DatabaseLane, actor: Use
     """
     checked_at, path = await lane.run(get_last_backup_summary)
 
-    await session.write_line(colored("\r\nBackup status:", fg_color=HEADER_COLOR, bold=True))
+    await session.write_line(
+        "\r\n"
+        + screen_title(
+            "Backup status",
+            breadcrumb=("NetBBS", "System"),
+            subtitle="Last recorded operator backup for this node.",
+            width=session.terminal_width,
+        )
+    )
     if checked_at is not None:
         display_format, display_timezone = await lane.run(resolve_display_preferences)
         when = format_for_display(checked_at, override_format=display_format, override_timezone=display_timezone)
-        await session.write_line(f"Last backup: {when}")
-        await session.write_line(f"Location: {sanitize_text(path or '')}")
+        await session.write_line(badge("BACKED UP", tone="success"))
+        await session.write_line(
+            colored("Last backup: ", fg_color=LABEL_COLOR) + colored(when, fg_color=METADATA_COLOR)
+        )
+        await session.write_line(
+            colored("Location: ", fg_color=LABEL_COLOR)
+            + colored(sanitize_text(path or ""), fg_color=METADATA_COLOR)
+        )
     else:
-        await session.write_line(colored("No backup has been taken on this node yet.", fg_color=MUTED_COLOR))
+        await session.write_line(
+            empty_state(
+                "No backup recorded",
+                detail="No backup has been taken on this node yet.",
+                width=session.terminal_width,
+            )
+        )
     await session.write_line(
         colored("Run 'python -m netbbs.backup create --to <path>' to create one.", fg_color=MUTED_COLOR)
     )
@@ -1814,11 +1871,28 @@ async def _link_status_screen(
     node = link_context.link_node
     config = link_context.link_config
 
-    await session.write_line(colored("\r\nLink status:", fg_color=HEADER_COLOR, bold=True))
-    await session.write_line(f"This node's fingerprint: {sanitize_text(link_context.node_identity.fingerprint)}")
+    await session.write_line(
+        "\r\n"
+        + screen_title(
+            "Link status",
+            breadcrumb=("NetBBS", "System"),
+            subtitle="Identity, capacity, relay activity, and verified peers.",
+            width=session.terminal_width,
+        )
+    )
+    await session.write_line(
+        colored("Node fingerprint: ", fg_color=LABEL_COLOR)
+        + colored(
+            sanitize_text(link_context.node_identity.fingerprint),
+            fg_color=METADATA_COLOR,
+        )
+    )
 
     if config is not None:
-        await session.write_line(f"Mode: {'outgoing-only' if config.outgoing_only else 'full peer'}")
+        await session.write_line(
+            colored("Mode: ", fg_color=LABEL_COLOR)
+            + badge("OUTGOING ONLY" if config.outgoing_only else "FULL PEER", tone="neutral")
+        )
         if not config.outgoing_only:
             address = (
                 f"{config.advertised_host}:{config.advertised_port}"

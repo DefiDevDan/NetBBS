@@ -1222,7 +1222,7 @@ def test_shutdown_pre_login_message_includes_remaining_time_when_scheduled():
 
         text = "".join(session.written)
         assert MAINTENANCE_MESSAGE in text
-        assert "going down in" in text
+        assert "going down in" in " ".join(text.split())
 
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
