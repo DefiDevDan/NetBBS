@@ -110,8 +110,11 @@ def test_trust_evidence_fetch_is_bounded_and_same_origin():
     }
 
     async def scenario():
+        async def serve_evidence(request):
+            return web.Response(body=body)
+
         app = web.Application()
-        app.router.add_get("/evidence/one", lambda request: web.Response(body=body))
+        app.router.add_get("/evidence/one", serve_evidence)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, "127.0.0.1", 0)
@@ -234,7 +237,7 @@ def test_trust_subscription_pull_uses_real_transport_and_persists_restart_safe_s
                 raw, more = await request_trust_objects(
                     alice_node, session, f"http://127.0.0.1:{server.port}", pull
                 )
-                with pytest.raises(LinkTransportError, match="replay"):
+                with pytest.raises(LinkTransportError, match="recent nonce"):
                     await request_trust_objects(
                         alice_node, session, f"http://127.0.0.1:{server.port}", pull
                     )
