@@ -126,6 +126,7 @@ from netbbs.link.events import (
     verify_relay_consent_response,
 )
 from netbbs.link.node_identity import NodeIdentity, NodeIdentityError, resolve_current_operational_key
+from netbbs.link.trust_wire import TrustPullRequest
 from netbbs.timeutil import utc_now_iso
 
 # Bounds on remotely-influenced peer-list state (design doc's own
@@ -151,6 +152,8 @@ _MAX_EVENTS_PER_REQUEST = 200
 # window without letting a remote peer grow in-memory state forever.
 _INVENTORY_REQUEST_FRESHNESS_SECONDS = 5 * 60
 _MAX_SEEN_INVENTORY_REQUEST_NONCES = 4096
+_TRUST_PULL_FRESHNESS_SECONDS = 5 * 60
+_MAX_SEEN_TRUST_PULL_NONCES = 4096
 
 
 def _parse_aware_timestamp(value: str, *, field_name: str) -> datetime:
@@ -767,6 +770,7 @@ class LinkNode:
     board_lifecycle: BoardLifecycleState = field(default_factory=BoardLifecycleState)
     relay_state: RelayState = field(default_factory=RelayState)
     inventory_requests: InventoryRequestState = field(default_factory=InventoryRequestState)
+    trust_pull_requests: InventoryRequestState = field(default_factory=InventoryRequestState)
     # Design doc §9.6, issue #87.
     channel_events: ChannelEventState = field(default_factory=ChannelEventState)
     # Design doc §11, issue #89.
@@ -1205,6 +1209,49 @@ class LinkNode:
             oldest_key = next(iter(self.inventory_requests.seen_nonces))
             self.inventory_requests.seen_nonces.pop(oldest_key)
         self.inventory_requests.seen_nonces[replay_key] = received_at
+
+    def handle_trust_pull_request(
+        self,
+        sender_fingerprint: str,
+        request: TrustPullRequest,
+        *,
+        now_iso: str | None = None,
+    ) -> None:
+        """Authenticate one explicit, replay-bounded trust subscription pull."""
+        if sender_fingerprint not in self.peers:
+            raise LinkProtocolError("refusing trust pull from a peer without a completed hello")
+        if request.requester_fingerprint != sender_fingerprint:
+            raise LinkProtocolError("trust pull requester does not match the wire peer")
+        if request.responder_fingerprint != self.identity.fingerprint:
+            raise LinkProtocolError("trust pull is addressed to a different responder")
+        verify_key = self._resolve_sender_signing_key(
+            self.peers[sender_fingerprint], sender_fingerprint, "trust_pull_request"
+        )
+        if not request.verifies(verify_key):
+            raise LinkProtocolError("trust pull signature does not verify")
+        received_at = _parse_aware_timestamp(now_iso or utc_now_iso(), field_name="current time")
+        created_at = _parse_aware_timestamp(request.created_at, field_name="trust_pull_request.created_at")
+        if abs((received_at - created_at).total_seconds()) > _TRUST_PULL_FRESHNESS_SECONDS:
+            raise LinkProtocolError("trust pull is outside the five-minute freshness window")
+        cutoff = received_at.timestamp() - _TRUST_PULL_FRESHNESS_SECONDS
+        seen = self.trust_pull_requests.seen_nonces
+        for key, seen_at in list(seen.items()):
+            if seen_at.timestamp() < cutoff:
+                seen.pop(key, None)
+        replay_key = (sender_fingerprint, request.nonce)
+        if replay_key in seen:
+            raise LinkProtocolError("trust pull reuses a recent nonce")
+        while len(seen) >= _MAX_SEEN_TRUST_PULL_NONCES:
+            seen.pop(next(iter(seen)))
+        seen[replay_key] = received_at
+
+    def resolve_peer_signing_key(
+        self, fingerprint: str, kind: str = "signed object"
+    ) -> nacl.signing.VerifyKey:
+        """Resolve a completed peer's current operational signing key."""
+        if fingerprint not in self.peers:
+            raise LinkProtocolError(f"unknown issuer {fingerprint}")
+        return self._resolve_sender_signing_key(self.peers[fingerprint], fingerprint, kind)
 
     def _check_protocol_version(self, envelope: dict, *, kind: str, sender_fingerprint: str | None = None) -> None:
         """

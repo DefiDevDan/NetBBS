@@ -22,10 +22,12 @@ lane's connection only ever runs on its dedicated worker thread.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 
 import aiohttp
 import pytest
+from aiohttp import web
 
 from netbbs.auth.users import create_user
 from netbbs.boards.boards import create_board
@@ -41,11 +43,21 @@ from netbbs.link.transport import (
     LinkTransportError,
     deposit_into_relay_mailbox,
     dial_hello,
+    fetch_trust_evidence,
     pickup_from_relay_mailbox,
     push_events,
     request_inventory,
     request_peer_list,
     request_relay_consent,
+    request_trust_objects,
+)
+from netbbs.link.trust import TrustDimension, TrustSubject, configure_trust_domain, configure_trusted_reporter
+from netbbs.link.trust_wire import (
+    SignedTrustObject,
+    build_trust_pull_request,
+    build_trust_signal,
+    ingest_trust_objects,
+    save_trust_pull_cursor,
 )
 from netbbs.storage.database import Database
 from netbbs.storage.execution import DatabaseLane
@@ -88,6 +100,41 @@ class _NodeDb:
     def close(self) -> None:
         self.lane.close()
         self.db.close()
+
+
+def test_trust_evidence_fetch_is_bounded_and_same_origin():
+    body = b'{"proof":"checked"}'
+    evidence = {
+        "mode": "digest", "sha256": hashlib.sha256(body).hexdigest(),
+        "size": len(body), "locator": "/evidence/one",
+    }
+
+    async def scenario():
+        async def serve_evidence(request):
+            return web.Response(body=body)
+
+        app = web.Application()
+        app.router.add_get("/evidence/one", serve_evidence)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        try:
+            async with aiohttp.ClientSession() as session:
+                content, parsed = await fetch_trust_evidence(
+                    session, f"http://127.0.0.1:{port}", evidence
+                )
+                assert content == body and parsed == {"proof": "checked"}
+                with pytest.raises(LinkTransportError, match="reporter origin"):
+                    await fetch_trust_evidence(
+                        session, f"http://127.0.0.1:{port}",
+                        {**evidence, "locator": "http://127.0.0.1:1/private"},
+                    )
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(scenario())
 
 
 # -- hello: real HTTP round trip -------------------------------------------
@@ -133,6 +180,179 @@ def test_dial_hello_completes_a_real_http_handshake(tmp_path):
     finally:
         alice.close()
         bob.close()
+
+
+def test_trust_subscription_pull_uses_real_transport_and_persists_restart_safe_state(tmp_path):
+    alice_identity = bootstrap_node_identity("trust-subscriber")
+    reporter_identity = bootstrap_node_identity("trust-reporter")
+    alice_node = LinkNode(identity=alice_identity)
+    reporter_node = LinkNode(identity=reporter_identity)
+    alice = _NodeDb(tmp_path, "trust-subscriber")
+    reporter = _NodeDb(tmp_path, "trust-reporter")
+
+    def configure(db):
+        configure_trust_domain(
+            db, "reporter-domain", display_name="Reporter Domain",
+            now_iso="2026-08-14T12:00:00+00:00",
+        )
+        configure_trusted_reporter(
+            db, reporter_identity.fingerprint, domain_id="reporter-domain",
+            scopes=[(TrustDimension.IDENTITY_INTEGRITY, "signed_equivocation")],
+            now_iso="2026-08-14T12:00:00+00:00",
+        )
+
+    configure(alice.db)
+    configure(reporter.db)
+    trust_object = build_trust_signal(
+        signing_identity=reporter_identity.signing_key,
+        issuer_fingerprint=reporter_identity.fingerprint,
+        signal_id="wire-signal-1",
+        subject=TrustSubject.node("reported-subject"),
+        dimension=TrustDimension.IDENTITY_INTEGRITY,
+        category="signed_equivocation",
+        evidence_class="self_verifying",
+        evidence={"mode": "embedded", "data": {"conflicting_event_ids": ["a", "b"]}},
+        observed_at="2026-08-14T10:00:00+00:00",
+        issued_at="2026-08-14T11:00:00+00:00",
+        expires_at="2026-08-15T11:00:00+00:00",
+    )
+    ingest_trust_objects(
+        reporter.db, [trust_object], now_iso="2026-08-14T12:00:00+00:00"
+    )
+
+    async def scenario():
+        server = await _run_server(reporter_node, lambda: _hello_for(reporter_node), reporter.lane)
+        try:
+            async with aiohttp.ClientSession() as session:
+                await dial_hello(
+                    alice_node, session, f"http://127.0.0.1:{server.port}",
+                    _hello_for(alice_node), alice.lane,
+                )
+                pull = build_trust_pull_request(
+                    signing_identity=alice_identity.signing_key,
+                    requester_fingerprint=alice_identity.fingerprint,
+                    responder_fingerprint=reporter_identity.fingerprint,
+                    issuer_fingerprint=reporter_identity.fingerprint,
+                )
+                raw, more = await request_trust_objects(
+                    alice_node, session, f"http://127.0.0.1:{server.port}", pull
+                )
+                with pytest.raises(LinkTransportError, match="recent nonce"):
+                    await request_trust_objects(
+                        alice_node, session, f"http://127.0.0.1:{server.port}", pull
+                    )
+                stale = build_trust_pull_request(
+                    signing_identity=alice_identity.signing_key,
+                    requester_fingerprint=alice_identity.fingerprint,
+                    responder_fingerprint=reporter_identity.fingerprint,
+                    issuer_fingerprint=reporter_identity.fingerprint,
+                    created_at="2026-01-01T00:00:00+00:00",
+                )
+                with pytest.raises(LinkTransportError, match="freshness"):
+                    await request_trust_objects(
+                        alice_node, session, f"http://127.0.0.1:{server.port}", stale
+                    )
+                verify_key = alice_node.resolve_peer_signing_key(reporter_identity.fingerprint)
+                parsed = [SignedTrustObject.from_dict(item, issuer_verify_key=verify_key) for item in raw]
+                await alice.lane.run(ingest_trust_objects, parsed)
+                await alice.lane.run(
+                    save_trust_pull_cursor, reporter_identity.fingerprint,
+                    reporter_identity.fingerprint, parsed[-1].content_id,
+                )
+                return more
+        finally:
+            await server.stop()
+
+    try:
+        assert not asyncio.run(scenario())
+        alice.db.close()
+        alice.db = Database(alice.lane.path)
+        assert alice.db.connection.execute(
+            "SELECT COUNT(*) FROM link_trust_signals WHERE content_id = ?",
+            (trust_object.content_id,),
+        ).fetchone()[0] == 1
+        assert alice.db.connection.execute(
+            """SELECT after_content_id FROM link_trust_pull_cursors
+               WHERE responder_fingerprint = ? AND issuer_fingerprint = ?""",
+            (reporter_identity.fingerprint, reporter_identity.fingerprint),
+        ).fetchone()[0] == trust_object.content_id
+    finally:
+        alice.close()
+        reporter.close()
+
+
+def test_trust_carrier_serves_unchanged_issuer_signed_object_without_gaining_authority(tmp_path):
+    subscriber_identity = bootstrap_node_identity("carrier-subscriber")
+    carrier_identity = bootstrap_node_identity("trust-carrier")
+    reporter_identity = bootstrap_node_identity("carrier-reporter")
+    subscriber_node = LinkNode(identity=subscriber_identity)
+    carrier_node = LinkNode(identity=carrier_identity)
+    reporter_node = LinkNode(identity=reporter_identity)
+    subscriber = _NodeDb(tmp_path, "carrier-subscriber")
+    carrier = _NodeDb(tmp_path, "trust-carrier")
+    reporter = _NodeDb(tmp_path, "carrier-reporter")
+
+    for database in (subscriber.db, carrier.db):
+        configure_trust_domain(
+            database, "carrier-domain", display_name="Carrier Domain",
+            now_iso="2026-08-14T12:00:00+00:00",
+        )
+        configure_trusted_reporter(
+            database, reporter_identity.fingerprint, domain_id="carrier-domain",
+            scopes=[(TrustDimension.IDENTITY_INTEGRITY, "signed_equivocation")],
+            now_iso="2026-08-14T12:00:00+00:00",
+        )
+    original = build_trust_signal(
+        signing_identity=reporter_identity.signing_key,
+        issuer_fingerprint=reporter_identity.fingerprint,
+        signal_id="carried-signal", subject=TrustSubject.node("reported-subject"),
+        dimension=TrustDimension.IDENTITY_INTEGRITY, category="signed_equivocation",
+        evidence_class="self_verifying", evidence={"mode": "embedded", "data": {"proof": 1}},
+        observed_at="2026-08-14T10:00:00+00:00", issued_at="2026-08-14T11:00:00+00:00",
+        expires_at="2026-08-15T11:00:00+00:00",
+    )
+    ingest_trust_objects(carrier.db, [original], now_iso="2026-08-14T12:00:00+00:00")
+
+    async def scenario():
+        carrier_server = await _run_server(carrier_node, lambda: _hello_for(carrier_node), carrier.lane)
+        reporter_server = await _run_server(reporter_node, lambda: _hello_for(reporter_node), reporter.lane)
+        try:
+            async with aiohttp.ClientSession() as session:
+                await dial_hello(
+                    subscriber_node, session, f"http://127.0.0.1:{carrier_server.port}",
+                    _hello_for(subscriber_node), subscriber.lane,
+                )
+                await dial_hello(
+                    subscriber_node, session, f"http://127.0.0.1:{reporter_server.port}",
+                    _hello_for(subscriber_node), subscriber.lane,
+                )
+                pull = build_trust_pull_request(
+                    signing_identity=subscriber_identity.signing_key,
+                    requester_fingerprint=subscriber_identity.fingerprint,
+                    responder_fingerprint=carrier_identity.fingerprint,
+                    issuer_fingerprint=reporter_identity.fingerprint,
+                )
+                raw, more = await request_trust_objects(
+                    subscriber_node, session, f"http://127.0.0.1:{carrier_server.port}", pull
+                )
+                issuer_key = subscriber_node.resolve_peer_signing_key(reporter_identity.fingerprint)
+                parsed = SignedTrustObject.from_dict(raw[0], issuer_verify_key=issuer_key)
+                return raw, more, parsed
+        finally:
+            await carrier_server.stop()
+            await reporter_server.stop()
+
+    try:
+        raw, more, parsed = asyncio.run(scenario())
+        assert raw == [original.to_dict()]
+        assert not more
+        assert parsed.content_id == original.content_id
+        assert parsed.issuer_fingerprint == reporter_identity.fingerprint
+        assert parsed.issuer_fingerprint != carrier_identity.fingerprint
+    finally:
+        subscriber.close()
+        carrier.close()
+        reporter.close()
 
 
 def test_dial_hello_raises_link_protocol_error_for_a_forged_returned_hello(tmp_path):

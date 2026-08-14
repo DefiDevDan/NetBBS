@@ -143,7 +143,7 @@ def _evidence_class(value: EvidenceClass | str) -> EvidenceClass:
         raise ValueError(f"unknown evidence class: {value!r}") from exc
 
 
-def _validate_category_evidence(
+def validate_category_evidence(
     dimension: TrustDimension, category: str, evidence_class: EvidenceClass
 ) -> bool:
     """Validate known combinations and return whether the category is known."""
@@ -613,7 +613,7 @@ def record_trust_signal(
     """Persist one already-signature-verified signal; return False on replay."""
     normalized_dimension = _dimension(dimension)
     normalized_evidence = _evidence_class(evidence_class)
-    _validate_category_evidence(normalized_dimension, category, normalized_evidence)
+    validate_category_evidence(normalized_dimension, category, normalized_evidence)
     issued = _parse_timestamp(issued_at, field_name="issued_at")
     observed = _parse_timestamp(observed_at, field_name="observed_at")
     declared_expiry = _parse_timestamp(expires_at, field_name="expires_at")
@@ -982,7 +982,7 @@ def record_local_observation(
 ) -> bool:
     normalized_dimension = _dimension(dimension)
     normalized_evidence = _evidence_class(evidence_class)
-    _validate_category_evidence(normalized_dimension, category, normalized_evidence)
+    validate_category_evidence(normalized_dimension, category, normalized_evidence)
     observed = _parse_timestamp(observed_at, field_name="observed_at")
     now_value, now = _now(now_iso)
     if observed > now + _FUTURE_TOLERANCE:

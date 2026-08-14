@@ -44,6 +44,7 @@ import hashlib
 import json
 import logging
 from typing import Callable
+from urllib.parse import urljoin, urlparse
 
 import nacl.signing
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
@@ -144,6 +145,13 @@ from netbbs.link.store import (
     save_event,
     save_peer,
     save_relay_consent,
+)
+from netbbs.link.trust_wire import (
+    MAX_EMBEDDED_EVIDENCE_BYTES,
+    TrustPullRequest,
+    TrustWireError,
+    load_trust_object_page,
+    verify_evidence_bytes,
 )
 from netbbs.net.throttle import LinkRequestThrottle
 from netbbs.storage.execution import DatabaseLane
@@ -507,6 +515,7 @@ class LinkServer:
         )
         app.router.add_post(f"{LINK_PATH_PREFIX}/relay-mailbox/pickup", self._handle_relay_mailbox_pickup)
         app.router.add_post(f"{LINK_PATH_PREFIX}/inventory/{{fingerprint}}", self._handle_inventory)
+        app.router.add_post(f"{LINK_PATH_PREFIX}/trust-pull/{{fingerprint}}", self._handle_trust_pull)
         app.router.add_post(f"{LINK_PATH_PREFIX}/file-chunk/{{fingerprint}}", self._handle_file_chunk_request)
 
         self._runner = web.AppRunner(app)
@@ -643,6 +652,25 @@ class LinkServer:
         events = board_events + channel_events + file_area_events
         more_available = board_truncated or channel_truncated or file_area_truncated
         return web.json_response({"events": events, "more_available": more_available})
+
+    async def _handle_trust_pull(self, request: web.Request) -> web.Response:
+        """Serve one authenticated, issuer-filtered trust subscription page."""
+        fingerprint = request.match_info["fingerprint"]
+        try:
+            body = await request.json(loads=strict_json_loads)
+            pull = TrustPullRequest.from_dict(body)
+            self._node.handle_trust_pull_request(fingerprint, pull)
+            objects, more = await self._lane.run(
+                load_trust_object_page,
+                issuer_fingerprint=pull.issuer_fingerprint,
+                after_content_id=pull.after_content_id,
+                limit=pull.limit,
+            )
+        except (KeyError, TypeError, ValueError, TrustWireError) as exc:
+            return web.json_response({"error": f"malformed trust pull: {exc}"}, status=400)
+        except LinkProtocolError as exc:
+            return web.json_response({"error": str(exc)}, status=403)
+        return web.json_response({"objects": objects, "more_available": more})
 
     async def _handle_file_chunk_request(self, request: web.Request) -> web.Response:
         """
@@ -1000,6 +1028,78 @@ async def request_inventory(
         return body["events"], bool(body["more_available"])
     except (KeyError, TypeError) as exc:
         raise LinkTransportError(f"malformed inventory response from {url}: {exc}") from exc
+
+
+async def request_trust_objects(
+    node: LinkNode,
+    session: ClientSession,
+    base_url: str,
+    pull_request: TrustPullRequest,
+    *,
+    timeout: float = _DEFAULT_TIMEOUT_SECONDS,
+) -> tuple[list[dict], bool]:
+    """Pull one bounded page of unchanged issuer-signed trust objects."""
+    url = f"{base_url}{LINK_PATH_PREFIX}/trust-pull/{node.identity.fingerprint}"
+    try:
+        async with session.post(
+            url, json=pull_request.to_dict(), timeout=ClientTimeout(total=timeout)
+        ) as response:
+            if response.status != 200:
+                text = await response.text()
+                raise LinkTransportError(
+                    f"trust pull from {url} failed: HTTP {response.status}: {text}"
+                )
+            body = await response.json(loads=strict_json_loads)
+    except (ClientError, TimeoutError, ValueError) as exc:
+        raise LinkTransportError(f"could not reach {url}: {exc}") from exc
+    try:
+        objects = body["objects"]
+        if not isinstance(objects, list):
+            raise TypeError("objects is not a list")
+        return objects, bool(body["more_available"])
+    except (KeyError, TypeError) as exc:
+        raise LinkTransportError(f"malformed trust pull response from {url}: {exc}") from exc
+
+
+async def fetch_trust_evidence(
+    session: ClientSession,
+    reporter_base_url: str,
+    evidence: dict,
+    *,
+    timeout: float = _DEFAULT_TIMEOUT_SECONDS,
+) -> tuple[bytes, object]:
+    """Fetch one signed digest locator without granting it arbitrary network access."""
+    locator = evidence.get("locator")
+    if not isinstance(locator, str):
+        raise LinkTransportError("trust evidence locator is missing")
+    base = urlparse(reporter_base_url)
+    url = urljoin(reporter_base_url.rstrip("/") + "/", locator)
+    target = urlparse(url)
+    if (
+        base.scheme not in {"http", "https"}
+        or (target.scheme, target.hostname, target.port) != (base.scheme, base.hostname, base.port)
+        or target.username is not None
+        or target.password is not None
+        or target.fragment
+    ):
+        raise LinkTransportError("trust evidence locator must stay on the reporter origin")
+    try:
+        async with session.get(url, timeout=ClientTimeout(total=timeout)) as response:
+            if response.status != 200:
+                raise LinkTransportError(
+                    f"trust evidence fetch from {url} failed: HTTP {response.status}"
+                )
+            if response.content_length is not None and response.content_length > MAX_EMBEDDED_EVIDENCE_BYTES:
+                raise LinkTransportError("trust evidence body exceeds the 256 KiB limit")
+            content = await response.content.read(MAX_EMBEDDED_EVIDENCE_BYTES + 1)
+    except (ClientError, TimeoutError) as exc:
+        raise LinkTransportError(f"could not reach {url}: {exc}") from exc
+    if len(content) > MAX_EMBEDDED_EVIDENCE_BYTES:
+        raise LinkTransportError("trust evidence body exceeds the 256 KiB limit")
+    try:
+        return content, verify_evidence_bytes(evidence, content)
+    except TrustWireError as exc:
+        raise LinkTransportError(f"invalid trust evidence from {url}: {exc}") from exc
 
 
 async def request_file_chunk(

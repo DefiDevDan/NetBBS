@@ -2322,6 +2322,22 @@ category, evidence class, embedded evidence or digest plus locator, observation
 and issuance times, expiry, optional explanation, and—when revoking—the exact
 signal content ID.
 
+On Link v1 the durable object types are `trust_signal`, `trust_revocation`,
+`trust_vouch`, and `trust_vouch_revocation`. They use the ordinary canonical
+Link envelope (`netbbs_protocol`, `object_type`, `payload`) plus a detached
+base64 signature, but they are stored separately from `link_events` and never
+enter content-event flood gossip. `issuer_fingerprint` is the stable node
+fingerprint; the detached signature is made by that node's currently
+authorized operational signing key. Node subjects contain `kind` and
+`node_fingerprint`; user subjects additionally contain `opaque_user_id`.
+
+Evidence has one of two exact forms. Embedded evidence is `{mode: embedded,
+data: ...}`. Referenced evidence is `{mode: digest, sha256, size, locator}`.
+The signed size may not exceed the evidence limit. A revocation names one exact
+`revoked_content_id`, must have the same issuer as its target, and uses the
+signal- or vouch-specific revocation type so an ambiguous target lookup cannot
+change object-family semantics.
+
 Revocation is a new signed object and never deletes the original. Receivers
 reject invalid category/evidence combinations, expiry before issuance, and
 issue times over five minutes in the future. Receipt time is retained
@@ -2353,6 +2369,17 @@ Trust signals are not flood-gossiped with content events. A node explicitly
 subscribes to selected reporters and pulls their issuer-signed signals. A
 carrier may serve an unchanged signal, but the receiver verifies the issuer
 and ignores unconfigured issuers.
+
+The pull is an authenticated Link request rather than durable content. It
+binds requester, responder, requested issuer, optional last-content-ID cursor,
+page limit, creation time, and a 128-bit nonce under the requester's current
+operational signing key. The responder requires a completed hello, matching
+requester/responder identities, a valid signature, a five-minute freshness
+window, and a bounded nonce replay cache. Responses contain only unchanged
+stored objects for the requested issuer, ordered by receipt time and content
+ID, plus `more_available`. A carrier therefore gains no authority: the request
+is addressed to the carrier, while every returned object's independent issuer
+signature and local reporter configuration still control admission.
 
 Distinct fingerprints do not prove independence. Automatic policy counts
 locally assigned trust domains:
