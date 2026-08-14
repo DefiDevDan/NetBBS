@@ -163,8 +163,11 @@ from netbbs.rendering import (
     MUTED_COLOR,
     SUCCESS_COLOR,
     VALUE_COLOR,
+    action_bar,
+    badge,
     colored,
     colored_truncate,
+    empty_state,
     menu_grid,
     menu_key,
     reflow,
@@ -1861,7 +1864,6 @@ async def _resource_type_menu(
             db, user, community_id=community_id, community_scoped=community_scoped
         )
 
-        header = colored(f"\r\n{menu_header}:", fg_color=HEADER_COLOR, bold=True)
         option_list = []
         if show_boards:
             option_list.append(menu_key("M", "essage Boards"))
@@ -1870,7 +1872,14 @@ async def _resource_type_menu(
         if show_areas:
             option_list.append(menu_key("F", "ile areas"))
         option_list.append(menu_key("B", "ack"))
-        await session.write_line(f"{header} {'  '.join(option_list)}")
+        heading = screen_title(
+            menu_header,
+            breadcrumb=("NetBBS", "Communities") if community_scoped else ("NetBBS",),
+            subtitle="Choose a space to explore",
+            width=session.terminal_width,
+        )
+        await session.write_line(f"\r\n{heading}")
+        await session.write_line(f"\r\n{action_bar(option_list, width=session.terminal_width)}")
         await session.write("Choice: ")
 
         choice = (await session.read_key()).lower()
@@ -2225,7 +2234,7 @@ async def _render_board_page(
     if can_post:
         options.append(menu_key("P", "ost"))
     options.append(menu_key("B", "ack"))
-    await session.write_line(f"\r\n{'  '.join(options)}")
+    await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
     await session.write("Choice: ")
 
 
@@ -2365,7 +2374,12 @@ async def _show_board(
         # straight to composing the first post when the user's allowed
         # to; unrelated to issues #39/#40, which were about the
         # non-empty case's [B]ack silently triggering a post prompt.
-        await session.write_line(f"\r\n[{board_name}] has no posts yet.")
+        await session.write_line(
+            f"\r\n{screen_title(board_name, breadcrumb=('NetBBS', 'Boards'), width=session.terminal_width)}"
+        )
+        await session.write_line(
+            f"\r\n{empty_state('This board has no posts yet', detail='It is ready for its first conversation.', width=session.terminal_width)}"
+        )
         if can_post:
             await _compose_new_post()
         return
@@ -2595,11 +2609,16 @@ def _author_display_name(db: Database, post: Post, *, name_requirement: str | No
 async def _render_post_page(
     session: Session, db: Database, board_name: str, page: PostPage, *, name_requirement: str | None
 ) -> None:
-    header = colored(f"[{board_name}]", fg_color=HEADER_COLOR, bold=True)
+    header = screen_title(
+        board_name,
+        breadcrumb=("NetBBS", "Boards"),
+        subtitle=f"{len(page.posts)} post{'s' if len(page.posts) != 1 else ''} on this page",
+        width=session.terminal_width,
+    )
     await session.write_line(f"\r\n{header}")
     for position, post in enumerate(page.posts, start=1):
         when = format_for_display(post.created_at, db)
-        edited_marker = " (edited)" if post.is_edited else ""
+        edited_marker = f" {badge('edited')}" if post.is_edited else ""
         author_display = _author_display_name(db, post, name_requirement=name_requirement)
         # Position numbers are 1-indexed *within this page only* -- not
         # a stable identity across page changes, purely a same-screen
@@ -2619,7 +2638,8 @@ async def _render_post_page(
         post_header = (
             colored(f"[{position}] {sanitize_text(post.subject)} -- ", fg_color=ACCENT_COLOR)
             + author_display
-            + colored(f" ({when}){edited_marker}", fg_color=ACCENT_COLOR)
+            + colored(f" ({when})", fg_color=METADATA_COLOR)
+            + edited_marker
         )
         await session.write_line(f"\r\n{post_header}")
         # Reflowed to this specific session's actual detected width

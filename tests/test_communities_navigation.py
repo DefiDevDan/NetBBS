@@ -173,6 +173,8 @@ def test_entering_a_community_only_offers_resource_types_with_matching_items(tmp
     _run_main_menu(session, db, bob)
 
     text = _written_text(session)
+    assert "NetBBS / Communities / Vintage Computing" in text
+    assert "Choose a space to explore" in text
     assert "essage Boards" in text
     assert "hat" not in text  # [C]hat never rendered -- no channel in this Community
     db.close()

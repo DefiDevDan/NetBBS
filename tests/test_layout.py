@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from netbbs.rendering import menu_grid, menu_key, screen_title, visible_width
+from netbbs.rendering import action_bar, badge, empty_state, menu_grid, menu_key, screen_title, visible_width
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -49,9 +49,32 @@ def test_menu_grid_collapses_to_one_column_at_minimum_width():
     ]
 
 
+def test_action_bar_wraps_only_between_complete_actions():
+    result = visible(action_bar([
+        menu_key("O", "lder"), menu_key("N", "ewer"), menu_key("B", "ack"),
+    ], width=18))
+    assert result.split("\r\n") == ["[O]lder  [N]ewer", "[B]ack"]
+
+
+def test_empty_state_and_badge_use_compact_ascii_safe_copy():
+    assert visible(empty_state("No posts yet", detail="Start the conversation.")) == (
+        "No posts yet\r\nStart the conversation."
+    )
+    assert visible(badge("edited")) == "[edited]"
+
+
+def test_badge_rejects_unknown_tone():
+    with pytest.raises(ValueError, match="unknown badge tone"):
+        badge("mystery", tone="unknown")
+
+
 @pytest.mark.parametrize("width", [0, -1])
 def test_layout_rejects_non_positive_width(width):
     with pytest.raises(ValueError):
         screen_title("Home", width=width)
     with pytest.raises(ValueError):
         menu_grid([("Explore", ["item"])], width=width)
+    with pytest.raises(ValueError):
+        action_bar(["item"], width=width)
+    with pytest.raises(ValueError):
+        empty_state("Nothing", width=width)

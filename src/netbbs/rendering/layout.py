@@ -11,7 +11,13 @@ import re
 from collections.abc import Sequence
 
 from netbbs.rendering.ansi import colored
-from netbbs.rendering.theme import HEADER_COLOR, METADATA_COLOR
+from netbbs.rendering.theme import (
+    ERROR_COLOR,
+    HEADER_COLOR,
+    METADATA_COLOR,
+    SUCCESS_COLOR,
+    WARNING_COLOR,
+)
 
 _SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
 _WIDE_MENU_MIN_WIDTH = 72
@@ -20,6 +26,58 @@ _WIDE_MENU_MIN_WIDTH = 72
 def visible_width(text: str) -> int:
     """Return the displayed width of text containing NetBBS SGR styling."""
     return len(_SGR_RE.sub("", text))
+
+
+def badge(text: str, *, tone: str = "neutral") -> str:
+    """Render a compact semantic label without assuming Unicode support."""
+    colors = {
+        "neutral": METADATA_COLOR,
+        "success": SUCCESS_COLOR,
+        "warning": WARNING_COLOR,
+        "error": ERROR_COLOR,
+    }
+    try:
+        color = colors[tone]
+    except KeyError as exc:
+        raise ValueError(f"unknown badge tone: {tone}") from exc
+    return colored(f"[{text}]", fg_color=color, bold=True)
+
+
+def empty_state(
+    title: str,
+    *,
+    detail: str | None = None,
+    width: int = 80,
+) -> str:
+    """Render an intentional, compact state for a screen with no content."""
+    if width < 1:
+        raise ValueError("width must be >= 1")
+    lines = [colored(title[:width], fg_color=HEADER_COLOR, bold=True)]
+    if detail:
+        lines.append(colored(detail[:width], fg_color=METADATA_COLOR))
+    return "\r\n".join(lines)
+
+
+def action_bar(options: Sequence[str], *, width: int = 80) -> str:
+    """Wrap already-styled actions as whole units at the terminal edge."""
+    if width < 1:
+        raise ValueError("width must be >= 1")
+    lines: list[str] = []
+    current: list[str] = []
+    current_width = 0
+    for option in options:
+        option_width = visible_width(option)
+        separator_width = 2 if current else 0
+        if current and current_width + separator_width + option_width > width:
+            lines.append("  ".join(current))
+            current = []
+            current_width = 0
+            separator_width = 0
+        current.append(option)
+        current_width += separator_width + option_width
+    if current:
+        lines.append("  ".join(current))
+    return "\r\n".join(lines)
 
 
 def screen_title(

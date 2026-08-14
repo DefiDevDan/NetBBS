@@ -214,6 +214,20 @@ def test_single_page_board_offers_no_older_newer_recent_options(tmp_path, monkey
     db.close()
 
 
+def test_board_page_has_location_post_count_and_actions(tmp_path, monkeypatch):
+    db = Database(tmp_path / "node.db")
+    board, user = _make_board_with_posts(db, count=2, monkeypatch=monkeypatch)
+    session = FakeSession(keys=["b"])
+
+    asyncio.run(_show_board(session, db, board, user))
+
+    assert "NetBBS / Boards / general" in session.output
+    assert "2 posts on this page" in session.output
+    assert "]ost" in session.output
+    assert "]ack" in session.output
+    db.close()
+
+
 def test_back_choice_exits_without_navigating(tmp_path, monkeypatch):
     db = Database(tmp_path / "node.db")
     total = _PAGE_SIZE * 2
