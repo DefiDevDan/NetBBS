@@ -24,3 +24,6 @@ node.pub
 .vscode/
 .idea/
 *.swp
+
+# Machine-local agent configuration
+.claude/settings.local.json
