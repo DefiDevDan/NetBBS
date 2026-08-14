@@ -49,6 +49,7 @@ established independently).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 from typing import Callable, Sequence
@@ -142,8 +143,41 @@ from netbbs.link.files import LinkFilesError, is_area_linked, link_file_area
 from netbbs.link.protocol import PeerRecord
 from netbbs.link.relay_mailbox import mailbox_sizes
 from netbbs.link.reliability import reliability_score
+from netbbs.link.remote_attestation import (
+    clear_remote_attestation_override,
+    configure_attestation_authority,
+    get_remote_attestation_state,
+    list_attestation_authorities,
+    list_remote_attestation_audit,
+    list_remote_attestation_overrides,
+    remove_attestation_authority,
+    set_remote_attestation_override,
+)
 from netbbs.link.seedlist import get_cached_supplementary_seeds
 from netbbs.link.store import load_peer_last_contact
+from netbbs.link.trust import (
+    TrustDimension,
+    TrustState,
+    TrustSubject,
+    clear_trust_override,
+    configure_sole_authority,
+    configure_trust_anchor,
+    configure_trust_domain,
+    configure_trusted_reporter,
+    get_effective_trust_state,
+    list_sole_authorities,
+    list_trust_anchors,
+    list_trust_config_audit,
+    list_trust_decision_audit,
+    list_trust_domains,
+    list_trust_overrides,
+    list_trust_subjects,
+    list_trusted_reporters,
+    remove_sole_authority,
+    remove_trust_anchor,
+    remove_trusted_reporter,
+    set_trust_override,
+)
 from netbbs.link.mail import unexpire_link_message_delivery
 from netbbs.link.work_items import (
     KIND_LINK_MAIL_DELIVERY,
@@ -408,6 +442,10 @@ async def _system_menu(
             await session.write_line("")
             await _timestamp_settings_screen(session, lane, actor)
             await _draw_system_menu(session, node_controls, link_context)
+        elif choice == "p":
+            await session.write_line("")
+            await _trust_menu(session, lane, actor)
+            await _draw_system_menu(session, node_controls, link_context)
         elif choice == "l" and link_context is not None:
             await session.write_line("")
             await _link_status_screen(session, lane, actor, link_context=link_context)
@@ -442,7 +480,7 @@ async def _draw_system_menu(
     header = colored("\r\nSystem:", fg_color=HEADER_COLOR, bold=True)
     option_list = [
         menu_key("W", "elcome banner"), menu_key("U", "pdate"), menu_key("T", "imestamp format"),
-        menu_key("K", "up status", prefix="Bac"),
+        menu_key("P", "olicy trust"), menu_key("K", "up status", prefix="Bac"),
     ]
     if link_context is not None:
         option_list.append(menu_key("L", "ink status"))
@@ -456,6 +494,522 @@ async def _draw_system_menu(
     options = "  ".join(option_list)
     await session.write_line(f"{header} {options}")
     await session.write("Choice: ")
+
+
+# -- trust policy (Phase 4, issue #129) -------------------------------------
+
+
+async def _trust_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
+    while True:
+        authorities = await lane.run(list_sole_authorities)
+        header = colored("\r\nTrust policy:", fg_color=HEADER_COLOR, bold=True)
+        options = "  ".join(
+            [
+                menu_key("S", "ubjects"), menu_key("D", "omains"),
+                menu_key("A", "nchors"), menu_key("R", "eporters"),
+                menu_key("I", "dentity authorities"), menu_key("E", "xceptions"),
+                menu_key("H", "istory"),
+                menu_key("B", "ack"),
+            ]
+        )
+        await session.write_line(f"{header} {options}")
+        if authorities:
+            await session.write_line(
+                colored(
+                    f"SAFETY DEVIATION: {len(authorities)} sole-authority exception(s) active.",
+                    fg_color=ALERT_COLOR, bold=True,
+                )
+            )
+        await session.write("Choice: ")
+        choice = (await session.read_key()).lower()
+        if choice == "b":
+            await session.write_line("")
+            return
+        if choice == "s":
+            await _trust_subjects_screen(session, lane, actor)
+        elif choice == "d":
+            await _trust_domains_screen(session, lane, actor)
+        elif choice == "a":
+            await _trust_anchors_screen(session, lane, actor)
+        elif choice == "r":
+            await _trust_reporters_screen(session, lane, actor)
+        elif choice == "i":
+            await _attestation_authorities_screen(session, lane, actor)
+        elif choice == "e":
+            await _trust_exceptions_screen(session, lane, actor)
+        elif choice == "h":
+            await _trust_config_history_screen(session, lane)
+        else:
+            await session.write(reject_unhandled_key(choice))
+
+
+def _trust_subject_name(subject: TrustSubject) -> str:
+    if subject.kind == "node":
+        return f"node:{subject.node_fingerprint}"
+    return f"user:{subject.node_fingerprint}/{subject.opaque_user_id}"
+
+
+def _trust_subject_stable_id(subject: TrustSubject) -> int:
+    return int(subject.subject_id[:12], 16)
+
+
+async def _trust_subjects_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    subjects = await lane.run(list_trust_subjects)
+    selected = await pick_item(
+        session, subjects,
+        name_of=_trust_subject_name,
+        stable_id_of=_trust_subject_stable_id,
+        description_of=lambda subject: subject.kind,
+        title="Trust subjects",
+        empty_message="No remote trust subjects have been registered.",
+    )
+    if selected is None:
+        return
+    while True:
+        states = [
+            await lane.run(get_effective_trust_state, selected, dimension)
+            for dimension in TrustDimension
+        ]
+        await session.write_line(colored(f"\r\n{_trust_subject_name(selected)}", fg_color=HEADER_COLOR, bold=True))
+        for state in states:
+            await session.write_line(
+                f"{state.dimension.value}: {state.state.value} ({state.reason_code})"
+            )
+            await session.write_line(
+                colored(
+                    "  " + json.dumps(state.explanation, sort_keys=True, ensure_ascii=True),
+                    fg_color=METADATA_COLOR,
+                )
+            )
+        if selected.kind == "user":
+            for attribute in ("age", "name"):
+                attestation_state = await lane.run(
+                    get_remote_attestation_state, selected, attribute
+                )
+                await session.write_line(
+                    f"remote {attribute} attestation: "
+                    f"{'accepted' if attestation_state.accepted else 'not accepted'} "
+                    f"({attestation_state.reason_code})"
+                )
+                await session.write_line(
+                    colored(
+                        "  " + json.dumps(
+                            attestation_state.explanation,
+                            sort_keys=True,
+                            ensure_ascii=True,
+                        ),
+                        fg_color=METADATA_COLOR,
+                    )
+                )
+        await session.write_line(
+            "  ".join(
+                [menu_key("O", "verride"), menu_key("C", "lear override"),
+                 *([menu_key("I", "dentity attestation override")] if selected.kind == "user" else []),
+                 menu_key("H", "istory"), menu_key("B", "ack")]
+            )
+        )
+        await session.write("Choice: ")
+        choice = (await session.read_key()).lower()
+        if choice == "b":
+            await session.write_line("")
+            return
+        if choice == "o":
+            await _set_trust_override_screen(session, lane, actor, selected)
+        elif choice == "c":
+            await _clear_trust_override_screen(session, lane, actor, selected)
+        elif choice == "h":
+            await _trust_decision_history_screen(session, lane, selected)
+        elif choice == "i" and selected.kind == "user":
+            await _remote_attestation_override_screen(session, lane, actor, selected)
+        else:
+            await session.write(reject_unhandled_key(choice))
+
+
+async def _pick_trust_dimension(session: Session) -> TrustDimension | None:
+    await session.write_line("Dimension: [I]dentity integrity  [R]esource behavior  [C]ontent conduct  [B]ack")
+    await session.write("Choice: ")
+    choice = (await session.read_key()).lower()
+    return {
+        "i": TrustDimension.IDENTITY_INTEGRITY,
+        "r": TrustDimension.RESOURCE_BEHAVIOR,
+        "c": TrustDimension.CONTENT_CONDUCT,
+    }.get(choice)
+
+
+async def _set_trust_override_screen(
+    session: Session, lane: DatabaseLane, actor: User, subject: TrustSubject
+) -> None:
+    dimension = await _pick_trust_dimension(session)
+    if dimension is None:
+        return
+    await session.write_line("State: [P]robationary  [E]stablished  [Q]uarantined  [B]locked")
+    await session.write("Choice: ")
+    state = {
+        "p": TrustState.PROBATIONARY, "e": TrustState.ESTABLISHED,
+        "q": TrustState.QUARANTINED, "b": TrustState.BLOCKED,
+    }.get((await session.read_key()).lower())
+    if state is None:
+        await session.write_line(colored("Unknown trust state; no change made.", fg_color=ERROR_COLOR))
+        return
+    await session.write("Mandatory reason: ")
+    reason = (await session.read_line()).strip()
+    if not reason:
+        await session.write_line(colored("A reason is required; no change made.", fg_color=ERROR_COLOR))
+        return
+    if state == TrustState.ESTABLISHED:
+        confirmed = await prompt_yes_no(
+            session,
+            "This bypasses automatic probation requirements. Apply this audited safety deviation?",
+            default=False,
+        )
+        if not confirmed:
+            await session.write_line(colored("No change made.", fg_color=MUTED_COLOR))
+            return
+    try:
+        await lane.run(
+            set_trust_override, subject, dimension, state,
+            reason=reason, actor_user_id=actor.id,
+        )
+    except ValueError as exc:
+        await session.write_line(colored(f"Trust state changed concurrently: {exc}", fg_color=ERROR_COLOR))
+        return
+    await session.write_line(colored("Trust override applied and audited.", fg_color=SUCCESS_COLOR))
+
+
+async def _clear_trust_override_screen(
+    session: Session, lane: DatabaseLane, actor: User, subject: TrustSubject
+) -> None:
+    overrides = await lane.run(list_trust_overrides, subject)
+    selected = await pick_item(
+        session, overrides,
+        name_of=lambda item: f"{item.dimension.value}: {item.state.value}",
+        stable_id_of=lambda item: item.override_id,
+        description_of=lambda item: item.reason,
+        title="Active trust overrides",
+        empty_message="No active trust overrides.",
+    )
+    if selected is None:
+        return
+    try:
+        await lane.run(clear_trust_override, selected.override_id, actor_user_id=actor.id)
+    except ValueError as exc:
+        await session.write_line(colored(f"Trust state changed concurrently: {exc}", fg_color=ERROR_COLOR))
+        return
+    await session.write_line(colored("Override cleared; recovery policy was recomputed.", fg_color=SUCCESS_COLOR))
+
+
+async def _trust_decision_history_screen(
+    session: Session, lane: DatabaseLane, subject: TrustSubject
+) -> None:
+    rows = await lane.run(list_trust_decision_audit, subject)
+    await session.write_line(colored("\r\nTrust decision history:", fg_color=HEADER_COLOR, bold=True))
+    for row in rows:
+        await session.write_line(
+            f"{row.created_at} {row.kind} {row.action} "
+            f"{json.dumps(row.details, sort_keys=True, ensure_ascii=True)}"
+        )
+    if not rows:
+        await session.write_line(colored("No decision history.", fg_color=MUTED_COLOR))
+    if subject.kind == "user":
+        attestation_rows = await lane.run(list_remote_attestation_audit, subject)
+        for row in attestation_rows:
+            await session.write_line(
+                f"{row.created_at} remote-{row.object_kind} {row.action} "
+                f"{json.dumps(row.details, sort_keys=True, ensure_ascii=True)}"
+            )
+
+
+async def _trust_domains_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    domains = await lane.run(list_trust_domains)
+    await session.write_line(colored("\r\nTrust domains:", fg_color=HEADER_COLOR, bold=True))
+    for domain in domains:
+        await session.write_line(f"{domain.domain_id}: {domain.display_name} (weight {domain.weight:.2f})")
+    await session.write("[A]dd/update or [B]ack: ")
+    if (await session.read_key()).lower() != "a":
+        return
+    await session.write("Domain ID: ")
+    domain_id = (await session.read_line()).strip()
+    await session.write("Display name: ")
+    display_name = (await session.read_line()).strip()
+    await session.write("Weight (0.0-1.0): ")
+    raw_weight = (await session.read_line()).strip()
+    try:
+        weight = float(raw_weight)
+        await lane.run(
+            configure_trust_domain, domain_id, display_name=display_name,
+            weight=weight, actor_user_id=actor.id,
+        )
+    except ValueError as exc:
+        await session.write_line(colored(f"Trust domain not changed: {exc}", fg_color=ERROR_COLOR))
+        return
+    await session.write_line(colored("Trust domain saved and audited.", fg_color=SUCCESS_COLOR))
+
+
+async def _trust_anchors_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    anchors = await lane.run(list_trust_anchors)
+    await session.write_line(colored("\r\nTrust anchors:", fg_color=HEADER_COLOR, bold=True))
+    for anchor in anchors:
+        await session.write_line(f"{anchor.fingerprint}: {anchor.reason}")
+    await session.write("[A]dd/update  [R]emove  [B]ack: ")
+    choice = (await session.read_key()).lower()
+    if choice not in {"a", "r"}:
+        return
+    await session.write("Fingerprint: ")
+    fingerprint = (await session.read_line()).strip()
+    try:
+        if choice == "a":
+            await session.write("Mandatory reason: ")
+            reason = (await session.read_line()).strip()
+            await lane.run(
+                configure_trust_anchor, fingerprint, reason=reason, actor_user_id=actor.id,
+            )
+        else:
+            await lane.run(remove_trust_anchor, fingerprint, actor_user_id=actor.id)
+    except ValueError as exc:
+        await session.write_line(colored(f"Trust anchor not changed: {exc}", fg_color=ERROR_COLOR))
+        return
+    await session.write_line(colored("Trust anchor changed and audited.", fg_color=SUCCESS_COLOR))
+
+
+def _parse_reporter_scopes(value: str) -> list[tuple[TrustDimension, str]]:
+    result: list[tuple[TrustDimension, str]] = []
+    for item in value.split(","):
+        dimension, separator, category = item.strip().partition(":")
+        if not separator or not category:
+            raise ValueError("scopes must use dimension:category, separated by commas")
+        normalized = TrustDimension(dimension)
+        result.append((normalized, category))
+    if not result:
+        raise ValueError("at least one reporter scope is required")
+    return result
+
+
+async def _trust_reporters_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    reporters = await lane.run(list_trusted_reporters)
+    await session.write_line(colored("\r\nTrusted reporters:", fg_color=HEADER_COLOR, bold=True))
+    for reporter in reporters:
+        scopes = ", ".join(f"{d.value}:{c}" for d, c in reporter.scopes) or "no scopes"
+        await session.write_line(
+            f"{reporter.fingerprint} domain={reporter.domain_id} scopes={scopes} "
+            f"vouch(node={reporter.can_vouch_nodes}, user={reporter.can_vouch_users})"
+        )
+    await session.write("[A]dd/update  [R]emove  [B]ack: ")
+    choice = (await session.read_key()).lower()
+    if choice not in {"a", "r"}:
+        return
+    await session.write("Reporter fingerprint: ")
+    fingerprint = (await session.read_line()).strip()
+    try:
+        if choice == "r":
+            await lane.run(remove_trusted_reporter, fingerprint, actor_user_id=actor.id)
+        else:
+            await session.write("Trust domain ID: ")
+            domain_id = (await session.read_line()).strip()
+            await session.write("Scopes (dimension:category, comma separated): ")
+            scopes = _parse_reporter_scopes(await session.read_line())
+            node_vouch = await prompt_yes_no(session, "May this reporter vouch for nodes?", default=False)
+            user_vouch = await prompt_yes_no(session, "May this reporter vouch for users?", default=False)
+            await lane.run(
+                configure_trusted_reporter, fingerprint, domain_id=domain_id, scopes=scopes,
+                can_vouch_nodes=node_vouch, can_vouch_users=user_vouch,
+                actor_user_id=actor.id,
+            )
+    except ValueError as exc:
+        await session.write_line(colored(f"Trusted reporter not changed: {exc}", fg_color=ERROR_COLOR))
+        return
+    await session.write_line(colored("Trusted reporter changed and audited.", fg_color=SUCCESS_COLOR))
+
+
+async def _attestation_authorities_screen(
+    session: Session, lane: DatabaseLane, actor: User
+) -> None:
+    authorities = await lane.run(list_attestation_authorities)
+    await session.write_line(
+        colored("\r\nRemote identity-attestation authorities:", fg_color=HEADER_COLOR, bold=True)
+    )
+    for authority in authorities:
+        await session.write_line(
+            f"{authority.fingerprint} scope={','.join(authority.attributes)} -- {authority.reason}"
+        )
+    if not authorities:
+        await session.write_line(
+            colored("None. Remote attestations fail closed.", fg_color=SUCCESS_COLOR)
+        )
+    await session.write("[A]dd/update  [R]emove  [B]ack: ")
+    choice = (await session.read_key()).lower()
+    if choice not in {"a", "r"}:
+        return
+    await session.write("Authority node fingerprint: ")
+    fingerprint = (await session.read_line()).strip()
+    try:
+        if choice == "r":
+            await lane.run(
+                remove_attestation_authority,
+                fingerprint,
+                actor_user_id=actor.id,
+            )
+        else:
+            await session.write("Attributes (age,name or both, comma separated): ")
+            attributes = [part.strip() for part in (await session.read_line()).split(",")]
+            await session.write("Mandatory reason: ")
+            reason = (await session.read_line()).strip()
+            await lane.run(
+                configure_attestation_authority,
+                fingerprint,
+                attributes=attributes,
+                reason=reason,
+                actor_user_id=actor.id,
+            )
+    except ValueError as exc:
+        await session.write_line(
+            colored(f"Attestation authority not changed: {exc}", fg_color=ERROR_COLOR)
+        )
+        return
+    await session.write_line(
+        colored("Attestation authority changed and audited.", fg_color=SUCCESS_COLOR)
+    )
+
+
+async def _remote_attestation_override_screen(
+    session: Session,
+    lane: DatabaseLane,
+    actor: User,
+    subject: TrustSubject,
+) -> None:
+    await session.write_line("Attribute: [A]ge  [N]ame  [C]lear override  [B]ack")
+    await session.write("Choice: ")
+    choice = (await session.read_key()).lower()
+    if choice == "c":
+        overrides = await lane.run(list_remote_attestation_overrides, subject)
+        selected = await pick_item(
+            session,
+            overrides,
+            name_of=lambda item: f"{item.attribute}: {'accept' if item.accepted else 'reject'}",
+            stable_id_of=lambda item: item.override_id,
+            description_of=lambda item: item.reason,
+            title="Remote attestation overrides",
+            empty_message="No active remote attestation overrides.",
+        )
+        if selected is None:
+            return
+        try:
+            await lane.run(
+                clear_remote_attestation_override,
+                selected.override_id,
+                actor_user_id=actor.id,
+            )
+        except ValueError as exc:
+            await session.write_line(
+                colored(f"Attestation state changed concurrently: {exc}", fg_color=ERROR_COLOR)
+            )
+            return
+        await session.write_line(
+            colored("Remote attestation override cleared.", fg_color=SUCCESS_COLOR)
+        )
+        return
+    attribute = {"a": "age", "n": "name"}.get(choice)
+    if attribute is None:
+        return
+    await session.write_line("Decision: [A]ccept current trusted record  [R]eject")
+    await session.write("Choice: ")
+    accepted_choice = (await session.read_key()).lower()
+    if accepted_choice not in {"a", "r"}:
+        return
+    accepted = accepted_choice == "a"
+    await session.write("Mandatory reason: ")
+    reason = (await session.read_line()).strip()
+    if accepted:
+        confirmed = await prompt_yes_no(
+            session,
+            "Accept only while a current signed record from a configured authority exists?",
+            default=False,
+        )
+        if not confirmed:
+            await session.write_line(colored("No change made.", fg_color=MUTED_COLOR))
+            return
+    try:
+        await lane.run(
+            set_remote_attestation_override,
+            subject,
+            attribute,
+            accepted=accepted,
+            reason=reason,
+            actor_user_id=actor.id,
+        )
+    except ValueError as exc:
+        await session.write_line(
+            colored(f"Remote attestation override not changed: {exc}", fg_color=ERROR_COLOR)
+        )
+        return
+    await session.write_line(
+        colored("Remote attestation override applied and audited.", fg_color=SUCCESS_COLOR)
+    )
+
+
+async def _trust_exceptions_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    exceptions = await lane.run(list_sole_authorities)
+    await session.write_line(colored("\r\nSole-authority safety deviations:", fg_color=ALERT_COLOR, bold=True))
+    for item in exceptions:
+        await session.write_line(
+            f"{item.reporter_fingerprint} {item.dimension.value}:{item.category} -- {item.reason}"
+        )
+    if not exceptions:
+        await session.write_line(colored("None. Two independent domains remain required.", fg_color=SUCCESS_COLOR))
+    await session.write("[A]dd/update  [R]emove  [B]ack: ")
+    choice = (await session.read_key()).lower()
+    if choice not in {"a", "r"}:
+        return
+    await session.write("Reporter fingerprint: ")
+    fingerprint = (await session.read_line()).strip()
+    dimension = await _pick_trust_dimension(session)
+    if dimension is None:
+        return
+    await session.write("Category: ")
+    category = (await session.read_line()).strip()
+    try:
+        if choice == "r":
+            await lane.run(
+                remove_sole_authority, fingerprint, dimension, category,
+                actor_user_id=actor.id,
+            )
+        else:
+            await session.write("Mandatory justification: ")
+            reason = (await session.read_line()).strip()
+            confirmed = await prompt_yes_no(
+                session,
+                "DANGER: one reporter will bypass the two-domain rule for this category. Continue?",
+                default=False,
+            )
+            if not confirmed:
+                await session.write_line(colored("No change made.", fg_color=MUTED_COLOR))
+                return
+            await lane.run(
+                configure_sole_authority, fingerprint, dimension, category,
+                reason=reason, actor_user_id=actor.id,
+            )
+    except ValueError as exc:
+        await session.write_line(colored(f"Safety deviation not changed: {exc}", fg_color=ERROR_COLOR))
+        return
+    await session.write_line(colored("Safety deviation changed and audited.", fg_color=SUCCESS_COLOR))
+
+
+async def _trust_config_history_screen(session: Session, lane: DatabaseLane) -> None:
+    rows = await lane.run(list_trust_config_audit)
+    await session.write_line(colored("\r\nTrust configuration history:", fg_color=HEADER_COLOR, bold=True))
+    for row in rows:
+        await session.write_line(
+            f"{row.created_at} {row.kind} {row.action} "
+            f"{json.dumps(row.details, sort_keys=True, ensure_ascii=True)}"
+        )
+    if not rows:
+        await session.write_line(colored("No configuration history.", fg_color=MUTED_COLOR))
+    attestation_rows = await lane.run(list_remote_attestation_audit)
+    for row in attestation_rows:
+        if row.subject_id is None:
+            await session.write_line(
+                f"{row.created_at} remote-{row.object_kind}:{row.object_id} {row.action} "
+                f"{json.dumps(row.details, sort_keys=True, ensure_ascii=True)}"
+            )
 
 
 # -- create ------------------------------------------------------------

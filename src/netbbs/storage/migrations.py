@@ -2250,4 +2250,117 @@ MIGRATIONS = [
         );
         """,
     ),
+    Migration(
+        description=(
+            "Issue #129: explicit category-scoped sole-authority trust exceptions. "
+            "These are intentionally separate from trust-domain weight so weakening "
+            "the two-domain rule is visible, reasoned, reversible, and auditable."
+        ),
+        sql="""
+        CREATE TABLE link_trust_sole_authorities (
+            reporter_fingerprint TEXT NOT NULL
+                REFERENCES link_trust_reporters(fingerprint) ON DELETE CASCADE,
+            dimension            TEXT NOT NULL CHECK (
+                dimension IN ('identity_integrity', 'resource_behavior', 'content_conduct')
+            ),
+            category             TEXT NOT NULL,
+            reason               TEXT NOT NULL,
+            actor_user_id        INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at           TEXT NOT NULL,
+            PRIMARY KEY (reporter_fingerprint, dimension, category),
+            FOREIGN KEY (reporter_fingerprint, dimension, category)
+                REFERENCES link_trust_reporter_scopes(
+                    reporter_fingerprint, dimension, category
+                ) ON DELETE CASCADE
+        );
+
+        CREATE TABLE link_trust_policy_audit (
+            audit_id             INTEGER PRIMARY KEY,
+            object_kind          TEXT NOT NULL CHECK (object_kind = 'sole_authority'),
+            object_id            TEXT NOT NULL,
+            action               TEXT NOT NULL,
+            details_json         TEXT NOT NULL,
+            actor_user_id        INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at           TEXT NOT NULL
+        );
+        """,
+    ),
+    Migration(
+        description=(
+            "Issue #130: separate local authority and acceptance policy for signed "
+            "remote age/name attestations. Remote subjects remain stable Link user "
+            "identities and never become local users."
+        ),
+        sql="""
+        CREATE TABLE link_attestation_authorities (
+            fingerprint    TEXT PRIMARY KEY,
+            reason         TEXT NOT NULL,
+            actor_user_id  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at     TEXT NOT NULL,
+            updated_at     TEXT NOT NULL
+        );
+        CREATE TABLE link_attestation_authority_scopes (
+            authority_fingerprint TEXT NOT NULL
+                REFERENCES link_attestation_authorities(fingerprint) ON DELETE CASCADE,
+            attribute             TEXT NOT NULL CHECK (attribute IN ('age', 'name')),
+            PRIMARY KEY (authority_fingerprint, attribute)
+        );
+        CREATE TABLE link_remote_attestations (
+            content_id             TEXT PRIMARY KEY,
+            issuer_fingerprint     TEXT NOT NULL,
+            subject_id             TEXT NOT NULL REFERENCES link_trust_subjects(subject_id),
+            attribute              TEXT NOT NULL CHECK (attribute IN ('age', 'name')),
+            attested_value         TEXT NOT NULL,
+            subject_opt_in         INTEGER NOT NULL CHECK (subject_opt_in = 1),
+            issued_at              TEXT NOT NULL,
+            expires_at             TEXT NOT NULL,
+            envelope_json          TEXT NOT NULL,
+            signature_b64          TEXT NOT NULL,
+            received_at            TEXT NOT NULL,
+            revoked_by_content_id  TEXT,
+            revoked_at             TEXT
+        );
+        CREATE INDEX idx_link_remote_attestations_subject
+            ON link_remote_attestations(subject_id, attribute, issued_at);
+        CREATE TABLE link_remote_attestation_revocations (
+            content_id             TEXT PRIMARY KEY,
+            issuer_fingerprint     TEXT NOT NULL,
+            revoked_content_id     TEXT NOT NULL REFERENCES link_remote_attestations(content_id),
+            envelope_json          TEXT NOT NULL,
+            signature_b64          TEXT NOT NULL,
+            issued_at              TEXT NOT NULL,
+            received_at            TEXT NOT NULL
+        );
+        CREATE TABLE link_remote_attestation_overrides (
+            override_id    INTEGER PRIMARY KEY,
+            subject_id     TEXT NOT NULL REFERENCES link_trust_subjects(subject_id),
+            attribute      TEXT NOT NULL CHECK (attribute IN ('age', 'name')),
+            accepted       INTEGER NOT NULL CHECK (accepted IN (0, 1)),
+            reason         TEXT NOT NULL,
+            actor_user_id  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at     TEXT NOT NULL,
+            cleared_at     TEXT
+        );
+        CREATE TABLE link_remote_attestation_effective (
+            subject_id             TEXT NOT NULL REFERENCES link_trust_subjects(subject_id),
+            attribute              TEXT NOT NULL CHECK (attribute IN ('age', 'name')),
+            accepted               INTEGER NOT NULL CHECK (accepted IN (0, 1)),
+            reason_code            TEXT NOT NULL,
+            attestation_content_id TEXT REFERENCES link_remote_attestations(content_id),
+            explanation_json       TEXT NOT NULL,
+            evaluated_at           TEXT NOT NULL,
+            PRIMARY KEY (subject_id, attribute)
+        );
+        CREATE TABLE link_remote_attestation_audit (
+            audit_id       INTEGER PRIMARY KEY,
+            subject_id     TEXT,
+            object_kind    TEXT NOT NULL,
+            object_id      TEXT NOT NULL,
+            action         TEXT NOT NULL,
+            details_json   TEXT NOT NULL,
+            actor_user_id  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at     TEXT NOT NULL
+        );
+        """,
+    ),
 ]

@@ -13,10 +13,17 @@ from netbbs.link.trust import (
     TrustSubject,
     clear_local_observation,
     clear_trust_override,
+    configure_sole_authority,
     configure_trust_anchor,
     configure_trust_domain,
     configure_trusted_reporter,
     get_effective_trust_state,
+    list_sole_authorities,
+    list_trust_config_audit,
+    list_trust_domains,
+    list_trust_overrides,
+    list_trust_subjects,
+    list_trusted_reporters,
     maintain_trust_state,
     record_activity,
     record_local_observation,
@@ -26,6 +33,8 @@ from netbbs.link.trust import (
     recompute_all_trust_states,
     register_subject,
     remove_trust_anchor,
+    remove_sole_authority,
+    remove_trusted_reporter,
     revoke_trust_signal,
     set_trust_override,
 )
@@ -188,6 +197,117 @@ def test_remote_quarantine_requires_two_full_weight_domains(db):
     assert state.state == TrustState.QUARANTINED
     assert state.reason_code == "remote_domain_threshold"
     assert state.explanation["counted_weight"] == 2.0
+
+
+def test_compromised_reporter_removal_is_audited_and_releases_after_recovery_hold(db):
+    subject = register_old_node(db)
+    configure_reporter(db, "reporter-a", "domain-a")
+    configure_reporter(db, "compromised-reporter", "domain-b")
+    add_signal(db, subject, "reporter-a", 20)
+    add_signal(db, subject, "compromised-reporter", 21)
+    assert get_effective_trust_state(
+        db, subject, TrustDimension.IDENTITY_INTEGRITY
+    ).reason_code == "remote_domain_threshold"
+
+    removed_at = NOW + timedelta(minutes=1)
+    remove_trusted_reporter(
+        db, "compromised-reporter", actor_user_id=None, now_iso=stamp(removed_at)
+    )
+
+    held = get_effective_trust_state(db, subject, TrustDimension.IDENTITY_INTEGRITY)
+    assert held.state == TrustState.QUARANTINED
+    assert held.reason_code == "recovery_hold"
+    assert [
+        row.action for row in list_trust_config_audit(db)
+        if row.kind == "reporter:compromised-reporter"
+    ] == [
+        "removed", "created"
+    ]
+    assert db.connection.execute(
+        "SELECT COUNT(*) FROM link_trust_signals WHERE content_id = 'signal-21'"
+    ).fetchone()[0] == 1
+
+    recompute_all_trust_states(db, now_iso=stamp(removed_at + timedelta(hours=24)))
+    released = get_effective_trust_state(db, subject, TrustDimension.IDENTITY_INTEGRITY)
+    assert released.state == TrustState.PROBATIONARY
+    assert released.reason_code == "automatic_recovery"
+
+
+def test_category_scoped_sole_authority_is_visible_audited_and_reversible(db):
+    subject = register_old_node(db)
+    configure_reporter(db, "emergency-reporter", "emergency-domain")
+    add_signal(db, subject, "emergency-reporter", 50)
+    assert get_effective_trust_state(
+        db, subject, TrustDimension.IDENTITY_INTEGRITY
+    ).state == TrustState.PROBATIONARY
+
+    configure_sole_authority(
+        db,
+        "emergency-reporter",
+        TrustDimension.IDENTITY_INTEGRITY,
+        "signed_equivocation",
+        reason="locally verified emergency authority",
+        actor_user_id=None,
+        now_iso=stamp(NOW),
+    )
+    state = get_effective_trust_state(db, subject, TrustDimension.IDENTITY_INTEGRITY)
+    assert state.state == TrustState.QUARANTINED
+    assert state.explanation["sole_authority"] == [
+        {"reporter_fingerprint": "emergency-reporter", "category": "signed_equivocation"}
+    ]
+    assert list_sole_authorities(db)[0].reason == "locally verified emergency authority"
+    assert any(
+        row.kind.startswith("sole_authority:") for row in list_trust_config_audit(db)
+    )
+
+    remove_sole_authority(
+        db,
+        "emergency-reporter",
+        TrustDimension.IDENTITY_INTEGRITY,
+        "signed_equivocation",
+        actor_user_id=None,
+        now_iso=stamp(NOW + timedelta(minutes=1)),
+    )
+    assert list_sole_authorities(db) == []
+    assert get_effective_trust_state(
+        db, subject, TrustDimension.IDENTITY_INTEGRITY
+    ).reason_code == "recovery_hold"
+
+
+def test_operator_query_apis_return_restart_safe_configuration_and_state(db):
+    subject = register_old_node(db)
+    configure_reporter(db, "reporter-a", "domain-a", node_vouch=True)
+    override_id = set_trust_override(
+        db, subject, TrustDimension.RESOURCE_BEHAVIOR, TrustState.BLOCKED,
+        reason="operator review", actor_user_id=None, now_iso=stamp(NOW),
+    )
+
+    assert list_trust_domains(db)[0].domain_id == "domain-a"
+    assert list_trusted_reporters(db)[0].can_vouch_nodes is True
+    assert list_trust_subjects(db) == [subject]
+    assert list_trust_overrides(db, subject)[0].override_id == override_id
+
+    db.connection.commit()
+    reopened = Database(db.path)
+    try:
+        assert list_trust_subjects(reopened) == [subject]
+        assert list_trust_overrides(reopened, subject)[0].reason == "operator review"
+        assert get_effective_trust_state(
+            reopened, subject, TrustDimension.RESOURCE_BEHAVIOR
+        ).state == TrustState.BLOCKED
+    finally:
+        reopened.close()
+
+
+def test_clearing_an_already_cleared_override_fails_as_stale_state(db):
+    subject = register_old_node(db)
+    override_id = set_trust_override(
+        db, subject, TrustDimension.RESOURCE_BEHAVIOR, TrustState.BLOCKED,
+        reason="operator review", now_iso=stamp(NOW),
+    )
+    clear_trust_override(db, override_id, now_iso=stamp(NOW + timedelta(minutes=1)))
+    with pytest.raises(ValueError, match="already cleared"):
+        clear_trust_override(db, override_id, now_iso=stamp(NOW + timedelta(minutes=2)))
 
 
 def test_probationary_reporter_contributes_no_trust_weight(db):

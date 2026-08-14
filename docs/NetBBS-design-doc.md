@@ -498,6 +498,33 @@ Remote propagation of attestations requires:
 - Phase-4 trust rules allowing the receiving node to decide whether to trust the
   remote verifier.
 
+Link visibility is per attested attribute, independent of profile-field and
+verified-badge visibility, and defaults off. Re-verifying an attribute resets
+its Link visibility to off so consent for an old value never silently carries
+onto its replacement. A node exports only a currently Link-visible local
+attestation and signs a `remote_identity_attestation` object containing its
+stable issuer fingerprint, the subject's `node_vouched_user` identity pair,
+attribute/value, explicit opt-in assertion, issuance time, and expiry. The
+maximum active lifetime is 365 days. Revocation is a separate signed
+`remote_identity_attestation_revocation` object naming the exact original
+content ID; neither expiry nor revocation deletes the signed historical row.
+
+Receiving nodes verify canonical bytes with the issuer's currently authorized
+operational signing key before persistence. Acceptance then remains purely
+local and attribute-scoped: an explicit attestation-authority grant, its
+`age`/`name` scope, the issuer node's current identity-integrity trust state,
+expiry/revocation, and an optional reasoned SysOp accept/reject override produce
+a persisted effective projection. Reporter/vouch configuration grants no
+attestation authority. A manual accept may select a current valid signed record
+from an otherwise unconfigured issuer, but cannot resurrect an expired or
+revoked record. Ordinary callers see only whether the gate is met; issuer
+configuration, notes, and override reasons remain SysOp-only.
+
+Remote real-name rendering uses the same trusted `(=...=)` unit as local
+attestations and only within a resource requiring
+`verified_and_displayed`; accepting a remote attestation never exposes that
+value in unrelated screens.
+
 A carrying node may always apply its own local attestations to its own users
 when enforcing a carried resource’s local age/name policy.
 
@@ -3672,13 +3699,24 @@ work and complete user-visible slices; #127 resumes after this batch.
   subjects, dimension-scoped evidence and vouches, transactional state/audit,
   startup reconciliation, recovery hold, and bounded inactive retention;
 - signed trust-signal/vouch subscriptions and evidence verification (issue
-  #127);
+  #127) — implemented with explicit bounded pulls, immutable carrier storage,
+  issuer verification, replay/freshness checks, and verified digest evidence;
 - enforcement across Link transport, sync, relay, content, and users (issue
-  #128);
-- SysOp explanation, overrides, and recovery workflows (issue #129);
-- remote attestation authority and local acceptance policy (issue #130);
+  #128) — implemented at pre-persistence admission, outbound selection, and
+  read-time materialization/display boundaries with stable public reason codes;
+- SysOp explanation, overrides, and recovery workflows (issue #129) —
+  implemented in the shared SysOp System menu: configuration, effective-state
+  explanations, mandatory-reason overrides, recovery, audit history, and
+  visibly flagged/confirmed category-scoped sole-authority exceptions;
+- remote attestation authority and local acceptance policy (issue #130) —
+  implemented with per-attribute opt-in, signed/revocable records, separate
+  authority scopes, fail-closed local projections, resource gates, and
+  reasoned SysOp explanation/override workflows;
 - adversarial distributed validation and the public-readiness gate (issue
-  #131).
+  #131) — automated §12.10 evidence is tracked in
+  `docs/NetBBS-phase4-readiness.md`; real-node manual recovery,
+  independently administered multi-node validation, and sustained private
+  dogfood remain pending, so the issue and public-readiness gate remain open.
 
 No public/untrusted federation claim precedes this phase.
 

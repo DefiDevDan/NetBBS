@@ -39,6 +39,7 @@ from netbbs.attestation import (
     set_display_name_visible,
     set_location,
     set_location_visible,
+    set_attestation_link_visible,
     set_verified_badge_visible,
 )
 from netbbs.auth.users import SYSOP_LEVEL, create_user, set_can_verify_identity
@@ -238,6 +239,24 @@ def test_attestations_are_deliberately_unsigned_for_now(db, alice, sysop):
     assert attestation.verifier_fingerprint is None
     assert attestation.signature is None
     assert attestation.link_visible is False
+
+
+def test_link_visibility_is_explicit_per_attribute_and_resets_on_reverification(
+    db, alice, sysop
+):
+    attest_age(db, alice, date(2000, 1, 2), verifier=sysop)
+    attest_name(db, alice, "Alice Example", verifier=sysop)
+    set_attestation_link_visible(db, alice, "name", True)
+    assert get_attestation(db, alice, "name").link_visible is True
+    assert get_attestation(db, alice, "age").link_visible is False
+
+    attest_name(db, alice, "Alice Updated", verifier=sysop)
+    assert get_attestation(db, alice, "name").link_visible is False
+
+
+def test_link_visibility_cannot_be_enabled_without_attestation(db, alice):
+    with pytest.raises(AttestationError, match="missing age"):
+        set_attestation_link_visible(db, alice, "age", True)
 
 
 def test_has_any_verification(db, alice, sysop):
