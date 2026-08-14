@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "netbbs"
-version = "3.0.0"
+version = "4.0.0"
 description = "A modern, TCP/IP-native BBS with an ad-hoc mesh network (NetBBS Link)"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "BSD-2-Clause" }
+license = "BSD-2-Clause"
 dependencies = [
     "pynacl>=1.5",
 ]
