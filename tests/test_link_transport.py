@@ -45,6 +45,7 @@ from netbbs.link.transport import (
     LINK_PATH_PREFIX,
     LinkServer,
     LinkTransportError,
+    encode_realtime_record,
     deposit_into_relay_mailbox,
     dial_hello,
     fetch_trust_evidence,
@@ -54,6 +55,7 @@ from netbbs.link.transport import (
     request_peer_list,
     request_relay_consent,
     request_trust_objects,
+    read_realtime_record,
 )
 from netbbs.link.trust import (
     TrustDimension, TrustState, TrustSubject, configure_trust_domain,
@@ -72,6 +74,35 @@ from netbbs.storage.execution import DatabaseLane
 
 def _hello_for(node: LinkNode, *, created_at: str = "2026-01-01T00:00:00+00:00") -> HelloMessage:
     return node.build_hello(addresses=None, outgoing_only=True, created_at=created_at)
+
+
+def test_realtime_record_codec_reads_one_bounded_ciphertext_message():
+    async def scenario():
+        reader = asyncio.StreamReader()
+        reader.feed_data(encode_realtime_record(b"ciphertext") + encode_realtime_record(b"next"))
+        reader.feed_eof()
+        return await read_realtime_record(reader), await read_realtime_record(reader)
+
+    assert asyncio.run(scenario()) == (b"ciphertext", b"next")
+
+
+@pytest.mark.parametrize("wire", [b"\x00\x00", b"\x00\x05abc"])
+def test_realtime_record_codec_rejects_zero_or_truncated_records(wire):
+    async def scenario():
+        reader = asyncio.StreamReader()
+        reader.feed_data(wire)
+        reader.feed_eof()
+        await read_realtime_record(reader)
+
+    with pytest.raises(LinkTransportError):
+        asyncio.run(scenario())
+
+
+def test_realtime_record_codec_rejects_empty_and_oversized_ciphertext():
+    with pytest.raises(LinkTransportError):
+        encode_realtime_record(b"")
+    with pytest.raises(LinkTransportError):
+        encode_realtime_record(b"x" * 65_536)
 
 
 async def _run_server(

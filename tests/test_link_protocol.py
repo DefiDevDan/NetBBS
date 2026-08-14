@@ -32,8 +32,50 @@ from netbbs.link.events import (
     build_link_message_bounced,
 )
 from netbbs.link.node_identity import rotate_operational_key
-from netbbs.link.protocol import HelloMessage, LinkNode, LinkProtocolError, PeerListMessage
+from netbbs.link.protocol import (
+    REALTIME_FRAME_TYPES,
+    HelloMessage,
+    LinkNode,
+    LinkProtocolError,
+    PeerListMessage,
+    RealtimeFrame,
+)
 from tests.link_harness import FakeClock, ScriptedTransport, spawn_node
+
+
+@pytest.mark.parametrize("frame_type", sorted(REALTIME_FRAME_TYPES))
+def test_realtime_frame_round_trips_every_message_type(frame_type):
+    frame = RealtimeFrame(type=frame_type, message_id="message_1", payload={"nested": [True, None, 7]})
+
+    assert RealtimeFrame.from_json_bytes(frame.to_json_bytes()) == frame
+
+
+@pytest.mark.parametrize(
+    "wire",
+    [
+        b'{"version":1,"version":1,"type":"ping","message_id":"m1","payload":{}}',
+        b'{"version":1,"type":"future","message_id":"m1","payload":{}}',
+        b'{"version":1,"type":[],"message_id":"m1","payload":{}}',
+        b'{"version":true,"type":"ping","message_id":"m1","payload":{}}',
+        b'{"version":1,"type":"ping","message_id":"m1","payload":{"n":1.5}}',
+        b'{"version":1,"type":"ping","message_id":"m1","payload":{"n":9007199254740992}}',
+        b'{"version":1,"type":"ping","message_id":"bad id","payload":{}}',
+        b'{"version":1,"type":"ping","message_id":"m1","payload":{},"extra":true}',
+        b'\xff',
+    ],
+)
+def test_realtime_frame_rejects_ambiguous_or_invalid_wire_json(wire):
+    with pytest.raises(LinkProtocolError):
+        RealtimeFrame.from_json_bytes(wire)
+
+
+def test_realtime_frame_enforces_plaintext_limit_on_encode_and_decode():
+    frame = RealtimeFrame(type="channel_message", message_id="m1", payload={"body": "x" * 17000})
+
+    with pytest.raises(LinkProtocolError, match="16 KiB"):
+        frame.to_json_bytes()
+    with pytest.raises(LinkProtocolError, match="16 KiB"):
+        RealtimeFrame.from_json_bytes(b"x" * (16 * 1024 + 1))
 
 
 @pytest.fixture

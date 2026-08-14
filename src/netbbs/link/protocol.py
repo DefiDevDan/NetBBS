@@ -58,6 +58,7 @@ this same in-memory state.
 from __future__ import annotations
 
 import base64
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from string import hexdigits
@@ -124,6 +125,7 @@ from netbbs.link.events import (
     verify_link_message_bounced,
     verify_relay_consent_request,
     verify_relay_consent_response,
+    strict_json_loads,
 )
 from netbbs.link.node_identity import NodeIdentity, NodeIdentityError, resolve_current_operational_key
 from netbbs.link.trust_wire import TrustPullRequest
@@ -154,6 +156,15 @@ _INVENTORY_REQUEST_FRESHNESS_SECONDS = 5 * 60
 _MAX_SEEN_INVENTORY_REQUEST_NONCES = 4096
 _TRUST_PULL_FRESHNESS_SECONDS = 5 * 60
 _MAX_SEEN_TRUST_PULL_NONCES = 4096
+
+REALTIME_PROTOCOL_VERSION = 1
+REALTIME_MAX_PLAINTEXT_BYTES = 16 * 1024
+REALTIME_FRAME_TYPES = frozenset(
+    {"subscribe", "unsubscribe", "presence_snapshot", "presence_delta",
+     "channel_message", "ping", "pong", "error", "close"}
+)
+_REALTIME_MAX_MESSAGE_ID_BYTES = 64
+_JSON_SAFE_INTEGER = (1 << 53) - 1
 
 
 def _parse_aware_timestamp(value: str, *, field_name: str) -> datetime:
@@ -211,6 +222,97 @@ class LinkProtocolError(Exception):
     a link_message_accepted/link_message_bounced referencing a message
     this node never actually sent, or vouching for a recipient node
     other than whoever actually sent the acknowledgement."""
+
+
+def _validate_realtime_json_value(value: object, *, path: str = "payload") -> None:
+    """Reject values whose meaning is not portable across strict JSON peers."""
+    if value is None or isinstance(value, (str, bool)):
+        return
+    if isinstance(value, int):
+        if not -_JSON_SAFE_INTEGER <= value <= _JSON_SAFE_INTEGER:
+            raise LinkProtocolError(f"{path} integer exceeds the interoperable JSON range")
+        return
+    if isinstance(value, float):
+        raise LinkProtocolError(f"{path} must not contain floating-point values")
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_realtime_json_value(item, path=f"{path}[{index}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise LinkProtocolError(f"{path} object keys must be strings")
+            _validate_realtime_json_value(item, path=f"{path}.{key}")
+        return
+    raise LinkProtocolError(f"{path} contains a non-JSON value")
+
+
+@dataclass(frozen=True)
+class RealtimeFrame:
+    """Transport-independent application envelope for a live Link session."""
+
+    type: str
+    message_id: str
+    payload: dict
+    version: int = REALTIME_PROTOCOL_VERSION
+
+    def __post_init__(self) -> None:
+        if type(self.version) is not int or self.version != REALTIME_PROTOCOL_VERSION:
+            raise LinkProtocolError("unsupported real-time protocol version")
+        if not isinstance(self.type, str) or self.type not in REALTIME_FRAME_TYPES:
+            raise LinkProtocolError(f"unsupported real-time frame type {self.type!r}")
+        if not isinstance(self.message_id, str) or not self.message_id:
+            raise LinkProtocolError("real-time message_id must be a non-empty string")
+        try:
+            message_id_bytes = self.message_id.encode("ascii")
+        except UnicodeEncodeError as exc:
+            raise LinkProtocolError("real-time message_id must be ASCII") from exc
+        if len(message_id_bytes) > _REALTIME_MAX_MESSAGE_ID_BYTES or any(
+            not (character.isalnum() or character in "-_") for character in self.message_id
+        ):
+            raise LinkProtocolError("real-time message_id must be at most 64 ASCII letters, digits, '-' or '_'")
+        if not isinstance(self.payload, dict):
+            raise LinkProtocolError("real-time payload must be an object")
+        _validate_realtime_json_value(self.payload)
+
+    def to_dict(self) -> dict:
+        return {"version": self.version, "type": self.type,
+                "message_id": self.message_id, "payload": self.payload}
+
+    def to_json_bytes(self) -> bytes:
+        try:
+            encoded = json.dumps(
+                self.to_dict(), ensure_ascii=False, separators=(",", ":"),
+                sort_keys=True, allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError, UnicodeEncodeError) as exc:
+            raise LinkProtocolError(f"real-time frame cannot be encoded as UTF-8 JSON: {exc}") from exc
+        if len(encoded) > REALTIME_MAX_PLAINTEXT_BYTES:
+            raise LinkProtocolError("real-time frame exceeds the 16 KiB plaintext limit")
+        return encoded
+
+    @classmethod
+    def from_dict(cls, value: dict) -> "RealtimeFrame":
+        if not isinstance(value, dict):
+            raise LinkProtocolError("real-time frame must be an object")
+        if set(value) != {"version", "type", "message_id", "payload"}:
+            raise LinkProtocolError(
+                "real-time frame must contain exactly version, type, message_id, and payload"
+            )
+        return cls(version=value["version"], type=value["type"],
+                   message_id=value["message_id"], payload=value["payload"])
+
+    @classmethod
+    def from_json_bytes(cls, data: bytes) -> "RealtimeFrame":
+        if not isinstance(data, bytes):
+            raise LinkProtocolError("real-time frame must be bytes")
+        if not data or len(data) > REALTIME_MAX_PLAINTEXT_BYTES:
+            raise LinkProtocolError("real-time frame must be between 1 byte and 16 KiB")
+        try:
+            value = strict_json_loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise LinkProtocolError(f"malformed real-time JSON: {exc}") from exc
+        return cls.from_dict(value)
 
 
 def _signing_transitions(transitions: tuple[KeyTransition, ...], fingerprint: str) -> tuple[KeyTransition, ...]:

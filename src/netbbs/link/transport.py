@@ -39,6 +39,7 @@ lives here rather than inside `netbbs.link.protocol` itself.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -221,6 +222,29 @@ _MAX_ALLOWED_CHUNK_SIZE_BYTES = 1024 * 1024
 # rather than importing that module's private one across module
 # boundaries).
 _DEFAULT_FILE_CHUNK_SIZE = 256 * 1024
+
+REALTIME_MAX_CIPHERTEXT_BYTES = 65_535
+
+
+def encode_realtime_record(ciphertext: bytes) -> bytes:
+    """Prefix one bounded Noise ciphertext with its two-byte wire length."""
+    if not isinstance(ciphertext, bytes):
+        raise LinkTransportError("real-time ciphertext must be bytes")
+    if not 1 <= len(ciphertext) <= REALTIME_MAX_CIPHERTEXT_BYTES:
+        raise LinkTransportError("real-time ciphertext must be between 1 and 65,535 bytes")
+    return len(ciphertext).to_bytes(2, "big") + ciphertext
+
+
+async def read_realtime_record(reader: asyncio.StreamReader) -> bytes:
+    """Read exactly one bounded ciphertext record from a live Link stream."""
+    try:
+        header = await reader.readexactly(2)
+        length = int.from_bytes(header, "big")
+        if length == 0:
+            raise LinkTransportError("zero-length real-time record")
+        return await reader.readexactly(length)
+    except asyncio.IncompleteReadError as exc:
+        raise LinkTransportError("truncated real-time record") from exc
 
 
 @web.middleware

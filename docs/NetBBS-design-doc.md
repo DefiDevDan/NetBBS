@@ -1591,6 +1591,110 @@ content specifically ever becomes an operational problem in practice
 (§13.6's `[L]ink status` already gives a SysOp visibility into growth via
 the database file size, per the existing diagnostic-log-growth precedent).
 
+### 8.10 Real-time Noise sessions (issue #148)
+
+Real-time Link traffic uses a persistent TCP connection protected by
+`Noise_XX_25519_ChaChaPoly_BLAKE2s`. XX is required because either side may
+first encounter the other's current operational key during the connection;
+neither side assumes the remote static key is preconfigured. This is a
+separate traffic family from signed HTTP+JSON. A live chat frame is not a
+canonical Link event and never enters inventory, relay mailboxes, event
+retention, or asynchronous retry queues.
+
+The Noise static X25519 key is derived from the existing Ed25519 operational
+transport key using PyNaCl/libsodium's supported Ed25519-to-Curve25519
+conversion. NetBBS does not create a fourth long-lived node key or introduce a
+second transport-key rotation mechanism. During the encrypted XX handshake
+each side sends a versioned identity payload containing its stable root
+fingerprint, root public key, and root-signed transport transition chain. The
+receiver:
+
+1. verifies the root fingerprint and transition chain;
+2. resolves the current authorized Ed25519 transport key;
+3. converts that public key to X25519;
+4. requires it to equal the Noise static key authenticated by the handshake;
+5. applies the local Phase-4 node transport decision before accepting any
+   application frame.
+
+A stale, revoked, forked, malformed, or differently bound key fails the
+connection. The remote node label, endpoint, DNS name, and TCP address are
+never identity authority. Transport-key rotation ends sessions using the old
+key; reconnect performs a fresh handshake against the new verified chain.
+
+The endpoint descriptor advertises real-time TCP addresses separately from
+HTTP addresses. Phase 5 initially supports direct node-to-node sessions only.
+An outgoing-only node may dial a reachable full node. Two nodes which both
+cannot accept inbound connections have no real-time path in this phase;
+asynchronous linked-channel events continue to work. Real-time relay is a
+separate future protocol, not tunneled through the asynchronous relay mailbox.
+
+#### 8.10.1 Session framing and ownership
+
+Handshake and transport records use an unsigned two-byte big-endian length
+prefix followed by exactly one Noise message. Zero-length records are invalid.
+The Noise limit of 65,535 bytes is an absolute ciphertext ceiling; NetBBS sets
+a lower application plaintext limit of 16 KiB. Decrypted application payloads
+are strict UTF-8 JSON objects: duplicate keys, floats, unsafe integers,
+unknown protocol versions, missing required fields, and trailing data are
+rejected. Unknown message types produce a bounded protocol error and do not
+gain side effects.
+
+Every application object contains `version`, `type`, and a session-local
+`message_id`. IDs are bounded strings and deduplicated within a bounded
+per-session replay window. The first implementation supports:
+
+- `subscribe` and `unsubscribe`;
+- `presence_snapshot` and `presence_delta`;
+- `channel_message`;
+- `ping`, `pong`, `error`, and `close`.
+
+One node owns at most one live session per remote fingerprint. If simultaneous
+inbound and outbound connections exist, the lower fingerprint keeps its
+outbound connection and the higher fingerprint keeps its inbound connection;
+the rule is applied only while both candidates exist, so a sole usable
+connection is never discarded. Reader, writer, heartbeat, and reconnect tasks
+are owned by one session/supervisor object. Its close path cancels and gathers
+every task without masking the initiating failure.
+
+Outbound frames use a bounded queue and never let one slow peer block another.
+Subscriptions, remote presence entries, message rate, protocol strikes, and
+concurrent handshakes are bounded per peer and node. A full queue drops the
+session with an explicit slow-consumer reason rather than silently losing a
+state transition. Heartbeat leases expire silent peers; reconnect uses bounded
+exponential backoff with jitter and resets only after a stable authenticated
+session.
+
+#### 8.10.2 First live linked-channel vertical
+
+A subscription names an already carried `channel_id`. The receiving node
+checks that the channel exists, is linked, is locally allowed by trust policy,
+and is available to the subscribing peer. Authorization is checked again for
+every received message; a successful subscription is not a permanent grant.
+
+Live channel messages are ephemeral node-attested assertions. They carry the
+canonical local user ID and display label at the authenticated sending node,
+the channel ID, body, creation time, and session message ID. They are not
+individually signed canonical events: the authenticated Noise session
+attributes them to the sending node, and the UI renders the human identity as
+`user@node`. Password-only users can therefore participate without acquiring
+a personal signing key. The sending node remains responsible for enforcing its
+local membership, mute, and moderation rules before transmission; the
+receiving node independently enforces its own node/user/content policy before
+display.
+
+Presence is leased, scoped to subscribed linked channels, and advisory. A
+snapshot establishes current state after subscription; deltas update it.
+Disconnect or lease expiry removes that node's remote presence without
+persisting synthetic leave events.
+
+The first vertical does not offer shared recent scrollback, real-time private
+chat, multiple background channel subscriptions per caller, or real-time
+multi-hop relay. A disconnect does not queue or replay live frames. Callers see
+`connecting`, `live`, and `offline/degraded` state plus an honest notice
+that live traffic may have been missed; asynchronous signed linked-channel
+events remain the durable catch-up mechanism until a later decision changes
+that product model.
+
 ---
 
 ## 9. Linked boards and resource lifecycle
@@ -3775,7 +3879,8 @@ No public/untrusted federation claim precedes this phase.
 
 ### Phase 5 — Real-time Link chat
 
-- Noise transport using node transport keys;
+- Noise transport using node transport keys, with the direct-session and first
+  linked-channel vertical specified in §8.10 and tracked by issue #148;
 - Link-wide typed chat events, presence, and discovery;
 - multiple simultaneous channel memberships and unread/background delivery;
 - Link-wide live private chat, distinct from asynchronous Link messages;
