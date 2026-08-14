@@ -14,9 +14,9 @@
 #	netbbs_config="/usr/pkg/etc/netbbs/netbbs.toml"
 #	netbbs_python="/usr/pkg/bin/python3.12"
 #
-# Install: copy this file to /usr/pkg/share/examples/rc.d/netbbs (the
-# pkgsrc convention), symlink or copy it to /etc/rc.d/netbbs, add
-# netbbs=YES to /etc/rc.conf, then `service netbbs start`.
+# Install: copy this file from the official GitHub release/source tree to
+# /etc/rc.d/netbbs, add netbbs=YES to /etc/rc.conf, then run
+# `service netbbs start`. NetBBS itself is not distributed via pkgsrc.
 #
 # NOT YET BUILD/RUN-TESTED ON REAL NetBSD HARDWARE (design doc §2.1):
 # written to follow standard rc.subr(8) conventions and reviewed

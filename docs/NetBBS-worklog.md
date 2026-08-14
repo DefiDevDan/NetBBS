@@ -1929,9 +1929,9 @@ This is confirmed intentional, not an overlooked gap:
 apply/restart flow "isn't safely wired up yet, a real, substantially
 higher-stakes decision deliberately not bundled into this." The
 operator-facing upgrade path documented in
-`docs/NetBBS-operator-guide.md` is therefore the package-manager route
-(pip/pkgsrc upgrade, relying on `Database.__init__`'s own automatic-
-migration-or-fail-clearly behavior for schema safety), not this
+`docs/NetBBS-operator-guide.md` is therefore installing the selected
+official GitHub-release wheel with pip (relying on `Database.__init__`'s
+own automatic-migration-or-fail-clearly behavior for schema safety), not this
 module's tarball/execv mechanism. Wiring `prepare_update`/
 `confirm_update`/`roll_back_update` into an actual command someday
 needs its own deliberate design pass (process re-exec semantics under a

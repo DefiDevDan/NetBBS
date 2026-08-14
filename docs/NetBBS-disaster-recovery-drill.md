@@ -4,8 +4,9 @@ A documented procedure for an operator to prove a node's backup/restore
 mechanism (`netbbs.backup`, design doc §13.4/§13.10) actually works,
 against realistic failure conditions, not just its happy path. Run this
 once against a disposable copy of a real node before relying on backups
-in production, and again after any NetBSD/pkgsrc upgrade that changes
-Python, SQLite, or the filesystem NetBBS runs on.
+in production, and again after any NetBSD dependency upgrade that changes
+Python, SQLite, or the filesystem NetBBS runs on, or after a NetBBS
+upgrade from an official GitHub release.
 
 Everything below can be exercised on any POSIX system; do the final pass
 on the actual NetBSD host you operate, since that's the one environment

@@ -103,11 +103,14 @@ failure) primary-target constraints getting quietly weakened to
 accommodate a platform that was never meant to drive architecture.
 Four tiers, in order:
 
-- **Tier 1 / primary — NetBSD, via pkgsrc.** Every design and
-  dependency choice must work here; this is the platform "does this
-  work?" defaults to. Existing Tier-1-driven decisions: PyNaCl over
-  `cryptography` below (avoids imposing a Rust toolchain on pkgsrc
-  without a compelling benefit); FTS5 availability confirmed by tracing
+- **Tier 1 / primary — NetBSD.** Every design and dependency choice must
+  work here; this is the platform "does this work?" defaults to. NetBBS
+  itself is obtained and updated only from its official GitHub releases
+  or tagged source; shipping NetBBS through pkgsrc or another external
+  package manager is neither planned nor supported. pkgsrc remains the
+  preferred source for external dependencies on NetBSD. Existing
+  Tier-1-driven decisions include PyNaCl/libsodium for core identity and
+  FTS5 availability confirmed by tracing
   pkgsrc's actual `lang/python312` → `databases/sqlite3` build chain
   (worklog §6), not assumed.
 - **Tier 2 / supported — mainstream Linux distributions**, using
@@ -137,23 +140,30 @@ Four tiers, in order:
 Consequences of the tier list, not separate rules:
 
 - A new dependency is evaluated against the Tier-1 target *before*
-  adoption: does it need a Rust toolchain, a C extension with no
-  pkgsrc package, or an assumption unlikely to hold on NetBSD? Tier-2/3
+  adoption: is it available through pkgsrc, does it need an unusual
+  compiler toolchain, or does it assume behavior unlikely to hold on
+  NetBSD? We make a strong effort to choose dependencies available in
+  pkgsrc so a NetBSD deployment remains straightforward. Tier-2/3
   convenience is never sufficient justification by itself.
 - Platform-specific code stays isolated in a small number of narrow
   modules/functions (the three named above), never scattered
   `sys.platform`/`os.name` checks through domain code. Core/domain/
   protocol modules (`netbbs.boards`, `netbbs.link`, etc.) are plain
   POSIX-portable Python with no platform branching at all.
-- Packaging/service examples (issue #82) are written for Tier 1
-  (pkgsrc/rc.d) and Tier 2 (systemd) explicitly; a Tier-3 or
+- Installation/service examples (issue #82) use GitHub-hosted NetBBS
+  releases on every platform and cover Tier 1 (NetBSD/rc.d) and Tier 2
+  (Linux/systemd) explicitly; a Tier-3 or
   development-only path is documented as such, never presented as an
   equally-supported option.
 
 - Runtime: Python 3.11+ with asyncio.
 - Storage: one SQLite database per node, using WAL mode.
-- Cryptography: PyNaCl/libsodium. Avoid dependencies which impose a Rust
-  toolchain on the primary NetBSD target without a compelling benefit.
+- Core cryptography: PyNaCl/libsodium. The optional SSH transport uses
+  AsyncSSH and therefore `cryptography`; its source build on NetBSD needs
+  Rust, a C compiler and Python headers, OpenSSL and libffi headers, and
+  build-discovery tooling. Keep that toolchain isolated to the optional
+  feature and avoid adding comparable build burdens without compelling
+  benefit.
 - User transports: Telnet, SSH, and web/xterm.js.
 - Asynchronous Link transport: signed HTTP+JSON.
 - Future real-time Link chat transport: Noise Protocol Framework.
@@ -958,9 +968,13 @@ HTTPS and GitHub are currently the update trust boundary. Additional release
 signing is not required by the present design, though it remains a possible
 hardening step.
 
+GitHub Releases and tagged source are the only official NetBBS distribution
+and update channel. External package managers may supply dependencies, but a
+pkgsrc, apt, or other independently managed NetBBS package is not supported:
+it would duplicate ownership of installed application files and compete with
+the GitHub-based updater.
+
 The automatic check/apply policy must have an operator-visible off switch.
-Future pkgsrc packaging will need an explicit ownership policy rather than
-silently competing with the self-updater.
 
 ---
 
@@ -3844,7 +3858,8 @@ file before being considered complete.
 ### Issue #81 — supported platform tiers — closed
 
 §2.1's "Platform support tiers" subsection now states the complete
-policy: NetBSD/pkgsrc (Tier 1, primary), mainstream Linux/systemd
+policy: NetBSD (Tier 1, primary, with dependencies preferably supplied
+by pkgsrc), mainstream Linux/systemd
 (Tier 2, supported), other POSIX systems (Tier 3, best-effort), and
 Windows (development-only, no production-semantics promise). Auditing
 every existing `sys.platform`/`os.name` branch (`netbbs.net.
@@ -3859,8 +3874,8 @@ requiring code changes.
 
 `docs/NetBBS-operator-guide.md` is the complete operator lifecycle:
 install (a real, tested non-editable wheel build/install with no
-source-checkout dependency, plus a documented-but-not-yet-submitted
-pkgsrc sketch), first-SysOp bootstrap via the existing `netbbs.admin`
+source-checkout dependency, now sourced only from official GitHub
+releases), first-SysOp bootstrap via the existing `netbbs.admin`
 CLI, running under systemd/rc.d (`examples/netbbs.service`/`netbbs.rc`,
 the rc.d script not yet run-tested on real NetBSD hardware), persistent
 state paths, backup/restore (linking the existing disaster-recovery

@@ -31,12 +31,11 @@ tzdata = [
 ]
 # SSH connectivity (design doc round 21/22). Kept as a separate extra
 # rather than a core dependency deliberately: asyncssh pulls in
-# `cryptography`, which needs a Rust toolchain to build from source --
-# exactly the friction PyNaCl was chosen to avoid for the core identity
-# system (see this file's header comment / CLAUDE.md). A node that only
-# wants Telnet never needs to install this at all; NetBSD pkgsrc ships a
-# prebuilt `py-cryptography` binary for nodes that do want SSH, so no
-# local Rust build is actually required in practice either way.
+# `cryptography`, whose source build needs Rust, a C compiler, Python,
+# OpenSSL, and libffi headers, plus build-discovery tooling. NetBSD pip
+# installs currently take that source-build path, so the operator guide
+# documents the pkgsrc prerequisites. Rust is a build-time requirement;
+# a node that only wants Telnet never needs to install this extra.
 ssh = [
     "asyncssh>=2.24",
 ]

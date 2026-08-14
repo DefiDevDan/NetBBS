@@ -118,10 +118,12 @@ The standing principle is:
 
 ## Environment
 
-- Primary target: NetBSD via pkgsrc.
+- Primary target: NetBSD. NetBBS itself is distributed through GitHub only;
+  prefer external dependencies available through pkgsrc.
 - Python 3.11+, asyncio.
 - SQLite in WAL mode.
-- PyNaCl/libsodium rather than a Rust-dependent crypto stack.
+- PyNaCl/libsodium for core cryptography; the optional SSH extra's
+  `cryptography` source build requires Rust on NetBSD.
 - User transports: Telnet, SSH, web/xterm.js.
 - NetBBS Link transport: signed HTTP+JSON for asynchronous federation; Noise
   remains planned for later real-time Link chat.

@@ -6,8 +6,10 @@ network that lets independent NetBBS nodes discover each other, exchange
 message boards and personal messages, and (later) real-time chat, without
 requiring any central authority.
 
-**Platform support (design doc §2.1):** NetBSD via pkgsrc is Tier 1/
-primary — every design and dependency choice must work there. Mainstream
+**Platform support (design doc §2.1):** NetBSD is Tier 1/primary — every
+design and dependency choice must work there. GitHub Releases and tagged
+source are the only supported ways to obtain NetBBS itself; pkgsrc remains
+our preferred source for its external dependencies on NetBSD. Mainstream
 Linux (ordinary Python packaging, systemd) is Tier 2/supported — a
 regression there is a real bug unless fixing it would weaken a Tier-1
 constraint. Other POSIX systems (macOS, FreeBSD, etc.) are Tier 3/
@@ -115,16 +117,19 @@ history and the lessons carried forward.
 ## Requirements
 
 - Python 3.11+ (asyncio-based)
-- [PyNaCl](https://pynacl.readthedocs.io/) for identity/cryptography
-  (`security/py-nacl` in pkgsrc) — chosen specifically because it wraps
-  libsodium (C) rather than pulling in a Rust toolchain, unlike
-  `cryptography`'s recent pkgsrc versions.
+- [PyNaCl](https://pynacl.readthedocs.io/) for core identity/cryptography
+  (`security/py-nacl` in pkgsrc). It wraps libsodium rather than imposing
+  a Rust toolchain on the core installation.
 - SQLite (bundled with Python's standard library)
 - Optional, per transport — a node only needs to install what it
   actually enables:
   - `pip install -e ".[ssh]"` (`asyncssh`) for the SSH transport.
     **SSH is enabled by default** (see "Running a node" below), so
-    most nodes will want this.
+    most nodes will want this. AsyncSSH depends on `cryptography`; on
+    NetBSD, where pip builds it from source, install Rust 1.83 or newer,
+    a C compiler and Python headers, OpenSSL and libffi headers, and
+    `pkgconf` first. See the operator guide for the tested recipe. Rust
+    is needed to build this dependency, not to run it afterward.
   - `pip install -e ".[web]"` (`aiohttp`) for the web/xterm.js
     transport **and for NetBBS Link** — Link's own transport is also
     `aiohttp`-based (HTTP+JSON between nodes), so enabling `[link]` in
@@ -270,7 +275,8 @@ connection just to fix a stuck account. `src/netbbs/net/local_cli.py`/
 **Operating a persistent node?** See
 [`docs/NetBBS-operator-guide.md`](docs/NetBBS-operator-guide.md) for the
 complete install-through-running path: a tested non-editable pip
-install, a NetBSD/pkgsrc path, first-SysOp bootstrap, running under
+install from an official GitHub release, NetBSD prerequisites,
+first-SysOp bootstrap, running under
 systemd/rc.d (`examples/netbbs.service`/`examples/netbbs.rc`),
 persistent state paths, upgrading, and uninstalling without losing
 data. The rest of this section is the quick, source-checkout version
@@ -662,6 +668,11 @@ needs a third node acting as relay; see `tests/test_link_sync.py`'s
 relay-round-trip tests for a fully worked example.
 
 ## Development
+
+Clone the official GitHub repository, then create the development
+environment from that checkout. On NetBSD, the `dev` extra includes
+AsyncSSH and therefore builds `cryptography`; install the NetBSD build
+prerequisites listed in the operator guide §1b before running pip.
 
 ```sh
 python3 -m venv .venv

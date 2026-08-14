@@ -8,18 +8,22 @@ source checkout; this one is for actually running a node.
 
 No paid hosting, containers, or orchestration platform is required or
 assumed anywhere below. See design doc §2.1 for the full platform-tier
-policy this guide follows; the short version: **NetBSD/pkgsrc is the
-primary, fully-supported target; mainstream Linux is supported;
-Windows is development-only and not covered here as a deployment
-target.**
+policy this guide follows; the short version: **NetBSD is the primary,
+fully-supported target; mainstream Linux is supported; Windows is
+development-only and not covered here as a deployment target.** NetBBS
+itself always comes from the project's official GitHub releases or
+tagged source. On NetBSD, pkgsrc supplies its external dependencies, not
+NetBBS itself.
 
 ## 1. Installing NetBBS
 
-Two documented paths. Neither requires an editable/development source
-checkout — that workflow (`pip install -e ".[dev]"`) is for
-*contributing to* NetBBS, covered in the README, not for running one.
+Use an official GitHub release for an operator installation. An
+editable checkout (`pip install -e ".[dev]"`) is for *contributing to*
+NetBBS, covered in the README, not for running one. Distribution through
+PyPI, pkgsrc, apt, or another external package manager is not an
+official installation or update path.
 
-### 1a. Generic POSIX/Linux, via pip (Tier 2)
+### 1a. System-independent release installation
 
 Tested for this guide: built a real wheel (`python -m build`), installed
 it into a brand-new, otherwise-empty virtualenv with no source checkout
@@ -30,59 +34,58 @@ working directory with no relationship to this repository.
 
 ```sh
 python3 -m venv /var/lib/netbbs/.venv
-/var/lib/netbbs/.venv/bin/pip install "netbbs[ssh,web]"
+/var/lib/netbbs/.venv/bin/pip install --upgrade pip
+# Download the wheel asset for the desired version from:
+# https://github.com/Thiesi/NetBBS/releases
+/var/lib/netbbs/.venv/bin/pip install "/path/to/netbbs-VERSION-py3-none-any.whl[ssh,web]"
 /var/lib/netbbs/.venv/bin/python -m netbbs --version
 ```
 
-(Until signed releases are published to PyPI, substitute a wheel built
-from a tagged release checkout: `pip install build && python -m build`
-in that checkout, then `pip install dist/netbbs-*.whl` instead of the
-PyPI name above. Building requires only `setuptools`/`wheel`, no Rust
-toolchain — see design doc §2.1 on why PyNaCl was chosen specifically
-to keep that true.)
+If a release has no wheel asset, download its tagged source archive from
+the same GitHub release, verify that the tag/version is the one intended,
+then run `pip install build && python -m build` in the unpacked tree and
+install `dist/netbbs-*.whl` as above. Building the NetBBS wheel itself
+needs only setuptools and wheel; installing the `ssh` extra may then
+build its `cryptography` dependency and need the prerequisites below.
 
 The `ssh`/`web` extras are optional per transport (see the README's own
 Requirements section) — a Telnet-only node needs neither.
 
-### 1b. NetBSD, via pkgsrc (Tier 1, primary)
+### 1b. NetBSD prerequisites (Tier 1, primary)
 
-A `pkgsrc` package is not yet published. Sketch of what one looks like,
-for whoever picks this up (a real `Makefile`/`PLIST`/`DESCR` under
-`lang/python312`-style `USE_TOOLS`/`PYTHON_VERSIONED_DEPENDENCIES`
-conventions, distributed once this project has a tagged release worth
-packaging):
+Use the same GitHub release installation as §1a. On NetBSD, pip does not
+currently receive an upstream binary wheel for `cryptography`, which is
+pulled in by NetBBS's optional `ssh` extra, so expect a source build.
+Install its toolchain and headers through pkgsrc first:
 
-```make
-# pkgsrc/misc/netbbs/Makefile (sketch, not yet submitted)
-DISTNAME=       netbbs-${NETBBS_VERSION}
-CATEGORIES=     misc
-MASTER_SITES=   https://github.com/Thiesi/NetBBS/archive/refs/tags/
-DISTFILES=      v${NETBBS_VERSION}.tar.gz
-
-MAINTAINER=     you@example.com
-HOMEPAGE=       https://github.com/Thiesi/NetBBS
-COMMENT=        Modern TCP/IP-native BBS with ad-hoc mesh federation
-LICENSE=        modified-bsd
-
-DEPENDS+=       ${PYPKGPREFIX}-nacl>=1.5:../../security/py-nacl
-DEPENDS+=       ${PYPKGPREFIX}-cryptography-[0-9]*:../../security/py-cryptography  # ssh extra
-DEPENDS+=       ${PYPKGPREFIX}-aiohttp-[0-9]*:../../www/py-aiohttp                 # web/link extras
-
-USE_LANGUAGES=  # none
-PYTHON_VERSIONED_DEPENDENCIES=  yes
-
-.include "../../lang/python/pyversion.mk"
-.include "../../mk/bsd.pkg.mk"
+```sh
+pkgin install python312 py312-pip rust openssl libffi pkgconf
+rustc --version
+cc --version
 ```
 
-Until this is submitted and merged, a NetBSD operator installs the same
-way as 1a, from the base system's own `pkgin`-provided Python
-(`pkgin install python312 py312-pip`), into a venv — every dependency
-choice in this project (PyNaCl over `cryptography` for the core
-identity system, FTS5 traced through the actual pkgsrc build chain
-rather than assumed, no Rust-toolchain requirement) was already made
-specifically so this works cleanly on NetBSD today, pkgsrc package or
-not.
+`cryptography` currently requires Rust 1.83.0 or newer. It also requires
+a C compiler, Python headers, and OpenSSL and libffi headers; `pkgconf`
+provides the pkg-config-compatible discovery used to find those pkgsrc
+libraries. The current pkgsrc Rust package satisfies the version floor.
+Ensure the NetBSD `comp` set is installed if `cc` is missing. Rust and
+the compiler are needed to build `cryptography`, not to run it after a
+successful installation.
+
+This recipe deliberately includes OpenSSL and `pkgconf`: they were not
+incidental packages on the reported vanilla-system deployment. They are
+part of the documented source-build prerequisites, together with
+`libffi`. See PyCA's authoritative
+[`cryptography` installation requirements](https://cryptography.io/en/latest/installation/).
+
+A Telnet-only node with SSH, web, and Link disabled does not install the
+`ssh` extra and therefore does not acquire `cryptography` through
+AsyncSSH. On mainstream Linux, upgrade pip before installing; supported
+Linux platforms commonly receive a binary `cryptography` wheel and then
+do not need this build toolchain. If pip falls back to a source build,
+install the equivalent Rust, C compiler, Python-development, OpenSSL-
+development, libffi-development, and pkg-config packages for that
+distribution.
 
 ## 2. First run
 
@@ -166,8 +169,8 @@ back up all of it together, not just the database (see §5):
   `examples/netbbs.rc`) since NetBBS still logs to stderr/stdout too |
 | Backups | wherever you choose with `--to` (§5) — not a fixed path |
 
-Uninstalling the package (`pip uninstall netbbs`, or removing a pkgsrc
-package) only ever removes the installed Python package itself — every
+Uninstalling the package (`pip uninstall netbbs`) only ever removes the
+installed Python package itself — every
 path above lives outside that package entirely, so uninstalling never
 silently deletes node state. Removing a node's actual data is a
 separate, deliberate action an operator takes themselves.
@@ -194,9 +197,9 @@ concurrent-writer conflict each look like.
 1. **Back up first**, unconditionally (§5) — this is the rollback path
    if anything goes wrong.
 2. Stop the service (`systemctl stop netbbs` / `service netbbs stop`).
-3. Upgrade the package with your platform's ordinary tooling:
-   `pip install --upgrade netbbs` (inside the same venv), or the
-   pkgsrc equivalent once a package exists (§1b).
+3. Download the desired wheel from the official GitHub release and
+   install it into the same venv with pip, using the same extras as the
+   existing installation (§1a).
 4. Start the service again.
 
 On startup, NetBBS compares the database's own recorded schema version
@@ -232,13 +235,13 @@ manual "check for updates" action) — but the actual *apply and restart*
 half of that flow (`prepare_update`/`confirm_update`/`roll_back_update`)
 is intentionally not yet wired into any command or menu action. That is
 a deliberately deferred, higher-stakes decision (see that module's own
-docstrings), not an oversight; the package-manager-based upgrade path
-above is the currently supported one.
+docstrings), not an oversight; the GitHub-release wheel installation
+above is the currently supported upgrade path.
 
 ## 7. Uninstalling
 
-`pip uninstall netbbs` (or the pkgsrc equivalent) removes the installed
-package only. Your database, identity, uploaded files, and config are
+`pip uninstall netbbs` removes the installed package only. Your database,
+identity, uploaded files, and config are
 untouched — see §4's path table. Delete them yourself, deliberately,
 if you actually want the node's data gone; nothing in the uninstall
 path does this for you.
