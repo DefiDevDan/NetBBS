@@ -83,6 +83,8 @@ def test_opening_a_multi_page_area_shows_only_the_newest_page(tmp_path, monkeypa
 
     asyncio.run(_show_area(session, lane, area, user))
 
+    assert "NetBBS / Files / docs" in session.output
+    assert f"{_PAGE_SIZE} files on this page" in session.output
     shown = sum(1 for i in range(total) if f"file{i}.txt " in session.output)
     assert shown == _PAGE_SIZE
     for i in range(total - _PAGE_SIZE, total):
@@ -142,6 +144,23 @@ def test_single_page_area_offers_no_older_newer_recent_options(tmp_path, monkeyp
     assert "ewer" not in session.output
     assert "ecent" not in session.output
     assert "ack" in session.output
+    lane.close()
+    db.close()
+
+
+def test_empty_area_has_a_guided_empty_state(tmp_path):
+    db_path = tmp_path / "node.db"
+    db = Database(db_path)
+    user = create_user(db, "alice", password="hunter2", user_level=10)
+    area = create_file_area(db, "docs", creator=user)
+    session = FakeSession(lines=[""])
+    lane = DatabaseLane(db_path)
+
+    asyncio.run(_show_area(session, lane, area, user))
+
+    assert "NetBBS / Files / docs" in session.output
+    assert "This area has no files yet" in session.output
+    assert "Uploads and fetched Link files will appear here" in session.output
     lane.close()
     db.close()
 

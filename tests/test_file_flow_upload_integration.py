@@ -177,6 +177,7 @@ def test_upload_via_show_area_streams_to_storage_with_no_leftover_temp_file(db, 
     asyncio.run(scenario())
 
     assert "Uploaded" in _written_text(server_session)
+    assert "NetBBS / Files / docs / Upload" in _written_text(server_session)
     page = list_files_page(db, area, alice)
     assert len(page.entries) == 1
     entry = page.entries[0]

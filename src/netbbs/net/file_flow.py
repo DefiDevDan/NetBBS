@@ -82,7 +82,20 @@ from netbbs.net.confirm import prompt_yes_no
 from netbbs.net.picker import pick_item
 from netbbs.net.session import Session
 from netbbs.permissions import meets_level
-from netbbs.rendering import ACCENT_COLOR, HEADER_COLOR, MUTED_COLOR, colored, menu_key, sanitize_text
+from netbbs.rendering import (
+    ACCENT_COLOR,
+    ERROR_COLOR,
+    METADATA_COLOR,
+    MUTED_COLOR,
+    SUCCESS_COLOR,
+    action_bar,
+    badge,
+    colored,
+    empty_state,
+    menu_key,
+    sanitize_text,
+    screen_title,
+)
 from netbbs.storage.database import Database
 from netbbs.storage.execution import DatabaseLane
 from netbbs.timeutil import format_for_display, resolve_display_preferences
@@ -298,7 +311,7 @@ async def _render_area_page(
         options.append(menu_key("N", "ewer"))
         options.append(menu_key("R", "ecent"))
     options.append(menu_key("B", "ack"))
-    await session.write_line(f"\r\n{'  '.join(options)}")
+    await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
 
     hints = [menu_key("/download <filename>", " — receive via Zmodem")]
     if can_write:
@@ -310,7 +323,7 @@ async def _render_area_page(
     # just to decide whether to print the hint.
     if show_remote_hint:
         hints.append(menu_key("/remote", " — browse/fetch this area's remote catalogue"))
-    await session.write_line("  ".join(hints))
+    await session.write_line(action_bar(hints, width=session.terminal_width))
 
 
 async def _show_area(
@@ -403,7 +416,14 @@ async def _show_area(
             await lane.run(record_file_area_seen, user, area, current_page.entries[-1])
 
     if not page.entries:
-        await session.write_line(f"\r\n[{area_name}] has no files yet.")
+        heading = screen_title(area_name, breadcrumb=("NetBBS", "Files"), width=session.terminal_width)
+        await session.write_line(f"\r\n{heading}")
+        state = empty_state(
+            "This area has no files yet",
+            detail="Uploads and fetched Link files will appear here.",
+            width=session.terminal_width,
+        )
+        await session.write_line(f"\r\n{state}")
     else:
         await _render_and_advance_cursor(page)
         while True:
@@ -449,7 +469,7 @@ async def _show_area(
         hints.append(menu_key("/upload", " — send via Zmodem"))
     if show_remote_hint:
         hints.append(menu_key("/remote", " — browse/fetch this area's remote catalogue"))
-    await session.write_line(f"\r\n{'  '.join(hints)}")
+    await session.write_line(f"\r\n{action_bar(hints, width=session.terminal_width)}")
     await session.write("Command (or press Enter to go back): ")
     command = (await session.read_line()).strip()
 
@@ -482,13 +502,22 @@ async def _browse_remote_files(
     """
     remote_files = await lane.run(list_remote_files, area)
     if not remote_files:
-        await session.write_line(
-            colored(f"\r\n[{sanitize_text(area.name)}] has no remote catalogue entries.", fg_color=MUTED_COLOR)
+        heading = screen_title(
+            "Remote catalogue",
+            breadcrumb=("NetBBS", "Files", sanitize_text(area.name)),
+            width=session.terminal_width,
         )
+        await session.write_line(f"\r\n{heading}")
+        state = empty_state(
+            "This area has no remote catalogue entries",
+            detail="New Link descriptors will appear here automatically.",
+            width=session.terminal_width,
+        )
+        await session.write_line(f"\r\n{state}")
         return
 
     def render_description(remote_file: RemoteFile) -> str:
-        status = "already fetched" if remote_file.fetched_file_id is not None else "not yet fetched"
+        status = "[LOCAL] already fetched" if remote_file.fetched_file_id is not None else "[REMOTE] not yet fetched"
         return f"{_format_size(remote_file.size_bytes)} — {status} — from {remote_file.origin_fingerprint[:12]}…"
 
     selected = await pick_item(
@@ -561,7 +590,13 @@ async def _fetch_remote_file(
         return
     base_url = base_urls[0]
 
-    await session.write_line(f"\r\nFetching {sanitize_text(remote_file.filename)!r}…")
+    heading = screen_title(
+        "Fetching file",
+        breadcrumb=("NetBBS", "Files", "Link"),
+        subtitle=sanitize_text(remote_file.filename),
+        width=session.terminal_width,
+    )
+    await session.write_line(f"\r\n{heading}")
     transfer = None
     try:
         async with aiohttp.ClientSession() as http_session:
@@ -575,16 +610,19 @@ async def _fetch_remote_file(
                     colored(f"  … {transfer.bytes_received}/{transfer.total_size} bytes", fg_color=MUTED_COLOR)
                 )
     except (LinkProtocolError, LinkTransportError, FileTransferError) as exc:
-        await session.write_line(colored(f"Fetch failed: {exc}", fg_color=MUTED_COLOR))
+        await session.write_line(colored(f"Fetch failed: {exc}", fg_color=ERROR_COLOR))
         return
 
     if transfer.status == "completed":
         await session.write_line(
-            f"{sanitize_text(remote_file.filename)!r} fetched and verified — available via /download now."
+            colored(
+                f"{sanitize_text(remote_file.filename)!r} fetched and verified — available via /download now.",
+                fg_color=SUCCESS_COLOR,
+            )
         )
     else:
         await session.write_line(
-            colored(f"Fetch failed: transfer ended in status {transfer.status!r}.", fg_color=MUTED_COLOR)
+            colored(f"Fetch failed: transfer ended in status {transfer.status!r}.", fg_color=ERROR_COLOR)
         )
 
 
@@ -607,16 +645,25 @@ def _uploader_display_name(db: Database, entry, *, name_requirement: str | None)
 async def _render_file_page(
     session: Session, lane: DatabaseLane, area_name: str, page: FileEntryPage, *, name_requirement: str | None
 ) -> None:
-    header = colored(f"[{area_name}]", fg_color=HEADER_COLOR, bold=True)
+    header = screen_title(
+        area_name,
+        breadcrumb=("NetBBS", "Files"),
+        subtitle=f"{len(page.entries)} file{'s' if len(page.entries) != 1 else ''} on this page",
+        width=session.terminal_width,
+    )
     await session.write_line(f"\r\n{header}")
     display_format, display_timezone = await lane.run(resolve_display_preferences)
     for entry in page.entries:
         when = format_for_display(entry.created_at, override_format=display_format, override_timezone=display_timezone)
         size = _format_size(entry.size_bytes)
-        name_line = colored(f"{sanitize_text(entry.filename)} ({size})", fg_color=ACCENT_COLOR)
+        name_line = colored(f"{sanitize_text(entry.filename)} ", fg_color=ACCENT_COLOR, bold=True) + badge(size)
         await session.write_line(f"\r\n{name_line}")
         uploader_display = await lane.run(_uploader_display_name, entry, name_requirement=name_requirement)
-        await session.write_line(f"  uploaded by {uploader_display} ({when})")
+        await session.write_line(
+            colored("  uploaded by ", fg_color=METADATA_COLOR)
+            + uploader_display
+            + colored(f" ({when})", fg_color=METADATA_COLOR)
+        )
         if entry.description:
             await session.write_line(f"  {sanitize_text(entry.description)}")
 
@@ -632,9 +679,14 @@ async def _handle_upload(session: Session, lane: DatabaseLane, area: FileArea, u
     without ever holding the full content in memory in this module
     either.
     """
-    await session.write_line(
-        "\r\nStart your terminal's Zmodem send (sz) now. Waiting for the transfer to begin..."
+    heading = screen_title(
+        "Upload",
+        breadcrumb=("NetBBS", "Files", sanitize_text(area.name)),
+        subtitle="Zmodem transfer",
+        width=session.terminal_width,
     )
+    await session.write_line(f"\r\n{heading}")
+    await session.write_line("Start your terminal's Zmodem send (sz) now. Waiting for the transfer to begin...")
     temp_path = await lane.run(new_incoming_temp_path)
     max_upload_bytes = await lane.run(get_max_upload_bytes)
     try:
@@ -650,11 +702,14 @@ async def _handle_upload(session: Session, lane: DatabaseLane, area: FileArea, u
         # the session. temp_path is already cleaned up by receive_file
         # itself on any failure of its own; a NotImplementedError means
         # receive_file never even opened it.
-        await session.write_line(f"\r\nUpload failed: {exc}")
+        await session.write_line(colored(f"\r\nUpload failed: {exc}", fg_color=ERROR_COLOR))
         return
     await session.write_line(
-        f"\r\nUploaded {sanitize_text(entry.filename)!r} ({entry.size_bytes} bytes) "
-        f"to [{sanitize_text(area.name)}]."
+        colored(
+            f"\r\nUploaded {sanitize_text(entry.filename)!r} ({_format_size(entry.size_bytes)}) "
+            f"to [{sanitize_text(area.name)}].",
+            fg_color=SUCCESS_COLOR,
+        )
     )
 
 
@@ -671,13 +726,20 @@ async def _handle_download(session: Session, lane: DatabaseLane, area: FileArea,
     # or holds approve permission on the area.
     entry = await lane.run(get_file_by_name, area, filename, requesting_user=user)
     if entry is None:
-        await session.write_line(f"\r\nNo file named {sanitize_text(filename)!r} in this area.")
+        await session.write_line(
+            colored(f"\r\nNo file named {sanitize_text(filename)!r} in this area.", fg_color=ERROR_COLOR)
+        )
         return
 
     entry_filename = sanitize_text(entry.filename)
-    await session.write_line(
-        f"\r\nStarting Zmodem send of {entry_filename!r} — accept the transfer in your terminal."
+    heading = screen_title(
+        "Download",
+        breadcrumb=("NetBBS", "Files", sanitize_text(area.name)),
+        subtitle=f"{entry_filename} / {_format_size(entry.size_bytes)}",
+        width=session.terminal_width,
     )
+    await session.write_line(f"\r\n{heading}")
+    await session.write_line(f"Starting Zmodem send of {entry_filename!r} — accept the transfer in your terminal.")
     try:
         # download_file reads content-addressed storage directly from
         # disk by hash/path -- it never took a `db` parameter, so
@@ -687,6 +749,6 @@ async def _handle_download(session: Session, lane: DatabaseLane, area: FileArea,
         data = download_file(entry)
         await zmodem.send_file(session, entry.filename, data)
     except (zmodem.ZmodemError, NotImplementedError) as exc:
-        await session.write_line(f"\r\nDownload failed: {exc}")
+        await session.write_line(colored(f"\r\nDownload failed: {exc}", fg_color=ERROR_COLOR))
         return
-    await session.write_line(f"\r\nSent {entry_filename!r}.")
+    await session.write_line(colored(f"\r\nSent {entry_filename!r}.", fg_color=SUCCESS_COLOR))

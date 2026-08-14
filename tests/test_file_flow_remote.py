@@ -150,6 +150,7 @@ def test_remote_command_lists_a_catalogued_but_not_yet_fetched_file(db, lane, al
 
     output = _written(session)
     assert "game.bin" in output
+    assert "[REMOTE]" in output
     assert "not yet fetched" in output
     assert "Cancelled" in output
 
