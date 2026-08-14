@@ -14,7 +14,7 @@ import asyncio
 from netbbs.auth.users import create_user
 from netbbs.directory import get_bio, is_bio_visible, set_bio, set_bio_visible
 from netbbs.net.login_flow import _browse_directory, _edit_profile
-from netbbs.rendering import ACCENT_COLOR, LABEL_COLOR, VALUE_COLOR, colored
+from netbbs.rendering import LABEL_COLOR, VALUE_COLOR, colored
 from netbbs.storage.database import Database
 
 
@@ -77,7 +77,7 @@ def test_browse_directory_shows_private_bio_state_by_default(tmp_path):
 
     asyncio.run(_browse_directory(session, db, viewer))
 
-    assert "bio: private" in session.output
+    assert "[PRIVATE BIO]" in session.output
     db.close()
 
 
@@ -91,7 +91,7 @@ def test_browse_directory_shows_public_bio_state_once_visible(tmp_path):
 
     asyncio.run(_browse_directory(session, db, viewer))
 
-    assert "bio: public" in session.output
+    assert "[PUBLIC BIO]" in session.output
     db.close()
 
 
@@ -107,7 +107,7 @@ def test_selecting_a_directory_entry_shows_their_vcard(tmp_path):
     asyncio.run(_browse_directory(session, db, viewer))
 
     assert "Retro computing enthusiast" in session.output
-    assert colored("bob", fg_color=ACCENT_COLOR, bold=True) in session.output
+    assert "NetBBS / Directory / bob" in session.output
     assert colored("Member since: ", fg_color=LABEL_COLOR) in session.output
     assert colored("Retro computing enthusiast", fg_color=VALUE_COLOR) in session.output
     db.close()
@@ -123,7 +123,7 @@ def test_selecting_a_directory_entry_hides_private_bio(tmp_path):
     asyncio.run(_browse_directory(session, db, viewer))
 
     assert "Secret hobby list" not in session.output
-    assert "no public bio" in session.output
+    assert "No public bio" in session.output
     db.close()
 
 
@@ -210,6 +210,6 @@ def test_edit_profile_invalid_key_does_not_redraw_the_screen(tmp_path):
 
     asyncio.run(_edit_profile(session, db, user))
 
-    assert session.output.count("Your profile:") == 1
+    assert session.output.count("NetBBS / Your profile") == 1
     assert session.output.count("Choice: ") == 1
     assert "\a" in session.output

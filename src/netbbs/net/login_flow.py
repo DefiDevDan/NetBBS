@@ -1486,7 +1486,14 @@ async def _find_screen(
     the same limitation `_new_scan_screen`'s own channel dispatch
     already accepts.
     """
-    await session.write("\r\nSearch (or press Enter to cancel): ")
+    await session.write_line(
+        "\r\n" + screen_title(
+            "Search",
+            subtitle="Find posts, files, and retained chat on this node.",
+            width=session.terminal_width,
+        )
+    )
+    await session.write("Search terms (Enter cancels): ")
     query = (await session.read_line()).strip()
     if not query:
         await session.write_line(colored("Search cancelled.", fg_color=MUTED_COLOR))
@@ -1497,13 +1504,13 @@ async def _find_screen(
         for hit in search_posts(db, user, query):
             items.append(
                 _SearchResultItem(
-                    kind="post", name=hit.subject, description=f"post, {hit.board.name}", post=hit,
+                    kind="post", name=hit.subject, description=f"[POST] {hit.board.name}", post=hit,
                 )
             )
         for hit in search_files(db, user, query):
             items.append(
                 _SearchResultItem(
-                    kind="file", name=hit.filename, description=f"file, {hit.area.name}", file=hit,
+                    kind="file", name=hit.filename, description=f"[FILE] {hit.area.name}", file=hit,
                 )
             )
         visible_channels = list_visible_channels_for(db, user)
@@ -1514,7 +1521,7 @@ async def _find_screen(
             items.append(
                 _SearchResultItem(
                     kind="channel_message", name=snippet,
-                    description=f"chat, #{hit.channel.name} ({hit.author_label})", message=hit,
+                    description=f"[CHAT] #{hit.channel.name} by {hit.author_label}", message=hit,
                 )
             )
         return items
@@ -1527,7 +1534,7 @@ async def _find_screen(
         stable_id_of=lambda item: id(item),
         description_of=lambda item: item.description,
         title=f"Search results for {query!r}",
-        empty_message="No matches.",
+        empty_message="No matches. Try fewer or broader search terms.",
     )
     if selected is None:
         return
@@ -2683,8 +2690,8 @@ async def _browse_directory(session: Session, db: Database, user: User) -> None:
 
 def _directory_description(db: Database, target: User) -> str:
     when = format_for_display(target.created_at, db)
-    bio_state = "public" if is_bio_visible(db, target) else "private"
-    return f"member since {when}, bio: {bio_state}"
+    bio_state = "PUBLIC BIO" if is_bio_visible(db, target) else "PRIVATE BIO"
+    return f"[{bio_state}] member since {when}"
 
 
 async def _show_vcard(session: Session, db: Database, target: User, requesting_user: User) -> None:
@@ -2693,21 +2700,33 @@ async def _show_vcard(session: Session, db: Database, target: User, requesting_u
     target has opted in)."""
     vcard = get_vcard(db, target, requesting_user=requesting_user)
     when = format_for_display(vcard.created_at, db)
-    header = colored("User profile: ", fg_color=HEADER_COLOR, bold=True) + colored(
-        sanitize_text(vcard.username), fg_color=ACCENT_COLOR, bold=True
+    username = sanitize_text(vcard.username)
+    await session.write_line(
+        "\r\n" + screen_title(
+            username,
+            breadcrumb=("NetBBS", "Directory"),
+            subtitle="Member profile",
+            width=session.terminal_width,
+        )
     )
-    await session.write_line(f"\r\n{header}")
     await session.write_line(
         colored("Member since: ", fg_color=LABEL_COLOR)
         + colored(when, fg_color=METADATA_COLOR)
     )
+    await session.write_line(colored("Bio", fg_color=HEADER_COLOR, bold=True))
     if vcard.bio is not None:
         bio = reflow(sanitize_text(vcard.bio, allow_newlines=True), width=session.terminal_width)
         await session.write_line(
             colored(bio, fg_color=VALUE_COLOR)
         )
     else:
-        await session.write_line(colored("(no public bio)", fg_color=MUTED_COLOR))
+        await session.write_line(
+            empty_state(
+                "No public bio",
+                detail="This member has not shared a bio.",
+                width=session.terminal_width,
+            )
+        )
 
 
 def _who_entry_name(entry: SessionSummary) -> str:
@@ -2794,11 +2813,20 @@ async def _caller_who_screen(
         return
 
     offer_invite = direct_invites is not None and lane is not None
+    await session.write_line(
+        "\r\n" + screen_title(
+            target.username,
+            breadcrumb=("NetBBS", "Who's online"),
+            subtitle="Choose how you would like to connect.",
+            width=session.terminal_width,
+        )
+    )
     options = [menu_key("M", "essage")]
     if offer_invite:
         options.append(menu_key("I", "nvite to chat"))
     options.append(menu_key("B", "ack"))
-    await session.write(f"{'  '.join(options)}: ")
+    await session.write_line(action_bar(options, width=session.terminal_width))
+    await session.write("Choice: ")
     action = (await session.read_key()).lower()
     await session.write_line("")
 
@@ -2949,7 +2977,14 @@ async def _render_profile(session: Session, db: Database, user: User) -> bool:
     history_name_visible = session_history_name_visible(db, user)
     color_override = color_depth_override(db, user)
 
-    await session.write_line(colored("\r\nYour profile:", fg_color=HEADER_COLOR, bold=True))
+    await session.write_line(
+        "\r\n" + screen_title(
+            "Your profile",
+            subtitle="Your public identity and caller preferences.",
+            width=session.terminal_width,
+        )
+    )
+    await session.write_line(colored("BIO", fg_color=METADATA_COLOR, bold=True))
     if current_bio:
         await session.write_line(
             reflow(sanitize_text(current_bio, allow_newlines=True), width=session.terminal_width)
@@ -2978,8 +3013,7 @@ async def _render_profile(session: Session, db: Database, user: User) -> bool:
         )
     )
 
-    options = "  ".join(
-        [
+    options = [
             menu_key("E", "dit bio"),
             menu_key("V", "isibility"),
             menu_key("F", "ullscreen editor"),
@@ -2989,8 +3023,7 @@ async def _render_profile(session: Session, db: Database, user: User) -> bool:
             menu_key("N", "ame & details"),
             menu_key("B", "ack"),
         ]
-    )
-    await session.write_line(f"\r\n{options}")
+    await session.write_line("\r\n" + action_bar(options, width=session.terminal_width))
     await session.write("Choice: ")
     return visible
 
