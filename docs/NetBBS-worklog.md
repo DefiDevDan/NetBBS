@@ -2453,3 +2453,15 @@ not have. Live in-memory badges (maintenance, lockdown, session count, peer
 count) are still recomputed on every render. Preserve this split when adding
 dashboard metrics: durable snapshot data may be momentarily stale until `[D]`
 refresh, while urgent process state must never be cached.
+
+**The real-time Link cipher suite stays inside the existing PyNaCl/libsodium
+dependency boundary.** `Noise_XX_25519_ChaChaPoly_BLAKE2s` uses PyNaCl's
+X25519 scalar multiplication and IETF ChaCha20-Poly1305 bindings plus Python's
+BLAKE2s/HMAC; it does not add `cryptography`, Rust, or a separate Noise package.
+The state machine is pinned to the public Cacophony XX/25519/ChaChaPoly/BLAKE2s
+vector byte-for-byte (all handshake messages and final handshake hash), in
+addition to a real loopback-socket test. Both encrypted identity payloads must
+verify root fingerprint -> root-signed transport transition chain -> current
+Ed25519 transport key -> presented X25519 static key before a caller may apply
+trust policy or accept application frames. Keep cryptographic verification,
+trust admission, and session supervision as distinct gates.

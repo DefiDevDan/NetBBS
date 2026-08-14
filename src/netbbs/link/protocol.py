@@ -68,6 +68,7 @@ import nacl.signing
 from netbbs.boards.limits import MAX_BODY_BYTES as _MAX_BOARD_POST_BODY_BYTES
 from netbbs.boards.limits import MAX_SUBJECT_BYTES as _MAX_BOARD_POST_SUBJECT_BYTES
 from netbbs.identity.keys import fingerprint_from_verify_key
+from netbbs.identity.encryption import derive_encryption_public_key
 from netbbs.link.events import (
     BOARD_CLOSURE_OBJECT_TYPE,
     BOARD_GENESIS_OBJECT_TYPE,
@@ -159,6 +160,7 @@ _MAX_SEEN_TRUST_PULL_NONCES = 4096
 
 REALTIME_PROTOCOL_VERSION = 1
 REALTIME_MAX_PLAINTEXT_BYTES = 16 * 1024
+REALTIME_MAX_IDENTITY_PAYLOAD_BYTES = 48 * 1024
 REALTIME_FRAME_TYPES = frozenset(
     {"subscribe", "unsubscribe", "presence_snapshot", "presence_delta",
      "channel_message", "ping", "pong", "error", "close"}
@@ -313,6 +315,122 @@ class RealtimeFrame:
         except (UnicodeDecodeError, ValueError) as exc:
             raise LinkProtocolError(f"malformed real-time JSON: {exc}") from exc
         return cls.from_dict(value)
+
+
+@dataclass(frozen=True)
+class RealtimeIdentityPayload:
+    """Root-verifiable binding between a peer and its Noise static key."""
+
+    root_fingerprint: str
+    root_public_key: str
+    transport_transitions: tuple[KeyTransition, ...]
+    noise_static_key: str
+    version: int = 1
+
+    @classmethod
+    def for_node(cls, identity: NodeIdentity) -> "RealtimeIdentityPayload":
+        transitions = tuple(
+            transition for transition in identity.transitions
+            if transition.payload.get("purpose") == "transport"
+        )
+        static_key = derive_encryption_public_key(identity.transport_key.verify_key)
+        return cls(
+            root_fingerprint=identity.fingerprint,
+            root_public_key=base64.b64encode(bytes(identity.root.verify_key)).decode("ascii"),
+            transport_transitions=transitions,
+            noise_static_key=base64.b64encode(bytes(static_key)).decode("ascii"),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "version": self.version,
+            "root_fingerprint": self.root_fingerprint,
+            "root_public_key": self.root_public_key,
+            "transport_transitions": [transition.to_dict() for transition in self.transport_transitions],
+            "noise_static_key": self.noise_static_key,
+        }
+
+    def to_json_bytes(self) -> bytes:
+        encoded = json.dumps(
+            self.to_dict(), ensure_ascii=True, separators=(",", ":"), sort_keys=True,
+            allow_nan=False,
+        ).encode("ascii")
+        if len(encoded) > REALTIME_MAX_IDENTITY_PAYLOAD_BYTES:
+            raise LinkProtocolError("real-time identity payload exceeds 48 KiB")
+        return encoded
+
+    @classmethod
+    def from_dict(cls, value: dict) -> "RealtimeIdentityPayload":
+        if not isinstance(value, dict):
+            raise LinkProtocolError("real-time identity payload must be an object")
+        expected = {
+            "version", "root_fingerprint", "root_public_key",
+            "transport_transitions", "noise_static_key",
+        }
+        if set(value) != expected:
+            raise LinkProtocolError("real-time identity payload has unexpected or missing fields")
+        if type(value["version"]) is not int or value["version"] != 1:
+            raise LinkProtocolError("unsupported real-time identity payload version")
+        if not isinstance(value["transport_transitions"], list):
+            raise LinkProtocolError("transport_transitions must be a list")
+        try:
+            transitions = tuple(KeyTransition.from_dict(item) for item in value["transport_transitions"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise LinkProtocolError(f"malformed transport transition: {exc}") from exc
+        return cls(
+            version=value["version"],
+            root_fingerprint=value["root_fingerprint"],
+            root_public_key=value["root_public_key"],
+            transport_transitions=transitions,
+            noise_static_key=value["noise_static_key"],
+        )
+
+    @classmethod
+    def from_json_bytes(cls, data: bytes) -> "RealtimeIdentityPayload":
+        if not isinstance(data, bytes) or not 1 <= len(data) <= REALTIME_MAX_IDENTITY_PAYLOAD_BYTES:
+            raise LinkProtocolError("real-time identity payload must be between 1 byte and 48 KiB")
+        try:
+            value = strict_json_loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise LinkProtocolError(f"malformed real-time identity JSON: {exc}") from exc
+        return cls.from_dict(value)
+
+    def verify_noise_static(self, presented_static_key: bytes) -> nacl.signing.VerifyKey:
+        """Verify the full root -> transport transition -> X25519 binding."""
+        if not isinstance(self.root_fingerprint, str):
+            raise LinkProtocolError("root_fingerprint must be a string")
+        try:
+            root_bytes = base64.b64decode(self.root_public_key, validate=True)
+            declared_static = base64.b64decode(self.noise_static_key, validate=True)
+            root_key = nacl.signing.VerifyKey(root_bytes)
+        except (TypeError, ValueError) as exc:
+            raise LinkProtocolError(f"malformed real-time identity key: {exc}") from exc
+        if fingerprint_from_verify_key(root_key) != self.root_fingerprint:
+            raise LinkProtocolError("real-time identity root fingerprint does not match its public key")
+        if not isinstance(presented_static_key, bytes) or len(presented_static_key) != 32:
+            raise LinkProtocolError("presented Noise static key must be 32 bytes")
+        if declared_static != presented_static_key:
+            raise LinkProtocolError("identity payload does not name the presented Noise static key")
+        for transition in self.transport_transitions:
+            payload = transition.payload
+            if payload.get("subject_fingerprint") != self.root_fingerprint or payload.get("purpose") != "transport":
+                raise LinkProtocolError("identity payload contains a transition from another chain")
+        try:
+            current_transport = resolve_current_operational_key(
+                self.transport_transitions,
+                root_verify_key=root_key,
+                subject_fingerprint=self.root_fingerprint,
+                purpose="transport",
+            )
+            if current_transport is None:
+                raise LinkProtocolError("real-time identity has no authorized transport key")
+            transport_verify_key = nacl.signing.VerifyKey(base64.b64decode(current_transport, validate=True))
+        except (NodeIdentityError, TypeError, ValueError) as exc:
+            raise LinkProtocolError(f"invalid transport transition chain: {exc}") from exc
+        expected_static = bytes(derive_encryption_public_key(transport_verify_key))
+        if expected_static != presented_static_key:
+            raise LinkProtocolError("Noise static key is not derived from the authorized transport key")
+        return root_key
 
 
 def _signing_transitions(transitions: tuple[KeyTransition, ...], fingerprint: str) -> tuple[KeyTransition, ...]:

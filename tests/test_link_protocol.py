@@ -8,6 +8,7 @@ a socket or makes an HTTP call.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import replace
 
 import pytest
@@ -31,7 +32,7 @@ from netbbs.link.events import (
     build_link_message_accepted,
     build_link_message_bounced,
 )
-from netbbs.link.node_identity import rotate_operational_key
+from netbbs.link.node_identity import bootstrap_node_identity, rotate_operational_key
 from netbbs.link.protocol import (
     REALTIME_FRAME_TYPES,
     HelloMessage,
@@ -39,6 +40,7 @@ from netbbs.link.protocol import (
     LinkProtocolError,
     PeerListMessage,
     RealtimeFrame,
+    RealtimeIdentityPayload,
 )
 from tests.link_harness import FakeClock, ScriptedTransport, spawn_node
 
@@ -76,6 +78,33 @@ def test_realtime_frame_enforces_plaintext_limit_on_encode_and_decode():
         frame.to_json_bytes()
     with pytest.raises(LinkProtocolError, match="16 KiB"):
         RealtimeFrame.from_json_bytes(b"x" * (16 * 1024 + 1))
+
+
+def test_realtime_identity_payload_verifies_root_authorized_noise_static_key():
+    identity = bootstrap_node_identity("alice")
+    payload = RealtimeIdentityPayload.for_node(identity)
+    parsed = RealtimeIdentityPayload.from_json_bytes(payload.to_json_bytes())
+
+    root_key = parsed.verify_noise_static(base64.b64decode(parsed.noise_static_key))
+
+    assert bytes(root_key) == bytes(identity.root.verify_key)
+    assert all(item.payload["purpose"] == "transport" for item in parsed.transport_transitions)
+
+
+@pytest.mark.parametrize("tamper", ["fingerprint", "static", "transition"])
+def test_realtime_identity_payload_rejects_broken_root_transport_binding(tamper):
+    identity = bootstrap_node_identity("alice")
+    payload = RealtimeIdentityPayload.for_node(identity).to_dict()
+    presented = base64.b64decode(payload["noise_static_key"])
+    if tamper == "fingerprint":
+        payload["root_fingerprint"] = "0" * len(payload["root_fingerprint"])
+    elif tamper == "static":
+        payload["noise_static_key"] = base64.b64encode(b"x" * 32).decode("ascii")
+    else:
+        payload["transport_transitions"][0]["envelope"]["payload"]["purpose"] = "signing"
+
+    with pytest.raises(LinkProtocolError):
+        RealtimeIdentityPayload.from_dict(payload).verify_noise_static(presented)
 
 
 @pytest.fixture

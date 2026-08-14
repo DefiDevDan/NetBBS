@@ -42,11 +42,16 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import hmac
 import json
 import logging
+from dataclasses import dataclass
 from typing import Callable
 from urllib.parse import urljoin, urlparse
 
+import nacl.bindings
+import nacl.exceptions
+import nacl.public
 import nacl.signing
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
@@ -129,7 +134,8 @@ from netbbs.link.files import (
     materialize_carried_file_descriptor,
 )
 from netbbs.link.mail import apply_link_message_accepted, apply_link_message_bounced, deliver_link_message
-from netbbs.link.node_identity import resolve_current_operational_key
+from netbbs.link.node_identity import NodeIdentity, resolve_current_operational_key
+from netbbs.identity.encryption import derive_encryption_private_key
 from netbbs.link.protocol import (
     _MAX_EVENTS_PER_REQUEST,
     FileChunkRequest,
@@ -139,6 +145,7 @@ from netbbs.link.protocol import (
     LinkProtocolError,
     PeerListMessage,
     PeerRecord,
+    RealtimeIdentityPayload,
 )
 from netbbs.link.relay_mailbox import (
     RelayableEnvelope,
@@ -245,6 +252,14 @@ async def read_realtime_record(reader: asyncio.StreamReader) -> bytes:
         return await reader.readexactly(length)
     except asyncio.IncompleteReadError as exc:
         raise LinkTransportError("truncated real-time record") from exc
+
+
+async def write_realtime_record(writer: asyncio.StreamWriter, ciphertext: bytes) -> None:
+    writer.write(encode_realtime_record(ciphertext))
+    try:
+        await writer.drain()
+    except (ConnectionError, OSError) as exc:
+        raise LinkTransportError("could not write real-time record") from exc
 
 
 @web.middleware
@@ -461,6 +476,269 @@ class LinkTransportError(Exception):
     verify," a different failure a caller may want to handle
     differently (e.g. log-and-drop a hostile peer vs. retry a flaky
     connection)."""
+
+
+_NOISE_PROTOCOL_NAME = b"Noise_XX_25519_ChaChaPoly_BLAKE2s"
+_NOISE_HASHLEN = 32
+_NOISE_TAGLEN = nacl.bindings.crypto_aead_chacha20poly1305_ietf_ABYTES
+
+
+def _noise_hash(data: bytes) -> bytes:
+    return hashlib.blake2s(data, digest_size=_NOISE_HASHLEN).digest()
+
+
+def _noise_hmac(key: bytes, data: bytes) -> bytes:
+    return hmac.new(key, data, hashlib.blake2s).digest()
+
+
+def _noise_hkdf(chaining_key: bytes, input_key_material: bytes, outputs: int) -> tuple[bytes, ...]:
+    if outputs not in {2, 3}:
+        raise ValueError("Noise HKDF supports two or three outputs")
+    temp_key = _noise_hmac(chaining_key, input_key_material)
+    result: list[bytes] = []
+    previous = b""
+    for index in range(1, outputs + 1):
+        previous = _noise_hmac(temp_key, previous + bytes([index]))
+        result.append(previous)
+    return tuple(result)
+
+
+class _NoiseCipherState:
+    def __init__(self, key: bytes | None = None) -> None:
+        self._key = key
+        self._nonce = 0
+
+    @property
+    def has_key(self) -> bool:
+        return self._key is not None
+
+    def initialize_key(self, key: bytes) -> None:
+        if len(key) != 32:
+            raise LinkTransportError("Noise cipher key must be 32 bytes")
+        self._key = key
+        self._nonce = 0
+
+    def _next_nonce(self) -> bytes:
+        if self._nonce >= (1 << 64) - 1:
+            raise LinkTransportError("Noise cipher nonce exhausted")
+        nonce = b"\x00" * 4 + self._nonce.to_bytes(8, "little")
+        self._nonce += 1
+        return nonce
+
+    def encrypt_with_ad(self, associated_data: bytes, plaintext: bytes) -> bytes:
+        if self._key is None:
+            return plaintext
+        return nacl.bindings.crypto_aead_chacha20poly1305_ietf_encrypt(
+            plaintext, associated_data, self._next_nonce(), self._key
+        )
+
+    def decrypt_with_ad(self, associated_data: bytes, ciphertext: bytes) -> bytes:
+        if self._key is None:
+            return ciphertext
+        try:
+            return nacl.bindings.crypto_aead_chacha20poly1305_ietf_decrypt(
+                ciphertext, associated_data, self._next_nonce(), self._key
+            )
+        except nacl.exceptions.CryptoError as exc:
+            raise LinkTransportError("Noise ciphertext authentication failed") from exc
+
+
+class _NoiseSymmetricState:
+    def __init__(self) -> None:
+        if len(_NOISE_PROTOCOL_NAME) <= _NOISE_HASHLEN:
+            self.handshake_hash = _NOISE_PROTOCOL_NAME.ljust(_NOISE_HASHLEN, b"\x00")
+        else:
+            self.handshake_hash = _noise_hash(_NOISE_PROTOCOL_NAME)
+        self.chaining_key = self.handshake_hash
+        self.cipher = _NoiseCipherState()
+
+    def mix_hash(self, data: bytes) -> None:
+        self.handshake_hash = _noise_hash(self.handshake_hash + data)
+
+    def mix_key(self, input_key_material: bytes) -> None:
+        self.chaining_key, temp_key = _noise_hkdf(self.chaining_key, input_key_material, 2)
+        self.cipher.initialize_key(temp_key)
+
+    def encrypt_and_hash(self, plaintext: bytes) -> bytes:
+        ciphertext = self.cipher.encrypt_with_ad(self.handshake_hash, plaintext)
+        self.mix_hash(ciphertext)
+        return ciphertext
+
+    def decrypt_and_hash(self, ciphertext: bytes) -> bytes:
+        plaintext = self.cipher.decrypt_with_ad(self.handshake_hash, ciphertext)
+        self.mix_hash(ciphertext)
+        return plaintext
+
+    def split(self) -> tuple[_NoiseCipherState, _NoiseCipherState]:
+        first, second = _noise_hkdf(self.chaining_key, b"", 2)
+        return _NoiseCipherState(first), _NoiseCipherState(second)
+
+
+@dataclass(frozen=True)
+class NoiseTransportCiphers:
+    """Directional cipher pair returned after a completed XX handshake."""
+
+    sending: _NoiseCipherState
+    receiving: _NoiseCipherState
+    handshake_hash: bytes
+
+
+class NoiseXXHandshake:
+    """Strict three-message Noise XX state machine for the Link cipher suite."""
+
+    def __init__(
+        self, *, initiator: bool, static_private_key: bytes,
+        ephemeral_private_key: bytes | None = None, prologue: bytes = b"",
+    ) -> None:
+        if len(static_private_key) != 32:
+            raise LinkTransportError("Noise static private key must be 32 bytes")
+        if ephemeral_private_key is not None and len(ephemeral_private_key) != 32:
+            raise LinkTransportError("Noise ephemeral private key must be 32 bytes")
+        self.initiator = initiator
+        self._static_private = static_private_key
+        self.static_public_key = bytes(nacl.public.PrivateKey(static_private_key).public_key)
+        self._ephemeral_private = ephemeral_private_key
+        self._ephemeral_public: bytes | None = None
+        self.remote_static_key: bytes | None = None
+        self._remote_ephemeral: bytes | None = None
+        self._symmetric = _NoiseSymmetricState()
+        self._symmetric.mix_hash(prologue)
+        self._step = 0
+
+    def _ensure_ephemeral(self) -> bytes:
+        if self._ephemeral_private is None:
+            self._ephemeral_private = bytes(nacl.public.PrivateKey.generate())
+        self._ephemeral_public = bytes(nacl.public.PrivateKey(self._ephemeral_private).public_key)
+        return self._ephemeral_public
+
+    @staticmethod
+    def _dh(private_key: bytes, public_key: bytes) -> bytes:
+        try:
+            return nacl.bindings.crypto_scalarmult(private_key, public_key)
+        except nacl.exceptions.CryptoError as exc:
+            raise LinkTransportError("invalid Noise Diffie-Hellman public key") from exc
+
+    def write_message(self, payload: bytes = b"") -> tuple[bytes, NoiseTransportCiphers | None]:
+        if self.initiator and self._step == 0:
+            ephemeral = self._ensure_ephemeral()
+            self._symmetric.mix_hash(ephemeral)
+            message = ephemeral + self._symmetric.encrypt_and_hash(payload)
+            self._step = 1
+            return message, None
+        if not self.initiator and self._step == 1:
+            if self._remote_ephemeral is None:
+                raise LinkTransportError("Noise XX responder has no initiator ephemeral key")
+            ephemeral = self._ensure_ephemeral()
+            self._symmetric.mix_hash(ephemeral)
+            self._symmetric.mix_key(self._dh(self._ephemeral_private, self._remote_ephemeral))
+            encrypted_static = self._symmetric.encrypt_and_hash(self.static_public_key)
+            self._symmetric.mix_key(self._dh(self._static_private, self._remote_ephemeral))
+            message = ephemeral + encrypted_static + self._symmetric.encrypt_and_hash(payload)
+            self._step = 2
+            return message, None
+        if self.initiator and self._step == 2:
+            if self._remote_ephemeral is None:
+                raise LinkTransportError("Noise XX initiator has no responder ephemeral key")
+            encrypted_static = self._symmetric.encrypt_and_hash(self.static_public_key)
+            self._symmetric.mix_key(self._dh(self._static_private, self._remote_ephemeral))
+            message = encrypted_static + self._symmetric.encrypt_and_hash(payload)
+            first, second = self._symmetric.split()
+            self._step = 3
+            return message, NoiseTransportCiphers(first, second, self._symmetric.handshake_hash)
+        raise LinkTransportError("Noise XX write_message called out of order")
+
+    def read_message(self, message: bytes) -> tuple[bytes, NoiseTransportCiphers | None]:
+        if not self.initiator and self._step == 0:
+            if len(message) < 32:
+                raise LinkTransportError("truncated first Noise XX message")
+            self._remote_ephemeral = message[:32]
+            self._symmetric.mix_hash(self._remote_ephemeral)
+            payload = self._symmetric.decrypt_and_hash(message[32:])
+            self._step = 1
+            return payload, None
+        if self.initiator and self._step == 1:
+            minimum = 32 + 32 + _NOISE_TAGLEN
+            if len(message) < minimum:
+                raise LinkTransportError("truncated second Noise XX message")
+            self._remote_ephemeral = message[:32]
+            self._symmetric.mix_hash(self._remote_ephemeral)
+            self._symmetric.mix_key(self._dh(self._ephemeral_private, self._remote_ephemeral))
+            static_end = 32 + 32 + _NOISE_TAGLEN
+            self.remote_static_key = self._symmetric.decrypt_and_hash(message[32:static_end])
+            self._symmetric.mix_key(self._dh(self._ephemeral_private, self.remote_static_key))
+            payload = self._symmetric.decrypt_and_hash(message[static_end:])
+            self._step = 2
+            return payload, None
+        if not self.initiator and self._step == 2:
+            minimum = 32 + _NOISE_TAGLEN
+            if len(message) < minimum:
+                raise LinkTransportError("truncated third Noise XX message")
+            static_end = 32 + _NOISE_TAGLEN
+            self.remote_static_key = self._symmetric.decrypt_and_hash(message[:static_end])
+            self._symmetric.mix_key(self._dh(self._ephemeral_private, self.remote_static_key))
+            payload = self._symmetric.decrypt_and_hash(message[static_end:])
+            first, second = self._symmetric.split()
+            self._step = 3
+            return payload, NoiseTransportCiphers(second, first, self._symmetric.handshake_hash)
+        raise LinkTransportError("Noise XX read_message called out of order")
+
+
+async def establish_noise_xx_initiator(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    identity: NodeIdentity,
+    *,
+    timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+) -> tuple[RealtimeIdentityPayload, NoiseTransportCiphers]:
+    """Run the initiator side of XX and verify the responder's Link identity."""
+    handshake = NoiseXXHandshake(
+        initiator=True,
+        static_private_key=bytes(derive_encryption_private_key(identity.transport_key)),
+    )
+    own_payload = RealtimeIdentityPayload.for_node(identity).to_json_bytes()
+    try:
+        first, _ = handshake.write_message()
+        await asyncio.wait_for(write_realtime_record(writer, first), timeout_seconds)
+        second = await asyncio.wait_for(read_realtime_record(reader), timeout_seconds)
+        remote_bytes, _ = handshake.read_message(second)
+        remote = RealtimeIdentityPayload.from_json_bytes(remote_bytes)
+        remote.verify_noise_static(handshake.remote_static_key)
+        third, ciphers = handshake.write_message(own_payload)
+        await asyncio.wait_for(write_realtime_record(writer, third), timeout_seconds)
+    except TimeoutError as exc:
+        raise LinkTransportError("Noise XX initiator handshake timed out") from exc
+    if ciphers is None:
+        raise LinkTransportError("Noise XX initiator did not produce transport keys")
+    return remote, ciphers
+
+
+async def establish_noise_xx_responder(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    identity: NodeIdentity,
+    *,
+    timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
+) -> tuple[RealtimeIdentityPayload, NoiseTransportCiphers]:
+    """Run the responder side of XX and verify the initiator's Link identity."""
+    handshake = NoiseXXHandshake(
+        initiator=False,
+        static_private_key=bytes(derive_encryption_private_key(identity.transport_key)),
+    )
+    own_payload = RealtimeIdentityPayload.for_node(identity).to_json_bytes()
+    try:
+        first = await asyncio.wait_for(read_realtime_record(reader), timeout_seconds)
+        handshake.read_message(first)
+        second, _ = handshake.write_message(own_payload)
+        await asyncio.wait_for(write_realtime_record(writer, second), timeout_seconds)
+        third = await asyncio.wait_for(read_realtime_record(reader), timeout_seconds)
+        remote_bytes, ciphers = handshake.read_message(third)
+        remote = RealtimeIdentityPayload.from_json_bytes(remote_bytes)
+        remote.verify_noise_static(handshake.remote_static_key)
+    except TimeoutError as exc:
+        raise LinkTransportError("Noise XX responder handshake timed out") from exc
+    if ciphers is None:
+        raise LinkTransportError("Noise XX responder did not produce transport keys")
+    return remote, ciphers
 
 
 class LinkServer:

@@ -26,6 +26,7 @@ import hashlib
 import json
 
 import aiohttp
+import nacl.public
 import pytest
 from aiohttp import web
 import netbbs.link.transport as link_transport
@@ -39,13 +40,20 @@ from netbbs.link.events import (
     build_endpoint_descriptor, build_link_message,
 )
 from netbbs.link.node_identity import bootstrap_node_identity, rotate_operational_key
-from netbbs.link.protocol import FileChunkRequest, HelloMessage, LinkNode, LinkProtocolError
+from netbbs.identity.encryption import derive_encryption_private_key
+from netbbs.link.protocol import (
+    FileChunkRequest, HelloMessage, LinkNode, LinkProtocolError, RealtimeFrame,
+    RealtimeIdentityPayload,
+)
 from netbbs.link.store import build_inventory_request, load_link_node
 from netbbs.link.transport import (
     LINK_PATH_PREFIX,
     LinkServer,
     LinkTransportError,
+    NoiseXXHandshake,
     encode_realtime_record,
+    establish_noise_xx_initiator,
+    establish_noise_xx_responder,
     deposit_into_relay_mailbox,
     dial_hello,
     fetch_trust_evidence,
@@ -56,6 +64,7 @@ from netbbs.link.transport import (
     request_relay_consent,
     request_trust_objects,
     read_realtime_record,
+    write_realtime_record,
 )
 from netbbs.link.trust import (
     TrustDimension, TrustState, TrustSubject, configure_trust_domain,
@@ -103,6 +112,177 @@ def test_realtime_record_codec_rejects_empty_and_oversized_ciphertext():
         encode_realtime_record(b"")
     with pytest.raises(LinkTransportError):
         encode_realtime_record(b"x" * 65_536)
+
+
+def test_noise_xx_handshake_authenticates_both_statics_and_splits_transport_keys():
+    initiator_static = bytes(nacl.public.PrivateKey.generate())
+    responder_static = bytes(nacl.public.PrivateKey.generate())
+    initiator = NoiseXXHandshake(
+        initiator=True, static_private_key=initiator_static,
+        ephemeral_private_key=b"i" * 32,
+    )
+    responder = NoiseXXHandshake(
+        initiator=False, static_private_key=responder_static,
+        ephemeral_private_key=b"r" * 32,
+    )
+
+    first, _ = initiator.write_message()
+    assert responder.read_message(first) == (b"", None)
+    second, _ = responder.write_message(b"responder identity")
+    payload, _ = initiator.read_message(second)
+    assert payload == b"responder identity"
+    third, initiator_ciphers = initiator.write_message(b"initiator identity")
+    payload, responder_ciphers = responder.read_message(third)
+
+    assert payload == b"initiator identity"
+    assert initiator.remote_static_key == bytes(nacl.public.PrivateKey(responder_static).public_key)
+    assert responder.remote_static_key == bytes(nacl.public.PrivateKey(initiator_static).public_key)
+    assert initiator_ciphers is not None and responder_ciphers is not None
+    assert initiator_ciphers.handshake_hash == responder_ciphers.handshake_hash
+    ciphertext = initiator_ciphers.sending.encrypt_with_ad(b"", b"hello")
+    assert responder_ciphers.receiving.decrypt_with_ad(b"", ciphertext) == b"hello"
+    response = responder_ciphers.sending.encrypt_with_ad(b"", b"world")
+    assert initiator_ciphers.receiving.decrypt_with_ad(b"", response) == b"world"
+
+
+def test_noise_xx_rejects_tampered_handshake_ciphertext_and_out_of_order_calls():
+    initiator = NoiseXXHandshake(
+        initiator=True, static_private_key=bytes(nacl.public.PrivateKey.generate()),
+        ephemeral_private_key=b"i" * 32,
+    )
+    responder = NoiseXXHandshake(
+        initiator=False, static_private_key=bytes(nacl.public.PrivateKey.generate()),
+        ephemeral_private_key=b"r" * 32,
+    )
+
+    with pytest.raises(LinkTransportError, match="out of order"):
+        responder.write_message()
+    first, _ = initiator.write_message()
+    responder.read_message(first)
+    second, _ = responder.write_message(b"identity")
+    tampered = second[:-1] + bytes([second[-1] ^ 1])
+
+    with pytest.raises(LinkTransportError, match="authentication failed"):
+        initiator.read_message(tampered)
+
+
+def test_noise_xx_matches_the_cacophony_blake2s_vector():
+    """Independent public vector for Noise_XX_25519_ChaChaPoly_BLAKE2s."""
+    initiator = NoiseXXHandshake(
+        initiator=True,
+        static_private_key=bytes.fromhex("e61ef9919cde45dd5f82166404bd08e38bceb5dfdfded0a34c8df7ed542214d1"),
+        ephemeral_private_key=bytes.fromhex("893e28b9dc6ca8d611ab664754b8ceb7bac5117349a4439a6b0569da977c464a"),
+        prologue=bytes.fromhex("4a6f686e2047616c74"),
+    )
+    responder = NoiseXXHandshake(
+        initiator=False,
+        static_private_key=bytes.fromhex("4a3acbfdb163dec651dfa3194dece676d437029c62a408b4c5ea9114246e4893"),
+        ephemeral_private_key=bytes.fromhex("bbdb4cdbd309f1a1f2e1456967fe288cadd6f712d65dc7b7793d5e63da6b375b"),
+        prologue=bytes.fromhex("4a6f686e2047616c74"),
+    )
+    payloads = [
+        bytes.fromhex("4c756477696720766f6e204d69736573"),
+        bytes.fromhex("4d757272617920526f746862617264"),
+        bytes.fromhex("462e20412e20486179656b"),
+    ]
+    expected = [
+        "ca35def5ae56cec33dc2036731ab14896bc4c75dbb07a61f879f8e3afa4c79444c756477696720766f6e204d69736573",
+        "95ebc60d2b1fa672c1f46a8aa265ef51bfe38e7ccb39ec5be34069f1448088437c365eb362a1c991b0557fe8a7fb187d99346765d93ec63db6c1b01504ebeec55a2298d2dbff80eff034d20595153f63a196a6cead1e11b2bb13e336fa13616dd3e8b0a070c882ed3f1a78c7c06c93",
+        "46c3307de83b014258717d97781c1f50936d8b7d50c0722a1739654d10392d415b670c114f79b9a4f80541570f77ce88802efa4220cff733e7b5668ba38059ec904b4b8eef9448085faf51",
+    ]
+
+    first, _ = initiator.write_message(payloads[0])
+    assert first.hex() == expected[0]
+    assert responder.read_message(first)[0] == payloads[0]
+    second, _ = responder.write_message(payloads[1])
+    assert second.hex() == expected[1]
+    assert initiator.read_message(second)[0] == payloads[1]
+    third, initiator_ciphers = initiator.write_message(payloads[2])
+    assert third.hex() == expected[2]
+    decoded, responder_ciphers = responder.read_message(third)
+
+    assert decoded == payloads[2]
+    assert initiator_ciphers is not None and responder_ciphers is not None
+    assert initiator_ciphers.handshake_hash.hex() == "6c4c56cf71612f72d05ceb96c0155e6f4ea54a26b504c93de632a2db4a49d200"
+
+
+def test_noise_xx_carries_and_verifies_each_nodes_root_authorized_identity():
+    alice = bootstrap_node_identity("alice")
+    bob = bootstrap_node_identity("bob")
+    initiator = NoiseXXHandshake(
+        initiator=True,
+        static_private_key=bytes(derive_encryption_private_key(alice.transport_key)),
+    )
+    responder = NoiseXXHandshake(
+        initiator=False,
+        static_private_key=bytes(derive_encryption_private_key(bob.transport_key)),
+    )
+
+    first, _ = initiator.write_message()
+    responder.read_message(first)
+    second, _ = responder.write_message(RealtimeIdentityPayload.for_node(bob).to_json_bytes())
+    bob_payload_bytes, _ = initiator.read_message(second)
+    bob_payload = RealtimeIdentityPayload.from_json_bytes(bob_payload_bytes)
+    bob_payload.verify_noise_static(initiator.remote_static_key)
+    third, initiator_ciphers = initiator.write_message(
+        RealtimeIdentityPayload.for_node(alice).to_json_bytes()
+    )
+    alice_payload_bytes, responder_ciphers = responder.read_message(third)
+    alice_payload = RealtimeIdentityPayload.from_json_bytes(alice_payload_bytes)
+    alice_payload.verify_noise_static(responder.remote_static_key)
+
+    assert bob_payload.root_fingerprint == bob.fingerprint
+    assert alice_payload.root_fingerprint == alice.fingerprint
+    assert initiator_ciphers is not None and responder_ciphers is not None
+
+
+def test_noise_xx_identity_handshake_and_frame_cross_a_real_loopback_socket():
+    async def scenario():
+        alice = bootstrap_node_identity("alice")
+        bob = bootstrap_node_identity("bob")
+        server_result = asyncio.get_running_loop().create_future()
+
+        async def handle(reader, writer):
+            try:
+                remote, ciphers = await establish_noise_xx_responder(reader, writer, bob)
+                ciphertext = await read_realtime_record(reader)
+                frame = RealtimeFrame.from_json_bytes(ciphers.receiving.decrypt_with_ad(b"", ciphertext))
+                reply = RealtimeFrame(type="pong", message_id="reply_1", payload={"for": frame.message_id})
+                await write_realtime_record(
+                    writer, ciphers.sending.encrypt_with_ad(b"", reply.to_json_bytes())
+                )
+                server_result.set_result((remote.root_fingerprint, frame))
+            except Exception as exc:
+                server_result.set_exception(exc)
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        server = await asyncio.start_server(handle, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            remote, ciphers = await establish_noise_xx_initiator(reader, writer, alice)
+            ping = RealtimeFrame(type="ping", message_id="ping_1", payload={})
+            await write_realtime_record(
+                writer, ciphers.sending.encrypt_with_ad(b"", ping.to_json_bytes())
+            )
+            ciphertext = await read_realtime_record(reader)
+            pong = RealtimeFrame.from_json_bytes(ciphers.receiving.decrypt_with_ad(b"", ciphertext))
+            server_fingerprint, received = await server_result
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            server.close()
+            await server.wait_closed()
+        return alice, bob, remote, server_fingerprint, received, pong
+
+    alice, bob, remote, server_fingerprint, received, pong = asyncio.run(scenario())
+
+    assert remote.root_fingerprint == bob.fingerprint
+    assert server_fingerprint == alice.fingerprint
+    assert received.type == "ping"
+    assert pong.type == "pong" and pong.payload == {"for": "ping_1"}
 
 
 async def _run_server(
