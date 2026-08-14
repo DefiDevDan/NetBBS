@@ -175,6 +175,9 @@ def test_invite_interrupts_an_idle_main_menu_and_completes_a_round_trip(tmp_path
             # recover its name from ChatHub itself to wait for that.
             room = next(name for name in hub._channels if name.startswith(chat_flow._DM_CHANNEL_PREFIX))
             await _run_until(lambda: hub.participant_count(room) == 2)
+            assert "NetBBS / Direct chat / Invitation sent" in _written_text(alice_session)
+            assert "Private, ephemeral conversation" in _written_text(alice_session)
+            assert "Private, ephemeral conversation" in _written_text(bob_session)
 
             alice_session.queue_line("hi bob")
             bob_session.queue_line("hi alice")
@@ -507,7 +510,7 @@ def test_direct_chat_status_keeps_close_command_visible_on_narrow_rows(tmp_path)
         wide = chat_flow._compose_status_line(groups, width=80, active=True)
         compact = chat_flow._compose_status_line(groups, width=len("/close"), active=True)
 
-        assert _plain(wide).startswith("/close leave | Direct chat with bob")
+        assert _plain(wide).startswith("/close leave | DM with bob")
         assert _plain(compact) == "/close"
         assert groups[0][0].fg_color == MENU_KEY_COLOR
     finally:

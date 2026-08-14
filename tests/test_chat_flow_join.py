@@ -400,6 +400,19 @@ def test_joining_a_channel_with_scrollback_advances_the_read_cursor(db, lane, hu
     assert unread_channel_count(db, alice, channel) == 0
 
 
+def test_scrollback_is_visually_separated_from_the_live_room(db, lane, hub, presence, sysop, channel, alice):
+    from netbbs.chat.scrollback import record_message
+
+    record_message(db, channel, kind="message", author_label="sysop", body="hello")
+    session, _ = asyncio.run(_run(lane, hub, presence, channel, alice, ["/quit"]))
+
+    text = _written(session)
+    assert "HISTORY" in text
+    assert "Recent channel activity" in text
+    assert "1 recent event retained" in text
+    assert text.index("HISTORY") < text.index("LIVE")
+
+
 def test_unread_channel_count_reflects_messages_after_a_previous_visit(db, lane, hub, presence, sysop, channel, alice):
     from netbbs.activity import unread_channel_count
     from netbbs.chat.scrollback import record_message

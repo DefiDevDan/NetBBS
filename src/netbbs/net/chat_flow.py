@@ -157,7 +157,9 @@ from netbbs.rendering import (
     PRIVILEGE_COLOR,
     SELF_COLOR,
     STATUS_BAR_BACKGROUND,
+    SUCCESS_COLOR,
     TOPIC_COLOR,
+    badge,
     clear_line,
     clear_screen,
     colored,
@@ -167,6 +169,7 @@ from netbbs.rendering import (
     restore_cursor,
     sanitize_text,
     save_cursor,
+    screen_title,
     set_scroll_region,
     truncate,
 )
@@ -2333,7 +2336,7 @@ def _render_chat_status_line(
     The status line's content, as an ordered list of colored field
     groups (composed/truncated/backgrounded by the caller). Each field
     gets its own distinct foreground color rather than sharing one --
-    the channel name, its `[pub]`/`[invite]`/`[hidden]` type, the topic,
+    the channel name, its `[PUBLIC]`/`[INVITE]`/`[HIDDEN]` type, the topic,
     and this user's own moderator/SysOp badge are all visually distinct
     categories, not one undifferentiated run of text.
 
@@ -2379,7 +2382,7 @@ def _render_chat_status_line(
     re-fetches) shows it correctly right away.
     """
     channel = get_channel_by_name(db, channel.name)
-    channel_type = "invite" if channel.members_only else ("hidden" if channel.hidden else "pub")
+    channel_type = "INVITE" if channel.members_only else ("HIDDEN" if channel.hidden else "PUBLIC")
 
     roster = _roster_usernames(hub, channel)
     online_count = hub.participant_count(channel.name)
@@ -2469,7 +2472,7 @@ def _compose_status_line(groups: list[_StatusGroup], width: int, *, active: bool
 
         # The full group doesn't fit. For a multi-span group, its first
         # span alone is still meaningful on its own -- a bare channel
-        # name without its "[pub]" tag, a bare username without a nick
+        # name without its "[PUBLIC]" tag, a bare username without a nick
         # or mod badge -- unlike the group as a whole, which was built
         # to read as one unit. Try that core span before dropping the
         # group entirely: a user's own identity in particular must
@@ -2968,13 +2971,22 @@ async def _chat_loop(
         if pinned_ui_enabled:
             await session.write(clear_screen() + set_scroll_region(1, session.terminal_height - 2))
 
-        channel_label = colored(f"#{sanitize_text(channel.name)}", fg_color=ACCENT_COLOR, bold=True)
+        safe_channel_name = sanitize_text(channel.name)
+        channel_label = colored(f"#{safe_channel_name}", fg_color=ACCENT_COLOR, bold=True)
         quit_hint = menu_key("/quit", " to leave")
+
+        heading = screen_title(
+            f"#{safe_channel_name}",
+            breadcrumb=("NetBBS", "Chat"),
+            subtitle=sanitize_text(channel.topic or channel.description or "Live conversation"),
+            width=session.terminal_width,
+        )
+        await session.write_line(f"\r\n{heading}")
 
         scrollback = await lane.run(get_scrollback, channel)
         if scrollback:
             rendered_scrollback = await lane.run(_render_all_scrollback, channel, user, scrollback)
-            await session.write_line(colored("--- scrollback ---", fg_color=MUTED_COLOR))
+            await session.write_line(f"\r\n{badge('HISTORY')} " + colored("Recent channel activity", fg_color=MUTED_COLOR))
             for line in rendered_scrollback:
                 await session.write_line(line)
             # Even bounded persistence is a different
@@ -2982,7 +2994,8 @@ async def _chat_loop(
             # rather than leaving as an internal implementation detail.
             await session.write_line(
                 colored(
-                    f"--- end scrollback (last {len(rendered_scrollback)} events retained) ---",
+                    f"{len(rendered_scrollback)} recent "
+                    f"event{'s' if len(rendered_scrollback) != 1 else ''} retained",
                     fg_color=MUTED_COLOR,
                 )
             )
@@ -2992,7 +3005,7 @@ async def _chat_loop(
             # so the last element is the newest.
             await lane.run(record_channel_seen, user, channel, scrollback[-1])
 
-        await session.write_line(f"\r\nJoined {channel_label}. Type {quit_hint}.")
+        await session.write_line(f"\r\n{badge('LIVE', tone='success')} Joined {channel_label}. Type {quit_hint}.")
         # author_label is stored raw here (user.username, not a sanitized/
         # alias-aware label) -- sanitize on output, not on storage, per
         # sanitize_text's docstring; only the rendered copy each recipient's
@@ -3466,7 +3479,7 @@ def _render_direct_chat_status_line(other_user: User, presence: PresenceRegistry
     """The direct-chat pinned status row's content -- deliberately far
     smaller than `_render_chat_status_line`: no topic, no roster, no
     moderator privileges/mute state, none of which mean anything for
-    exactly two already-consenting participants. Just who this room is
+    exactly two already-consenting participants. Just who this DM is
     with, whether they're currently away, and the persistent leave
     command. The leave group comes first because `_compose_status_line`
     retains groups from left to right as width shrinks: `/close` is the
@@ -3480,7 +3493,7 @@ def _render_direct_chat_status_line(other_user: User, presence: PresenceRegistry
             _StatusSpan(" leave", fg_color=MUTED_COLOR),
         ],
         [
-            _StatusSpan("Direct chat with ", fg_color=MUTED_COLOR),
+            _StatusSpan("DM with ", fg_color=MUTED_COLOR),
             _StatusSpan(sanitize_text(other_user.username), fg_color=ACCENT_COLOR, bold=True),
         ],
     ]
@@ -3628,11 +3641,14 @@ async def run_direct_chat_loop(
             await session.write(clear_screen() + set_scroll_region(1, session.terminal_height - 2))
 
         close_hint = menu_key("/close", " to leave")
-        await session.write_line(
-            f"\r\nDirect chat with "
-            f"{colored(sanitize_text(other_user.username), fg_color=ACCENT_COLOR, bold=True)}. "
-            f"Type {close_hint}."
+        heading = screen_title(
+            sanitize_text(other_user.username),
+            breadcrumb=("NetBBS", "Direct chat"),
+            subtitle="Private, ephemeral conversation",
+            width=session.terminal_width,
         )
+        await session.write_line(f"\r\n{heading}")
+        await session.write_line(f"Type {close_hint}.")
         if pinned_ui_enabled:
             await _repaint_direct_chat_status_line(session, user, other_user, presence)
             # Neither task is running yet (both are created below) -- no
@@ -3812,9 +3828,13 @@ async def run_direct_chat_invite_flow(
 
     future_to_session = {invite.outcome: target_session for target_session, invite in invites.items()}
 
-    await session.write_line(
-        colored(f"\r\nWaiting for {sanitize_text(target.username)} to accept your invitation...", fg_color=MUTED_COLOR)
+    heading = screen_title(
+        "Invitation sent",
+        breadcrumb=("NetBBS", "Direct chat"),
+        subtitle=f"Waiting for {sanitize_text(target.username)} to respond",
+        width=session.terminal_width,
     )
+    await session.write_line(f"\r\n{heading}")
     await session.write(f"{menu_key('C', 'ancel')}: ")
 
     # Issue #121: this is a real key-dispatch loop, not "any completed
@@ -3884,7 +3904,7 @@ async def run_direct_chat_invite_flow(
             direct_invites.cancel(target_session)
 
     if outcome == "accepted":
-        await session.write_line(colored(f"\r\n{sanitize_text(target.username)} accepted.", fg_color=MUTED_COLOR))
+        await session.write_line(colored(f"\r\n{sanitize_text(target.username)} accepted.", fg_color=SUCCESS_COLOR))
         await run_direct_chat_loop(session, hub, presence, user, target, invites[accepted_session].room_token)
     elif outcome == "declined":
         await session.write_line(colored(f"\r\n{sanitize_text(target.username)} declined.", fg_color=MUTED_COLOR))

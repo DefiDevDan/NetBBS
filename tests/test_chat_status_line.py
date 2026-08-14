@@ -161,7 +161,7 @@ def test_render_reflects_the_away_count_among_current_participants(db, hub, pres
 
 def test_render_shows_channel_type(db, hub, presence, channel, alice):
     text = _plain(chat_flow._render_chat_status_line(db, hub, presence, channel, alice))
-    assert "[pub]" in text
+    assert "[PUBLIC]" in text
 
 
 def test_render_does_not_truncate_a_short_channel_name(db, hub, presence, channel, alice):
@@ -185,7 +185,7 @@ def test_render_truncates_a_long_channel_name_with_a_differently_colored_marker(
     assert channel_group[1].text == "..."
     assert channel_group[1].fg_color == MUTED_COLOR
     assert channel_group[1].fg_color != channel_group[0].fg_color
-    assert channel_group[2].text == "[pub]"
+    assert channel_group[2].text == "[PUBLIC]"
 
 
 def test_render_shows_own_username(db, hub, presence, channel, alice):
@@ -433,6 +433,14 @@ def test_chat_loop_clears_the_screen_on_entry(lane, hub, presence, mailbox, chan
     rather than overwriting whatever screen preceded chat."""
     session, _ = asyncio.run(_run(lane, hub, presence, mailbox, channel, alice, ["/quit"]))
     assert _written_text(session).startswith("\x1b[2J\x1b[H")
+
+
+def test_chat_loop_opens_with_location_and_live_transition(lane, hub, presence, mailbox, channel, alice):
+    session, _ = asyncio.run(_run(lane, hub, presence, mailbox, channel, alice, ["/quit"]))
+    text = _written_text(session)
+    assert "NetBBS / Chat / #lobby" in text
+    assert "Live conversation" in text
+    assert "LIVE" in text
 
 
 def test_chat_loop_resets_the_scroll_region_on_exit(lane, hub, presence, mailbox, channel, alice):
