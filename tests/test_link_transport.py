@@ -57,7 +57,7 @@ from netbbs.link.transport import (
 )
 from netbbs.link.trust import (
     TrustDimension, TrustState, TrustSubject, configure_trust_domain,
-    configure_trusted_reporter, set_trust_override,
+    configure_trusted_reporter, get_effective_trust_state, set_trust_override,
 )
 from netbbs.link.trust_wire import (
     SignedTrustObject,
@@ -413,6 +413,134 @@ def test_trust_subscription_pull_uses_real_transport_and_persists_restart_safe_s
     finally:
         alice.close()
         reporter.close()
+
+
+def test_sybil_reporters_share_one_domain_vote_over_real_transport_and_restart(tmp_path):
+    subscriber_identity = bootstrap_node_identity("sybil-subscriber")
+    subscriber_node = LinkNode(identity=subscriber_identity)
+    subscriber = _NodeDb(tmp_path, "sybil-subscriber")
+    reporters = [
+        (bootstrap_node_identity("sybil-a1"), "domain-a"),
+        (bootstrap_node_identity("sybil-a2"), "domain-a"),
+        (bootstrap_node_identity("independent-b"), "domain-b"),
+    ]
+    reporter_nodes = [
+        (identity, LinkNode(identity=identity), _NodeDb(tmp_path, f"sybil-reporter-{number}"))
+        for number, (identity, _domain) in enumerate(reporters, start=1)
+    ]
+    subject = TrustSubject.node("reported-subject")
+    now = "2026-08-14T12:00:00+00:00"
+
+    for domain in ("domain-a", "domain-b"):
+        configure_trust_domain(
+            subscriber.db, domain, display_name=domain, now_iso=now,
+        )
+    for identity, domain in reporters:
+        configure_trusted_reporter(
+            subscriber.db, identity.fingerprint, domain_id=domain,
+            scopes=[(TrustDimension.IDENTITY_INTEGRITY, "signed_equivocation")],
+            now_iso=now,
+        )
+
+    objects = []
+    for number, ((identity, domain), (_same, _node, reporter_db)) in enumerate(
+        zip(reporters, reporter_nodes), start=1,
+    ):
+        configure_trust_domain(
+            reporter_db.db, domain, display_name=domain, now_iso=now,
+        )
+        configure_trusted_reporter(
+            reporter_db.db, identity.fingerprint, domain_id=domain,
+            scopes=[(TrustDimension.IDENTITY_INTEGRITY, "signed_equivocation")],
+            now_iso=now,
+        )
+        trust_object = build_trust_signal(
+            signing_identity=identity.signing_key,
+            issuer_fingerprint=identity.fingerprint,
+            signal_id=f"sybil-signal-{number}",
+            subject=subject,
+            dimension=TrustDimension.IDENTITY_INTEGRITY,
+            category="signed_equivocation",
+            evidence_class="self_verifying",
+            evidence={"mode": "embedded", "data": {"proof": number}},
+            observed_at="2026-08-14T10:00:00+00:00",
+            issued_at="2026-08-14T11:00:00+00:00",
+            expires_at="2026-08-15T11:00:00+00:00",
+        )
+        ingest_trust_objects(reporter_db.db, [trust_object], now_iso=now)
+        objects.append(trust_object)
+
+    async def pull_from(identity, reporter_node, reporter_db):
+        server = await _run_server(
+            reporter_node, lambda: _hello_for(reporter_node), reporter_db.lane,
+        )
+        try:
+            async with aiohttp.ClientSession() as session:
+                await dial_hello(
+                    subscriber_node, session, f"http://127.0.0.1:{server.port}",
+                    _hello_for(subscriber_node), subscriber.lane,
+                )
+                request = build_trust_pull_request(
+                    signing_identity=subscriber_identity.signing_key,
+                    requester_fingerprint=subscriber_identity.fingerprint,
+                    responder_fingerprint=identity.fingerprint,
+                    issuer_fingerprint=identity.fingerprint,
+                )
+                raw, more = await request_trust_objects(
+                    subscriber_node, session, f"http://127.0.0.1:{server.port}", request,
+                )
+                assert not more
+                verify_key = subscriber_node.resolve_peer_signing_key(identity.fingerprint)
+                parsed = [
+                    SignedTrustObject.from_dict(item, issuer_verify_key=verify_key)
+                    for item in raw
+                ]
+                await subscriber.lane.run(ingest_trust_objects, parsed, now_iso=now)
+        finally:
+            await server.stop()
+
+    async def scenario():
+        await pull_from(*reporter_nodes[0])
+        await pull_from(*reporter_nodes[1])
+        same_domain = get_effective_trust_state(
+            subscriber.db, subject, TrustDimension.IDENTITY_INTEGRITY,
+        )
+        assert same_domain.state == TrustState.PROBATIONARY
+        assert subscriber.db.connection.execute(
+            "SELECT COUNT(*) FROM link_trust_signals WHERE subject_id = ?",
+            (subject.subject_id,),
+        ).fetchone()[0] == 2
+
+        await pull_from(*reporter_nodes[2])
+
+    try:
+        asyncio.run(scenario())
+        quarantined = get_effective_trust_state(
+            subscriber.db, subject, TrustDimension.IDENTITY_INTEGRITY,
+        )
+        assert quarantined.state == TrustState.QUARANTINED
+        assert quarantined.reason_code == "remote_domain_threshold"
+        assert quarantined.explanation["counted_domains"] == {
+            "domain-a": 1.0, "domain-b": 1.0,
+        }
+        assert quarantined.explanation["counted_weight"] == 2.0
+        assert subscriber.db.connection.execute(
+            "SELECT COUNT(*) FROM link_trust_wire_objects"
+        ).fetchone()[0] == 3
+
+        subscriber.db.close()
+        subscriber.db = Database(subscriber.lane.path)
+        restarted = get_effective_trust_state(
+            subscriber.db, subject, TrustDimension.IDENTITY_INTEGRITY,
+        )
+        assert restarted.state == TrustState.QUARANTINED
+        assert {row[0] for row in subscriber.db.connection.execute(
+            "SELECT content_id FROM link_trust_wire_objects"
+        ).fetchall()} == {item.content_id for item in objects}
+    finally:
+        subscriber.close()
+        for _identity, _node, reporter_db in reporter_nodes:
+            reporter_db.close()
 
 
 def test_trust_carrier_serves_unchanged_issuer_signed_object_without_gaining_authority(tmp_path):

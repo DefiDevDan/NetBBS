@@ -8,7 +8,7 @@ marked **pending** prevents a public/untrusted federation claim.
 
 | Required scenario | Current evidence | Status |
 |---|---|---|
-| Sybils in one domain | `test_two_reporters_in_one_domain_do_not_satisfy_independence` and `test_remote_quarantine_requires_two_full_weight_domains` | covered |
+| Sybils in one domain | Unit policy tests plus `test_sybil_reporters_share_one_domain_vote_over_real_transport_and_restart`, which pulls three independently signed reports from isolated SQLite nodes over loopback HTTP and proves two same-domain identities count once | covered |
 | Colluding domains below and above threshold | `test_colluding_domains_below_weight_threshold_do_not_quarantine` and `test_remote_quarantine_requires_two_full_weight_domains` | covered |
 | Compromised reporter and sole-authority recovery | `test_compromised_reporter_removal_is_audited_and_releases_after_recovery_hold` and `test_category_scoped_sole_authority_is_visible_audited_and_reversible` | covered |
 | Expiry, revocation, replay, stale/future input | `test_revocation_removes_remote_support_without_deleting_history`, `test_signal_replay_is_deduplicated_and_lifetime_is_clamped`, `test_future_signal_and_invalid_category_evidence_pair_are_rejected`, and real-transport pull freshness/nonce coverage | covered |
@@ -16,7 +16,7 @@ marked **pending** prevents a public/untrusted federation claim.
 | Reproducible and false evidence | `test_digest_evidence_stays_inactive_until_verified_and_reproduced` | covered |
 | Invalid-signature attribution | wrong-key signed-object rejection plus the rule that invalid signatures are not attributed as signer-authored evidence | covered |
 | Subjective-report isolation | trust-policy and enforcement tests prove content-conduct state cannot quarantine node transport | covered |
-| Restart reconstruction and preservation | trust projection restart tests and real-transport enforcement prove accepted bytes remain stored | covered |
+| Restart reconstruction and preservation | trust projection restart tests, real-transport enforcement, and the multi-reporter Sybil scenario prove accepted signed objects and the effective quarantine projection remain stored | covered |
 | User/node scoping | subject independence and read-time user suppression tests | covered |
 | Containment and recovery | quarantine containment pull, recovery hold, manual block precedence, and restart reconstruction tests | covered |
 | Real SQLite, loopback transport, and resource bounds | `test_link_transport.py` uses independent SQLite files, database lanes, and loopback `aiohttp` servers; trust quotas and request/body limits are exercised | covered |

@@ -1343,6 +1343,16 @@ enforcement without retaining unbounded evidence blobs. Unknown versioned
 categories may be retained for diagnostics but contribute no automatic policy
 effect.
 
+**Trust-domain independence needs a real acquisition-path test, not only
+policy arithmetic.** The adversarial gate pulls separately signed objects from
+independently keyed reporter nodes, each with its own SQLite database and real
+loopback HTTP server. Two identities assigned to one local trust domain must
+leave the subject probationary even though both signed objects are retained; a
+report from a second domain may cross the threshold. Reopening the subscriber
+database must preserve both the effective restriction and every accepted wire
+object. Keep this vertical test when changing trust pulls, reporter-domain
+weighting, projection reconstruction, or immutable carrier storage.
+
 **Trust administration is a database-domain workflow, not live-Link state.**
 The shared SysOp System menu dispatches every trust read and mutation through
 its foreground `DatabaseLane`; it remains usable from the standalone local
@@ -2109,7 +2119,9 @@ implementation:
 - implementing §12 in bounded slices: local persistence/policy (#126), signed
   subscriptions (#127), enforcement (#128), SysOp explanation/recovery
   workflows (#129), and remote attestation trust (#130) are implemented;
-  adversarial validation/public-readiness evidence (#131) remains.
+  automated adversarial validation/public-readiness evidence (#131) is covered,
+  including real-transport domain-independence; its real-node manual and
+  independently administered exercises remain pending.
 
 Later work includes Link chat, advanced governance and Link Communities,
 door-game sandboxing/API versioning, and other roadmap phases defined in the
