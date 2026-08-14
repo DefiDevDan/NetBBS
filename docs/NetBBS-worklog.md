@@ -1343,6 +1343,37 @@ enforcement without retaining unbounded evidence blobs. Unknown versioned
 categories may be retained for diagnostics but contribute no automatic policy
 effect.
 
+**Trust administration is a database-domain workflow, not live-Link state.**
+The shared SysOp System menu dispatches every trust read and mutation through
+its foreground `DatabaseLane`; it remains usable from the standalone local
+admin CLI even when no live `LinkContext` exists. Subject restrictions expose
+the persisted per-dimension explanation and decision history, while ordinary
+callers receive only stable non-leaking policy reason codes. Manual overrides
+and every safety relaxation require a reason and are audited in the same
+transaction as policy recomputation. A category-scoped sole-authority
+exception is a separate persisted policy object, never an overloaded domain
+weight: it requires an existing matching reporter scope, visibly weakens the
+two-independent-domain rule only for that exact category, and is confirmed,
+audited, and reversible. Operator screens must catch stale mutations (for
+example, an override already cleared elsewhere) and report them as concurrent
+state changes rather than claiming success.
+
+**Remote attestations do not turn Link identities into local users.** The
+signed carrier and local acceptance projection use the stable
+`TrustSubject.user(home_node_fingerprint, opaque_user_id)` identity throughout.
+Local `user_attestations.link_visible` is per attribute and defaults off;
+re-attestation clears it. Export code refuses a missing or non-visible local
+attestation rather than trusting a caller-supplied consent flag. On receipt,
+signature verification precedes persistence, while acceptance separately
+checks the local attestation-authority/attribute grant, current issuer trust,
+expiry/revocation, and any reasoned local override. General trust reporters are
+never identity verifiers. Removing or distrusting an authority, expiring or
+revoking a record, and clearing an override recompute future gate satisfaction
+without deleting signed history. A SysOp accept override still requires a
+current cryptographically valid record; it cannot revive expired or revoked
+bytes. Remote real-name values are composed only by the resource-scoped trusted
+renderer for `verified_and_displayed`, never placed in general identity labels.
+
 **Relay consent needed a synchronous route, not a gossiped event pair.** Every
 other mutual-consent exchange in this codebase (origin transfer, channel
 invitations) is two independent gossiped events with no reply requirement.
@@ -2075,10 +2106,10 @@ implementation:
   done, see §6 below);
 - sustained multi-node dogfood continues independently, including restart and
   partition recovery (issue #83);
-- implementing §12 in bounded slices: local persistence/policy is implemented
-  by #126; signed subscriptions (#127), enforcement (#128), SysOp workflows
-  (#129), remote attestation trust (#130), and adversarial validation (#131)
-  remain.
+- implementing §12 in bounded slices: local persistence/policy (#126), signed
+  subscriptions (#127), enforcement (#128), SysOp explanation/recovery
+  workflows (#129), and remote attestation trust (#130) are implemented;
+  adversarial validation/public-readiness evidence (#131) remains.
 
 Later work includes Link chat, advanced governance and Link Communities,
 door-game sandboxing/API versioning, and other roadmap phases defined in the

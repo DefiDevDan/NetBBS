@@ -297,6 +297,28 @@ def get_attestation(db: Database, user: User, attribute: str) -> UserAttestation
     return _row_to_attestation(row) if row is not None else None
 
 
+def set_attestation_link_visible(
+    db: Database, user: User, attribute: str, visible: bool
+) -> UserAttestation:
+    """Set explicit per-attribute consent for Link propagation.
+
+    Consent is never inferred from profile visibility or the general verified
+    badge. Re-verification resets it to false in ``_store_attestation`` so a
+    newly attested value cannot inherit consent granted to an older value.
+    """
+    if attribute not in {"age", "name"}:
+        raise AttestationError(f"unknown attestation attribute: {attribute!r}")
+    if get_attestation(db, user, attribute) is None:
+        raise AttestationError(f"cannot share missing {attribute} attestation")
+    db.connection.execute(
+        """UPDATE user_attestations SET link_visible = ?
+           WHERE subject_user_id = ? AND attribute = ?""",
+        (int(visible), user.id, attribute),
+    )
+    db.connection.commit()
+    return get_attestation(db, user, attribute)
+
+
 def has_any_verification(db: Database, user: User) -> bool:
     """The separate, general 'verified' badge (design doc §18) — just
     the boolean fact that at least one attribute has been verified, not

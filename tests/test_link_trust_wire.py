@@ -88,6 +88,17 @@ def test_signed_signal_round_trips_and_rejects_the_wrong_key(reporter):
         SignedTrustObject.from_dict(original.to_dict(), issuer_verify_key=wrong.verify_key)
 
 
+def test_oversized_embedded_and_digest_evidence_are_rejected_before_signing(reporter):
+    with pytest.raises(TrustWireError, match="exceeds 256 KiB"):
+        signal(reporter, evidence={"mode": "embedded", "data": {"blob": "x" * (256 * 1024)}})
+
+    with pytest.raises(TrustWireError, match="exceeds 256 KiB"):
+        signal(reporter, evidence={
+            "mode": "digest", "sha256": "0" * 64,
+            "size": 256 * 1024 + 1, "locator": "/evidence/oversized",
+        })
+
+
 def test_configured_reporter_ingestion_is_deduplicated_and_carrier_safe(db, reporter):
     configure_reporter(db, reporter.fingerprint)
     original = signal(reporter)

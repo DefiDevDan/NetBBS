@@ -18,6 +18,22 @@ import pytest
 
 from netbbs.auth.users import SYSOP_LEVEL, count_sysops, create_user, list_users
 from netbbs.net.admin_flow import admin_menu
+from netbbs.link.trust import (
+    TrustDimension,
+    TrustState,
+    TrustSubject,
+    get_effective_trust_state,
+    list_sole_authorities,
+    list_trust_domains,
+    register_subject,
+)
+from netbbs.link.remote_attestation import (
+    build_remote_attestation,
+    configure_attestation_authority,
+    get_remote_attestation_state,
+    ingest_remote_attestation,
+    list_attestation_authorities,
+)
 from netbbs.net.char_input import EditorKey, EditorKeyKind
 from netbbs.net.maintenance import MaintenanceMode
 from netbbs.net.session import Session
@@ -127,6 +143,107 @@ def sysop(db):
 
 def _run(session, lane, user):
     asyncio.run(admin_menu(session, lane, user))
+
+
+# -- Phase-4 trust policy -------------------------------------------------
+
+
+def test_sysop_menu_reaches_trust_domain_configuration(db, lane, sysop):
+    session = FakeSession(
+        ["s", "p", "d", "a", "friends", "Known independent operators", "0.75", "b", "b", "b"]
+    )
+    _run(session, lane, sysop)
+
+    domains = list_trust_domains(db)
+    assert [(item.domain_id, item.weight) for item in domains] == [("friends", 0.75)]
+    text = _written_text(session)
+    assert "Trust policy:" in text
+    assert "Trust domain saved and audited." in text
+
+
+def test_sysop_can_apply_reasoned_override_through_real_menu_path(db, lane, sysop):
+    subject = TrustSubject.node("remote-node")
+    register_subject(db, subject, first_accepted_at="2026-08-01T00:00:00.000000Z")
+    session = FakeSession(
+        [
+            "s", "p", "s", "0", "1",  # choose the only subject
+            "o", "r", "b", "resource abuse reviewed",
+            "b", "b", "b", "b",
+        ]
+    )
+    _run(session, lane, sysop)
+
+    state = get_effective_trust_state(db, subject, TrustDimension.RESOURCE_BEHAVIOR)
+    assert state.state == TrustState.BLOCKED
+    assert state.explanation["override_reason"] == "resource abuse reviewed"
+    assert "Trust override applied and audited." in _written_text(session)
+
+
+def test_declined_sole_authority_confirmation_leaves_policy_safe(db, lane, sysop):
+    session = FakeSession(
+        [
+            "s", "p",
+            "d", "a", "emergency", "Emergency operator", "1.0",
+            "r", "a", "reporter", "emergency", "identity_integrity:signed_equivocation", "n", "n",
+            "e", "a", "reporter", "i", "signed_equivocation", "because", "n",
+            "b", "b", "b",
+        ]
+    )
+    _run(session, lane, sysop)
+    assert list_sole_authorities(db) == []
+    assert "No change made." in _written_text(session)
+
+
+def test_sysop_menu_reaches_separate_attestation_authority_configuration(
+    db, lane, sysop
+):
+    session = FakeSession(
+        [
+            "s", "p", "i", "a", "identity-node", "age,name",
+            "verified identity contractor", "b", "b", "b",
+        ]
+    )
+    _run(session, lane, sysop)
+    authority = list_attestation_authorities(db)[0]
+    assert authority.fingerprint == "identity-node"
+    assert authority.attributes == ("age", "name")
+    assert "Attestation authority changed and audited." in _written_text(session)
+
+
+def test_sysop_menu_can_reject_remote_attestation_for_one_user(db, lane, sysop):
+    subject = TrustSubject.user("remote-home", "opaque-user")
+    register_subject(db, subject, first_accepted_at="2026-08-01T00:00:00.000000Z")
+    key = nacl.signing.SigningKey.generate()
+    configure_attestation_authority(
+        db, "identity-node", attributes=["name"], reason="reviewed",
+        now_iso="2026-08-14T12:00:00.000000Z",
+    )
+    wire = build_remote_attestation(
+        key,
+        issuer_fingerprint="identity-node",
+        subject=subject,
+        attribute="name",
+        attested_value="Remote Alice",
+        subject_opt_in=True,
+        issued_at="2026-08-14T11:59:00.000000Z",
+        expires_at="2026-09-14T12:00:00.000000Z",
+    )
+    ingest_remote_attestation(
+        db, wire, issuer_verify_key=key.verify_key,
+        now_iso="2026-08-14T12:00:00.000000Z",
+    )
+    session = FakeSession(
+        [
+            "s", "p", "s", "0", "1",
+            "i", "n", "r", "local document review",
+            "b", "b", "b", "b",
+        ]
+    )
+    _run(session, lane, sysop)
+    state = get_remote_attestation_state(db, subject, "name")
+    assert state.accepted is False
+    assert state.reason_code == "sysop_reject"
+    assert "Remote attestation override applied and audited." in _written_text(session)
 
 
 # -- create user ----------------------------------------------------------

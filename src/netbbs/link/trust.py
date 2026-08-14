@@ -110,6 +110,60 @@ class EffectiveTrustState:
     evaluated_at: str
 
 
+@dataclass(frozen=True)
+class TrustDomainConfig:
+    domain_id: str
+    display_name: str
+    weight: float
+
+
+@dataclass(frozen=True)
+class TrustAnchorConfig:
+    fingerprint: str
+    reason: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class TrustedReporterConfig:
+    fingerprint: str
+    domain_id: str
+    scopes: tuple[tuple[TrustDimension, str], ...]
+    can_vouch_nodes: bool
+    can_vouch_users: bool
+
+
+@dataclass(frozen=True)
+class SoleAuthorityConfig:
+    reporter_fingerprint: str
+    dimension: TrustDimension
+    category: str
+    reason: str
+    created_at: str
+
+
+@dataclass(frozen=True)
+class TrustOverrideRecord:
+    override_id: int
+    subject_id: str
+    dimension: TrustDimension
+    state: TrustState
+    reason: str
+    created_at: str
+    expires_at: str | None
+    cleared_at: str | None
+
+
+@dataclass(frozen=True)
+class TrustAuditRecord:
+    audit_id: int
+    kind: str
+    action: str
+    details: dict[str, object]
+    actor_user_id: int | None
+    created_at: str
+
+
 def _parse_timestamp(value: str, *, field_name: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -257,6 +311,16 @@ def configure_trust_domain(
         _recompute_all(db, now_value, now, actor_user_id)
 
 
+def list_trust_domains(db: Database) -> list[TrustDomainConfig]:
+    rows = db.connection.execute(
+        "SELECT domain_id, display_name, weight FROM link_trust_domains ORDER BY display_name, domain_id"
+    ).fetchall()
+    return [
+        TrustDomainConfig(row["domain_id"], row["display_name"], float(row["weight"]))
+        for row in rows
+    ]
+
+
 def configure_trust_anchor(
     db: Database,
     fingerprint: str,
@@ -307,6 +371,13 @@ def remove_trust_anchor(
             db, "anchor", fingerprint, "removed", {"reason": row["reason"]},
             actor_user_id, now_value,
         )
+
+
+def list_trust_anchors(db: Database) -> list[TrustAnchorConfig]:
+    rows = db.connection.execute(
+        "SELECT fingerprint, reason, created_at FROM link_trust_anchors ORDER BY fingerprint"
+    ).fetchall()
+    return [TrustAnchorConfig(row["fingerprint"], row["reason"], row["created_at"]) for row in rows]
 
 
 def _recompute_all(
@@ -373,12 +444,14 @@ def _active_evidence(
             "content_id": row["content_id"],
             "category": row["category"],
             "evidence_class": row["evidence_class"],
+            "issuer_fingerprint": row["issuer_fingerprint"],
             "domain_id": row["domain_id"],
             "domain_weight": row["weight"],
         }
         for row in db.connection.execute(
             """
-            SELECT s.content_id, s.category, s.evidence_class, r.domain_id, d.weight
+            SELECT s.content_id, s.category, s.evidence_class, s.issuer_fingerprint,
+                   r.domain_id, d.weight
             FROM link_trust_signals AS s
             JOIN link_trust_reporters AS r ON r.fingerprint = s.issuer_fingerprint
             JOIN link_trust_reporter_scopes AS rs
@@ -546,7 +619,17 @@ def _recompute_dimension(
             remote_domains.get(domain_id, 0.0), float(item["domain_weight"])
         )
     remote_weight = sum(remote_domains.values())
-    remote_threshold_met = len(remote_domains) >= 2 and remote_weight >= 2.0
+    sole_authority_matches = [
+        item for item in remote
+        if db.connection.execute(
+            """SELECT 1 FROM link_trust_sole_authorities
+               WHERE reporter_fingerprint = ? AND dimension = ? AND category = ?""",
+            (item["issuer_fingerprint"], dimension.value, item["category"]),
+        ).fetchone()
+    ]
+    remote_threshold_met = (
+        len(remote_domains) >= 2 and remote_weight >= 2.0
+    ) or bool(sole_authority_matches)
     automatic_trigger = bool(local_auto) or remote_threshold_met
 
     recovery_started_at: str | None = None
@@ -562,7 +645,11 @@ def _recompute_dimension(
     elif automatic_trigger:
         state = TrustState.QUARANTINED
         reason_code = (
-            "local_self_verifying_evidence" if local_auto else "remote_domain_threshold"
+            "local_self_verifying_evidence"
+            if local_auto
+            else "sole_authority_signal"
+            if sole_authority_matches
+            else "remote_domain_threshold"
         )
         explanation = {
             "active_local_evidence": local,
@@ -571,6 +658,13 @@ def _recompute_dimension(
             "counted_weight": remote_weight,
             "required_domains": 2,
             "required_weight": 2.0,
+            "sole_authority": [
+                {
+                    "reporter_fingerprint": item["issuer_fingerprint"],
+                    "category": item["category"],
+                }
+                for item in sole_authority_matches
+            ],
         }
     elif previous is not None and previous["state"] == TrustState.QUARANTINED.value:
         started_value = previous["recovery_started_at"] or now_value
@@ -864,10 +958,11 @@ def clear_trust_override(
     now_value, now = _now(now_iso)
     with db.connection:
         row = db.connection.execute(
-            "SELECT subject_id FROM link_trust_overrides WHERE override_id = ?", (override_id,)
+            """SELECT subject_id FROM link_trust_overrides
+               WHERE override_id = ? AND cleared_at IS NULL""", (override_id,)
         ).fetchone()
         if row is None:
-            raise ValueError(f"unknown trust override: {override_id}")
+            raise ValueError(f"trust override is missing or already cleared: {override_id}")
         db.connection.execute(
             """UPDATE link_trust_overrides SET cleared_at = ?
                WHERE override_id = ? AND cleared_at IS NULL""",
@@ -957,6 +1052,90 @@ def get_effective_trust_state(
         explanation=json.loads(row["explanation_json"]),
         evaluated_at=row["evaluated_at"],
     )
+
+
+def list_trust_subjects(db: Database) -> list[TrustSubject]:
+    rows = db.connection.execute(
+        """SELECT subject_kind, node_fingerprint, opaque_user_id
+           FROM link_trust_subjects
+           ORDER BY subject_kind, node_fingerprint, opaque_user_id"""
+    ).fetchall()
+    return [
+        TrustSubject(row["subject_kind"], row["node_fingerprint"], row["opaque_user_id"])
+        for row in rows
+    ]
+
+
+def list_trust_overrides(
+    db: Database, subject: TrustSubject, *, include_cleared: bool = False
+) -> list[TrustOverrideRecord]:
+    where = "subject_id = ?" if include_cleared else "subject_id = ? AND cleared_at IS NULL"
+    rows = db.connection.execute(
+        f"""SELECT override_id, subject_id, dimension, state, reason,
+                   created_at, expires_at, cleared_at
+            FROM link_trust_overrides WHERE {where} ORDER BY override_id DESC""",
+        (subject.subject_id,),
+    ).fetchall()
+    return [
+        TrustOverrideRecord(
+            int(row["override_id"]), row["subject_id"], TrustDimension(row["dimension"]),
+            TrustState(row["state"]), row["reason"], row["created_at"],
+            row["expires_at"], row["cleared_at"],
+        )
+        for row in rows
+    ]
+
+
+def list_trust_decision_audit(
+    db: Database, subject: TrustSubject, *, limit: int = 100
+) -> list[TrustAuditRecord]:
+    if limit < 1:
+        raise ValueError("audit limit must be positive")
+    rows = db.connection.execute(
+        """SELECT audit_id, dimension, previous_state, new_state, reason_code,
+                  explanation_json, actor_user_id, created_at
+           FROM link_trust_decision_audit WHERE subject_id = ?
+           ORDER BY audit_id DESC LIMIT ?""",
+        (subject.subject_id, limit),
+    ).fetchall()
+    return [
+        TrustAuditRecord(
+            int(row["audit_id"]), row["dimension"], row["reason_code"],
+            {
+                "previous_state": row["previous_state"], "new_state": row["new_state"],
+                "explanation": json.loads(row["explanation_json"]),
+            },
+            row["actor_user_id"], row["created_at"],
+        )
+        for row in rows
+    ]
+
+
+def list_trust_config_audit(db: Database, *, limit: int = 100) -> list[TrustAuditRecord]:
+    if limit < 1:
+        raise ValueError("audit limit must be positive")
+    rows = db.connection.execute(
+        """SELECT audit_id, object_kind, object_id, action, details_json,
+                  actor_user_id, created_at
+           FROM (
+             SELECT audit_id, object_kind, object_id, action, details_json,
+                    actor_user_id, created_at
+             FROM link_trust_config_audit
+             UNION ALL
+             SELECT audit_id, object_kind, object_id, action, details_json,
+                    actor_user_id, created_at
+             FROM link_trust_policy_audit
+           ) ORDER BY created_at DESC LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    return [
+        TrustAuditRecord(
+            int(row["audit_id"]), f"{row['object_kind']}:{row['object_id']}",
+            row["action"], json.loads(row["details_json"]),
+            row["actor_user_id"], row["created_at"],
+        )
+        for row in rows
+    ]
 
 
 def _require_subject(db: Database, subject: TrustSubject) -> None:
@@ -1119,3 +1298,157 @@ def configure_trusted_reporter(
             details, actor_user_id, now_value,
         )
         _recompute_all(db, now_value, now, actor_user_id)
+
+
+def list_trusted_reporters(db: Database) -> list[TrustedReporterConfig]:
+    reporters = db.connection.execute(
+        """SELECT fingerprint, domain_id, can_vouch_nodes, can_vouch_users
+           FROM link_trust_reporters ORDER BY fingerprint"""
+    ).fetchall()
+    result: list[TrustedReporterConfig] = []
+    for row in reporters:
+        scopes = db.connection.execute(
+            """SELECT dimension, category FROM link_trust_reporter_scopes
+               WHERE reporter_fingerprint = ? ORDER BY dimension, category""",
+            (row["fingerprint"],),
+        ).fetchall()
+        result.append(
+            TrustedReporterConfig(
+                row["fingerprint"], row["domain_id"],
+                tuple((TrustDimension(scope["dimension"]), scope["category"]) for scope in scopes),
+                bool(row["can_vouch_nodes"]), bool(row["can_vouch_users"]),
+            )
+        )
+    return result
+
+
+def remove_trusted_reporter(
+    db: Database,
+    fingerprint: str,
+    *,
+    actor_user_id: int | None = None,
+    now_iso: str | None = None,
+) -> None:
+    now_value, now = _now(now_iso)
+    with db.connection:
+        row = db.connection.execute(
+            "SELECT domain_id FROM link_trust_reporters WHERE fingerprint = ?", (fingerprint,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"unknown trusted reporter: {fingerprint!r}")
+        db.connection.execute("DELETE FROM link_trust_reporters WHERE fingerprint = ?", (fingerprint,))
+        _audit_config(
+            db, "reporter", fingerprint, "removed", {"domain_id": row["domain_id"]},
+            actor_user_id, now_value,
+        )
+        _recompute_all(db, now_value, now, actor_user_id)
+
+
+def configure_sole_authority(
+    db: Database,
+    reporter_fingerprint: str,
+    dimension: TrustDimension | str,
+    category: str,
+    *,
+    reason: str,
+    actor_user_id: int | None = None,
+    now_iso: str | None = None,
+) -> None:
+    normalized_dimension = _dimension(dimension)
+    if not reason.strip():
+        raise ValueError("sole-authority reason must not be empty")
+    if category not in _CATEGORIES_BY_DIMENSION[normalized_dimension]:
+        raise ValueError("sole authority requires a known category in the selected dimension")
+    now_value, now = _now(now_iso)
+    with db.connection:
+        if not db.connection.execute(
+            """SELECT 1 FROM link_trust_reporter_scopes
+               WHERE reporter_fingerprint = ? AND dimension = ? AND category = ?""",
+            (reporter_fingerprint, normalized_dimension.value, category),
+        ).fetchone():
+            raise ValueError("sole authority requires an existing matching reporter scope")
+        exists = db.connection.execute(
+            """SELECT 1 FROM link_trust_sole_authorities
+               WHERE reporter_fingerprint = ? AND dimension = ? AND category = ?""",
+            (reporter_fingerprint, normalized_dimension.value, category),
+        ).fetchone()
+        db.connection.execute(
+            """INSERT INTO link_trust_sole_authorities
+               (reporter_fingerprint, dimension, category, reason, actor_user_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(reporter_fingerprint, dimension, category) DO UPDATE SET
+                 reason = excluded.reason, actor_user_id = excluded.actor_user_id,
+                 created_at = excluded.created_at""",
+            (reporter_fingerprint, normalized_dimension.value, category, reason, actor_user_id, now_value),
+        )
+        _audit_policy(
+            db, reporter_fingerprint, normalized_dimension, category,
+            "updated" if exists else "created", reason, actor_user_id, now_value,
+        )
+        _recompute_all(db, now_value, now, actor_user_id)
+
+
+def remove_sole_authority(
+    db: Database,
+    reporter_fingerprint: str,
+    dimension: TrustDimension | str,
+    category: str,
+    *,
+    actor_user_id: int | None = None,
+    now_iso: str | None = None,
+) -> None:
+    normalized_dimension = _dimension(dimension)
+    now_value, now = _now(now_iso)
+    with db.connection:
+        row = db.connection.execute(
+            """SELECT reason FROM link_trust_sole_authorities
+               WHERE reporter_fingerprint = ? AND dimension = ? AND category = ?""",
+            (reporter_fingerprint, normalized_dimension.value, category),
+        ).fetchone()
+        if row is None:
+            raise ValueError("sole-authority exception is missing or already removed")
+        db.connection.execute(
+            """DELETE FROM link_trust_sole_authorities
+               WHERE reporter_fingerprint = ? AND dimension = ? AND category = ?""",
+            (reporter_fingerprint, normalized_dimension.value, category),
+        )
+        _audit_policy(
+            db, reporter_fingerprint, normalized_dimension, category,
+            "removed", row["reason"], actor_user_id, now_value,
+        )
+        _recompute_all(db, now_value, now, actor_user_id)
+
+
+def list_sole_authorities(db: Database) -> list[SoleAuthorityConfig]:
+    rows = db.connection.execute(
+        """SELECT reporter_fingerprint, dimension, category, reason, created_at
+           FROM link_trust_sole_authorities
+           ORDER BY reporter_fingerprint, dimension, category"""
+    ).fetchall()
+    return [
+        SoleAuthorityConfig(
+            row["reporter_fingerprint"], TrustDimension(row["dimension"]),
+            row["category"], row["reason"], row["created_at"],
+        )
+        for row in rows
+    ]
+
+
+def _audit_policy(
+    db: Database,
+    reporter_fingerprint: str,
+    dimension: TrustDimension,
+    category: str,
+    action: str,
+    reason: str,
+    actor_user_id: int | None,
+    now_value: str,
+) -> None:
+    object_id = f"{reporter_fingerprint}:{dimension.value}:{category}"
+    details = json.dumps({"reason": reason}, sort_keys=True, separators=(",", ":"))
+    db.connection.execute(
+        """INSERT INTO link_trust_policy_audit
+           (object_kind, object_id, action, details_json, actor_user_id, created_at)
+           VALUES ('sole_authority', ?, ?, ?, ?, ?)""",
+        (object_id, action, details, actor_user_id, now_value),
+    )

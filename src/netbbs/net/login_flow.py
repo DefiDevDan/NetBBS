@@ -56,6 +56,7 @@ from netbbs.attestation import (
     set_display_name_visible,
     set_location,
     set_location_visible,
+    set_attestation_link_visible,
     set_verified_badge_visible,
 )
 from netbbs.auth.users import (
@@ -3104,6 +3105,10 @@ async def _identity_details_screen(session: Session, db: Database, user: User) -
             set_verified_badge_visible(db, user, new_value)
             await session.write_line(f"Verified badge is now {'public' if new_value else 'private'}.")
             await _render_identity_details(session, db, user)
+        elif choice == "r":
+            await session.write_line("")
+            await _remote_attestation_visibility_screen(session, db, user)
+            await _render_identity_details(session, db, user)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -3148,6 +3153,14 @@ async def _render_identity_details(session: Session, db: Database, user: User) -
         )
     else:
         await session.write_line(colored("Verified: (none)", fg_color=MUTED_COLOR))
+    shared = [
+        attribute for attribute, attestation in
+        (("age", age_attestation), ("name", name_attestation))
+        if attestation is not None and attestation.link_visible
+    ]
+    await session.write_line(
+        f"Link attestation sharing: {', '.join(shared) if shared else 'off'}"
+    )
 
     options = "  ".join(
         [
@@ -3155,11 +3168,41 @@ async def _render_identity_details(session: Session, db: Database, user: User) -
             menu_key("L", "ocation"),
             menu_key("A", "ge/birthdate"),
             menu_key("V", "erified badge visibility"),
+            menu_key("R", "emote Link sharing"),
             menu_key("B", "ack"),
         ]
     )
     await session.write_line(f"\r\n{options}")
     await session.write("Choice: ")
+
+
+async def _remote_attestation_visibility_screen(
+    session: Session, db: Database, user: User
+) -> None:
+    await session.write_line(
+        "Share which attestation with explicitly trusted remote nodes? [A]ge  [N]ame  [B]ack"
+    )
+    await session.write("Choice: ")
+    attribute = {"a": "age", "n": "name"}.get((await session.read_key()).lower())
+    if attribute is None:
+        return
+    attestation = get_attestation(db, user, attribute)
+    if attestation is None:
+        await session.write_line(colored(f"No {attribute} attestation exists.", fg_color=ERROR_COLOR))
+        return
+    if attestation.link_visible:
+        set_attestation_link_visible(db, user, attribute, False)
+        await session.write_line(colored(f"{attribute.title()} attestation Link sharing disabled.", fg_color=SUCCESS_COLOR))
+        return
+    if await prompt_yes_no(
+        session,
+        f"Allow this verified {attribute} value to be sent over NetBBS Link?",
+        default=False,
+    ):
+        set_attestation_link_visible(db, user, attribute, True)
+        await session.write_line(colored(f"{attribute.title()} attestation Link sharing enabled.", fg_color=SUCCESS_COLOR))
+    else:
+        await session.write_line(colored("Sharing remains disabled.", fg_color=MUTED_COLOR))
 
 
 async def _edit_display_name(session: Session, db: Database, user: User) -> None:
