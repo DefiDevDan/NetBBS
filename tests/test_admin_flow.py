@@ -145,6 +145,66 @@ def _run(session, lane, user):
     asyncio.run(admin_menu(session, lane, user))
 
 
+def test_sysop_lands_on_an_operations_overview(db, lane, sysop):
+    session = FakeSession(["b"])
+
+    _run(session, lane, sysop)
+
+    text = _written_text(session)
+    assert "SysOp operations console" in text
+    assert "[LOCAL ADMIN]" in text
+    assert "[DISABLED]" in text
+    assert "Moderation: 0 pending" in text
+    assert "Backup: " in text and "never" in text
+    assert "CONSOLE" in text
+    assert "QUICK" in text
+
+
+def test_live_sysop_overview_surfaces_node_and_link_health(db, lane, sysop):
+    node_controls = _node_controls()
+    link_context = _link_context()
+    session = FakeSession(["b"])
+
+    asyncio.run(
+        admin_menu(
+            session, lane, sysop,
+            node_controls=node_controls, link_context=link_context,
+        )
+    )
+
+    text = _written_text(session)
+    assert "[ONLINE]" in text
+    assert "Active sessions: 0" in text
+    assert "[ATTENTION]" in text
+    assert "Peers: 0" in text
+    assert "Dead letters: 0" in text
+    assert "ink status" in text
+    assert "outbox" in text
+
+
+def test_operations_are_a_coherent_top_level_console_area(db, lane, sysop):
+    session = FakeSession(["o", "b", "b"])
+
+    _run(session, lane, sysop)
+
+    text = _written_text(session)
+    assert "NetBBS / SysOp / Operations" in text
+    assert "Observe the running node, investigate trouble, and recover work." in text
+    assert "backup status" in text
+
+
+def test_operations_console_wraps_actions_on_a_narrow_terminal(db, lane, sysop):
+    session = FakeSession(["b"])
+    session.terminal_width = 40
+
+    _run(session, lane, sysop)
+
+    text = _written_text(session)
+    assert "SysOp operations console" in text
+    assert "CONSOLE" in text
+    assert "\r\n" in text[text.index("CONSOLE"):text.index("QUICK")]
+
+
 # -- Phase-4 trust policy -------------------------------------------------
 
 
@@ -3037,8 +3097,7 @@ def test_diagnostic_log_screen_colors_level_by_severity(db, lane, sysop):
     """Issue #101c: the detail view's Level field is colorized, and an
     ERROR entry reads as more urgent (ALERT_COLOR) than a WARNING one
     (WARNING_COLOR) -- not both flattened to the same color."""
-    from netbbs.rendering import ALERT_COLOR, WARNING_COLOR
-    from netbbs.rendering.ansi import fg
+    from netbbs.rendering import ALERT_COLOR
 
     link_context = _link_context()
     db.connection.execute(
@@ -3051,8 +3110,7 @@ def test_diagnostic_log_screen_colors_level_by_severity(db, lane, sysop):
     asyncio.run(admin_menu(session, lane, sysop, link_context=link_context))
 
     text = _written_text(session)
-    assert fg(ALERT_COLOR) in text
-    assert fg(WARNING_COLOR) not in text
+    assert f"Level: {colored('ERROR', fg_color=ALERT_COLOR, bold=True)}" in text
 
 
 def test_diagnostic_log_tail_screen_shows_seeded_entries_and_stops_on_any_key(db, lane, sysop):
@@ -3072,7 +3130,7 @@ def test_diagnostic_log_tail_screen_shows_seeded_entries_and_stops_on_any_key(db
     text = _written_text(session)
     assert "Diagnostic log (live)" in text
     assert "seeded entry" in text
-    assert "System:" in text  # back at the System menu -- tail actually ended
+    assert "Settings:" in text  # back at Settings -- tail actually ended
 
 
 def test_diagnostic_log_tail_screen_appends_entries_written_while_watching(db, lane, monkeypatch):

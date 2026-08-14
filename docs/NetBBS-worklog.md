@@ -2441,3 +2441,15 @@ back. Startup reconciliation also backfills missing fallbacks from the current
 live preference before accounts can be deleted, so databases created before
 the fallback migration do not preserve a stale default merely because no later
 preference edit happened.
+
+**A live operations dashboard must not insert slow refresh work into a
+shutdown/drain return path.** The SysOp console snapshot is loaded through the
+`DatabaseLane` on entry and on explicit refresh. Ordinary user/content/outbox
+changes may refresh it after returning, but a node-control or operations menu
+redraw reuses the last snapshot: an immediate drain can be disconnecting tasks
+while the issuing SysOp unwinds, and adding a fresh executor wait at that exact
+boundary creates a cancellation point the former lightweight menu redraw did
+not have. Live in-memory badges (maintenance, lockdown, session count, peer
+count) are still recomputed on every render. Preserve this split when adding
+dashboard metrics: durable snapshot data may be momentarily stale until `[D]`
+refresh, while urgent process state must never be cached.

@@ -275,7 +275,7 @@ async def admin_menu(
     selection only" precedent.
 
     `node_controls` (design doc), if given,
-    unlocks the `[N]ode` command nested inside the `[S]ystem` submenu
+    unlocks the `[N]ode` quick action and its entry in `[O]perations`
     (list/disconnect sessions, trigger shutdown) -- present when called
     from within a live session (`netbbs.net.login_flow`), absent
     (`None`) when called from the standalone `python -m netbbs.admin`
@@ -288,52 +288,177 @@ async def admin_menu(
     same presence/absence reasoning as `node_controls`: absent for the
     standalone CLI and for any node with Link disabled.
 
-    Grouped into three submenus by what they act on (Thiesi's own
-    observation that the previous flat 9-option layout mixed user-
-    account actions and node-wide settings side by side with no
-    grouping at all, "Welcome banner" sitting next to "Create user"):
-    `[U]sers` (create/list/registration/promote/enable-disable/delete),
-    `[M]anage content` (boards/areas/channels, already its own submenu
-    since before this reorganization), and `[S]ystem` (welcome banner,
-    update, and -- Thiesi's own call -- `[N]ode` nested one level
-    further in, rather than sitting at this top level as its own
-    sibling the way it used to).
+    The landing view is an at-a-glance operations dashboard. Navigation
+    separates users, content, running-node operations, and durable settings;
+    context-sensitive quick actions avoid forcing an operator through that
+    hierarchy when responding to a visible condition. Historical `[M]anage`
+    and `[S]ystem` operation keys remain accepted as compatibility aliases but
+    are no longer advertised in the reorganized console.
     """
-    await _draw_admin_menu(session)
+    dashboard_state = await _draw_admin_menu(
+        session, lane, user, node_controls=node_controls, link_context=link_context
+    )
     while True:
         choice = (await session.read_key()).lower()
 
         if choice == "b":
             await session.write_line("")
             return
+        elif choice == "d":
+            dashboard_state = await _draw_admin_menu(
+                session, lane, user, node_controls=node_controls, link_context=link_context
+            )
         elif choice == "u":
             await session.write_line("")
             await _users_menu(session, lane, user, node_controls=node_controls)
-            await _draw_admin_menu(session)
-        elif choice == "m":
+            dashboard_state = await _draw_admin_menu(
+                session, lane, user, node_controls=node_controls, link_context=link_context
+            )
+        elif choice in {"c", "m"}:
             await session.write_line("")
             await _content_menu(session, lane, user, link_context=link_context)
-            await _draw_admin_menu(session)
+            dashboard_state = await _draw_admin_menu(
+                session, lane, user, node_controls=node_controls, link_context=link_context
+            )
+        elif choice == "o":
+            await session.write_line("")
+            await _operations_menu(
+                session, lane, user, node_controls=node_controls, link_context=link_context
+            )
+            await _draw_admin_menu(session, lane, user, node_controls=node_controls,
+                                   link_context=link_context, state=dashboard_state)
         elif choice == "s":
             await session.write_line("")
             await _system_menu(session, lane, user, node_controls=node_controls, link_context=link_context)
-            await _draw_admin_menu(session)
+            await _draw_admin_menu(session, lane, user, node_controls=node_controls,
+                                   link_context=link_context, state=dashboard_state)
+        elif choice == "n" and node_controls is not None:
+            await session.write_line("")
+            await _node_menu(session, lane, user, node_controls)
+            await _draw_admin_menu(session, lane, user, node_controls=node_controls,
+                                   link_context=link_context, state=dashboard_state)
+        elif choice == "l" and link_context is not None:
+            await session.write_line("")
+            await _link_status_screen(session, lane, user, link_context=link_context)
+            await _draw_admin_menu(session, lane, user, node_controls=node_controls,
+                                   link_context=link_context, state=dashboard_state)
+        elif choice == "x" and link_context is not None:
+            await session.write_line("")
+            await _outbox_screen(session, lane, user)
+            dashboard_state = await _draw_admin_menu(
+                session, lane, user, node_controls=node_controls, link_context=link_context
+            )
+        elif choice == "k":
+            await session.write_line("")
+            await _backup_status_screen(session, lane, user)
+            await _draw_admin_menu(session, lane, user, node_controls=node_controls,
+                                   link_context=link_context, state=dashboard_state)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
-async def _draw_admin_menu(session: Session) -> None:
-    header = colored("SysOp admin menu:", fg_color=HEADER_COLOR, bold=True)
-    options = "  ".join(
-        [
-            menu_key("U", "sers"),
-            menu_key("M", "anage boards/areas/channels"),
-            menu_key("S", "ystem"),
-            menu_key("B", "ack"),
-        ]
+async def _draw_admin_menu(
+    session: Session,
+    lane: DatabaseLane,
+    actor: User,
+    *,
+    node_controls: NodeControls | None,
+    link_context: LinkContext | None,
+    state: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Render the SysOp landing page as an operations overview, not a link list."""
+
+    def _load(db: Database) -> dict[str, object]:
+        pending_users = sum(user.pending_approval for user in list_users(db))
+        pending_posts = sum(len(list_pending_posts(db, board, requesting_user=actor)) for board in list_boards(db))
+        pending_files = sum(
+            len(list_pending_files(db, area, requesting_user=actor)) for area in list_file_areas(db)
+        )
+        dead_letters = len(list_work_items(db, status="dead_lettered")) if link_context is not None else 0
+        recent_diagnostics = list_diagnostic_log_entries(db, limit=20) if link_context is not None else []
+        return {
+            "pending_users": pending_users,
+            "pending_posts": pending_posts,
+            "pending_files": pending_files,
+            "dead_letters": dead_letters,
+            "recent_errors": sum(entry.level == "ERROR" for entry in recent_diagnostics),
+            "recent_warnings": sum(entry.level == "WARNING" for entry in recent_diagnostics),
+            "backup": get_last_backup_summary(db),
+            "update": get_last_check_summary(db),
+        }
+
+    if state is None:
+        state = await lane.run(_load)
+    active_sessions = len(node_controls.session_registry) if node_controls is not None else None
+    maintenance = node_controls.maintenance.is_active() if node_controls is not None else False
+    lockdown = node_controls.maintenance.is_lockdown_active() if node_controls is not None else False
+
+    await session.write_line(
+        "\r\n" + screen_title(
+            "SysOp operations console",
+            breadcrumb=("NetBBS",),
+            subtitle="Live health, attention queues, and administrative controls.",
+            width=session.terminal_width,
+        )
     )
-    await session.write_line(f"\r\n{header} {options}")
+    node_badge = badge(
+        "LOCKDOWN" if lockdown else "MAINTENANCE" if maintenance else "ONLINE",
+        tone="error" if lockdown else "warning" if maintenance else "success",
+    ) if node_controls is not None else badge("LOCAL ADMIN", tone="neutral")
+    await session.write_line(colored("NODE  ", fg_color=LABEL_COLOR, bold=True) + node_badge)
+    if active_sessions is not None:
+        await session.write_line(f"  Active sessions: {active_sessions}")
+    else:
+        await session.write_line(colored("  Live node controls unavailable in standalone mode.", fg_color=MUTED_COLOR))
+
+    if link_context is None:
+        await session.write_line(colored("LINK  ", fg_color=LABEL_COLOR, bold=True) + badge("DISABLED", tone="neutral"))
+    else:
+        node = link_context.link_node
+        link_tone = "warning" if not node.peers or state["dead_letters"] else "success"
+        link_label = "ATTENTION" if link_tone == "warning" else "HEALTHY"
+        await session.write_line(colored("LINK  ", fg_color=LABEL_COLOR, bold=True) + badge(link_label, tone=link_tone))
+        await session.write_line(
+            f"  Peers: {len(node.peers)}  Relays: {len(node.relays_serving_me)}  "
+            f"Dead letters: {state['dead_letters']}"
+        )
+
+    pending_total = state["pending_users"] + state["pending_posts"] + state["pending_files"]
+    await session.write_line(colored("ATTENTION", fg_color=LABEL_COLOR, bold=True))
+    await session.write_line(f"  Moderation: {pending_total} pending")
+    await session.write_line(
+        f"    Users: {state['pending_users']}  Posts: {state['pending_posts']}  Files: {state['pending_files']}"
+    )
+    backup_at, _backup_path = state["backup"]
+    update_at, update_outcome = state["update"]
+    await session.write_line(
+        "  Backup: " + (sanitize_text(backup_at) if backup_at else colored("never", fg_color=WARNING_COLOR))
+    )
+    await session.write_line(
+        "  Update check: "
+        + (sanitize_text(update_outcome or update_at or "completed") if update_at else colored("never", fg_color=WARNING_COLOR))
+    )
+    if link_context is not None:
+        await session.write_line(
+            f"  Recent Link diagnostics: {state['recent_errors']} error(s), "
+            f"{state['recent_warnings']} warning(s)"
+        )
+
+    await session.write_line(colored("\r\nCONSOLE", fg_color=HEADER_COLOR, bold=True))
+    await session.write_line(action_bar(
+        [menu_key("U", "sers"), menu_key("C", "ontent"), menu_key("O", "perations"),
+         menu_key("S", "ettings"), menu_key("D", "ashboard"), menu_key("B", "ack")],
+        width=session.terminal_width,
+    ))
+    quick = [menu_key("K", "backup")]
+    if node_controls is not None:
+        quick.insert(0, menu_key("N", "ode"))
+    if link_context is not None:
+        quick.extend([menu_key("L", "ink status"), menu_key("X", "outbox")])
+    await session.write_line(colored("QUICK", fg_color=MUTED_COLOR))
+    await session.write_line(action_bar(quick, width=session.terminal_width))
     await session.write("Choice: ")
+    return state
 
 
 # -- users submenu ---------------------------------------------------------
@@ -407,6 +532,58 @@ async def _draw_users_menu(session: Session) -> None:
 # -- system submenu ----------------------------------------------------------
 
 
+async def _operations_menu(
+    session: Session,
+    lane: DatabaseLane,
+    actor: User,
+    *,
+    node_controls: NodeControls | None,
+    link_context: LinkContext | None,
+) -> None:
+    """Operational observation and intervention, separate from durable settings."""
+    while True:
+        await session.write_line(
+            "\r\n" + screen_title(
+                "Operations",
+                breadcrumb=("NetBBS", "SysOp"),
+                subtitle="Observe the running node, investigate trouble, and recover work.",
+                width=session.terminal_width,
+            )
+        )
+        options = [menu_key("K", "backup status")]
+        if node_controls is not None:
+            options.insert(0, menu_key("N", "ode and sessions"))
+        if link_context is not None:
+            options.extend([
+                menu_key("L", "ink status"), menu_key("O", "utbox"),
+                menu_key("D", "iagnostics"), menu_key("F", "ollow log"),
+                menu_key("R", "epair carried posts"),
+            ])
+        options.append(menu_key("B", "ack"))
+        await session.write_line(action_bar(options, width=session.terminal_width))
+        await session.write("Choice: ")
+        choice = (await session.read_key()).lower()
+        if choice == "b":
+            await session.write_line("")
+            return
+        if choice == "n" and node_controls is not None:
+            await _node_menu(session, lane, actor, node_controls)
+        elif choice == "l" and link_context is not None:
+            await _link_status_screen(session, lane, actor, link_context=link_context)
+        elif choice == "o" and link_context is not None:
+            await _outbox_screen(session, lane, actor)
+        elif choice == "d" and link_context is not None:
+            await _diagnostic_log_screen(session, lane)
+        elif choice == "f" and link_context is not None:
+            await _diagnostic_log_tail_screen(session, lane)
+        elif choice == "r" and link_context is not None:
+            await _repair_carried_posts_screen(session, lane)
+        elif choice == "k":
+            await _backup_status_screen(session, lane, actor)
+        else:
+            await session.write(reject_unhandled_key(choice))
+
+
 async def _system_menu(
     session: Session,
     lane: DatabaseLane,
@@ -415,14 +592,11 @@ async def _system_menu(
     node_controls: NodeControls | None,
     link_context: LinkContext | None = None,
 ) -> None:
-    """Node-wide settings, grouped together (design doc): welcome banner,
-    self-update, and -- Thiesi's own call -- `[N]ode` (sessions/shutdown)
-    nested here rather than
-    sitting at the top level, since it's a node-wide concern too.
+    """Durable node settings: welcome banner, updates, timestamps, and trust.
 
-    `link_context` (issue #60), if given, unlocks `[L]ink status` --
-    same presence/absence reasoning as `node_controls`: absent for the
-    standalone CLI and for any node with Link disabled."""
+    The old operational keys remain accepted here as non-advertised
+    compatibility aliases; the visible home for those actions is now the
+    operations console."""
     await _draw_system_menu(session, node_controls, link_context)
     while True:
         choice = (await session.read_key()).lower()
@@ -481,19 +655,11 @@ async def _system_menu(
 async def _draw_system_menu(
     session: Session, node_controls: NodeControls | None, link_context: LinkContext | None = None
 ) -> None:
-    header = colored("\r\nSystem:", fg_color=HEADER_COLOR, bold=True)
+    header = colored("\r\nSettings:", fg_color=HEADER_COLOR, bold=True)
     option_list = [
         menu_key("W", "elcome banner"), menu_key("U", "pdate"), menu_key("T", "imestamp format"),
-        menu_key("P", "olicy trust"), menu_key("K", "up status", prefix="Bac"),
+        menu_key("P", "olicy trust"),
     ]
-    if link_context is not None:
-        option_list.append(menu_key("L", "ink status"))
-        option_list.append(menu_key("O", "utbox"))
-        option_list.append(menu_key("R", "epair carried posts"))
-        option_list.append(menu_key("D", "iagnostic log"))
-        option_list.append(menu_key("F", "ollow log"))
-    if node_controls is not None:
-        option_list.append(menu_key("N", "ode"))
     option_list.append(menu_key("B", "ack"))
     options = "  ".join(option_list)
     await session.write_line(f"{header} {options}")

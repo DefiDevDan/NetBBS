@@ -289,6 +289,25 @@ the same vocabulary to Communities/boards, mail/files/search/directory, chat,
 and the SysOp operations console. Every increment covers narrow, ordinary, and
 wide terminals plus empty, populated, warning, and error states.
 
+### 3.4 SysOp operations console
+
+The SysOp entry point is an operational control center, not a flat catalogue
+of administrative forms. Its landing view summarizes the running node's mode,
+active sessions, Link health, moderation queues, backup and update recency,
+outbound failures, and recent Link diagnostics using concise semantic status.
+The standalone admin CLI renders the same view but states clearly that live
+node controls are unavailable rather than pretending the process is online.
+
+Navigation separates four operator intents: users, content, operations, and
+settings. Operations contains observation and intervention for the live node,
+Link, outbound work, diagnostics, recovery, and backups; settings contains
+durable configuration such as presentation, update checks, timestamps, and
+trust policy. Context-sensitive quick actions may lead directly from the
+landing view to node, Link, outbox, and backup screens. Hidden capabilities are
+not advertised when their runtime context is unavailable. The dashboard can be
+refreshed explicitly, and action screens return to the console without losing
+the operator's place.
+
 ---
 
 ## 4. Accounts, authentication, identity, and addressing
