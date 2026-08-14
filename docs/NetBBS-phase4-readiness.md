@@ -39,8 +39,8 @@ Then run the complete suite:
 | Gate | Required evidence | Status |
 |---|---|---|
 | SysOp explanation and configuration | A SysOp can inspect domains, reporters, anchors, authorities, subjects, effective decisions, evidence, overrides, recovery requirements, and audit history | implemented; automated UI coverage |
-| Manual quarantine/block/recovery exercise | On a real node, record the visible reason and effects, restart while restricted, clear the trigger or override, observe the recovery hold, and record release | pending real exercise |
-| Independently administered multi-node exercise | At least two administrators configure separate nodes; introduce a trust trigger across a partition; inspect quarantine on the receiving node; heal, revoke/remove the trigger, restart, and verify convergence without deleting accepted objects | pending |
+| Manual quarantine/block/recovery exercise | Follow “Phase 4 trust and recovery exercise” in `docs/NetBBS-link-dogfood-plan.md`; record the visible reason and effects, restart while restricted, clear the trigger or override, observe the recovery hold, and record release | pending real exercise |
+| Independently administered multi-node exercise | Using that same runbook, at least two administrators configure separate nodes; introduce a trust trigger across a partition; inspect quarantine on the receiving node; heal, revoke/remove the trigger, restart, and verify convergence without deleting accepted objects | pending |
 | Sustained private dogfood | Complete and record issue #83's duration, restart, partition, quota, and operator-observation checklist | pending |
 
 ## Decision

@@ -12,14 +12,14 @@ session.** It needs real infrastructure running continuously and real
 calendar time passing. This document is the plan to follow; running it
 is a separate, ongoing activity.
 
-**Explicitly not the goal:** this does not establish public-federation
-readiness. Phase 3 remains private/experimental federation regardless
-of how this goes; implementing and validating design doc §12's Phase-4
-trust/quarantine model is the actual public-readiness gate. This dogfood run
-only proves Phase 3's existing behavior holds up under sustained real
-operation. Its calendar duration is intentionally independent from the active
-Phase-4 development cycle; findings still become focused issues and durable
-engineering lessons as they arise.
+**Explicitly not the goal:** this does not by itself establish public-
+federation readiness. Phase 3 remains private/experimental federation.
+The automated parts of design doc §12's Phase-4 trust/quarantine model are
+implemented; this deployment now also supplies the real-node and independently
+administered evidence required by issue #131. Public readiness still requires
+every pending row in `docs/NetBBS-phase4-readiness.md` to be completed and
+reviewed. Findings become focused issues and durable engineering lessons as
+they arise.
 
 ## 1. Topology (at least three nodes)
 
@@ -205,6 +205,51 @@ fits your own availability.
       packaged/service-managed path itself remains unexercised by this
       deployment.
 
+### Phase 4 trust and recovery exercise
+
+This section requires at least two operators administering separate nodes.
+The operator of the receiving node owns its local policy and must not share
+private reporter configuration, notes, or evidence with ordinary callers.
+Use test identities and non-sensitive evidence.
+
+- [ ] On node A, create a test node/user subject and record its current
+      effective state. On node B, configure two independent trust domains and
+      their narrowly scoped reporters through `[S]ysOp` → `[S]ystem` →
+      `[P]olicy trust`. Record the node fingerprints, category scopes, and
+      configuration times.
+- [ ] Introduce one scoped signal. Confirm the subject does not cross the
+      two-domain threshold and record the explanation shown by node B,
+      including counted domains/weight and the stated release condition.
+- [ ] Introduce the second independent signal. Confirm node B quarantines
+      only the affected dimension, ordinary transport/content behavior matches
+      the documented enforcement boundary, and already accepted objects remain
+      stored.
+- [ ] Partition B from its reporter/peer path. During the partition, confirm
+      absence and failed dials create no new evidence and do not silently alter
+      the decision. Restart B while still partitioned; confirm the same
+      effective state and explanation reconstruct from SQLite.
+- [ ] Heal the partition, then revoke the second signal or remove the
+      deliberately compromised reporter. Confirm the trigger disappears but
+      the signed object and audit history remain. Record the recovery-hold
+      start and required release time.
+- [ ] Exercise a mandatory-reason SysOp override and clear it again. Confirm
+      the action is scoped, audited, restart-safe, and visibly distinct from
+      automatic policy. Do not use an override to skip observing automatic
+      recovery.
+- [ ] After the recovery hold elapses, confirm the subject leaves quarantine
+      on node B, the explanation names automatic recovery, and a restart does
+      not restore the old restriction.
+- [ ] Repeat the explanation check using an ordinary caller account. Confirm
+      it reports a local restriction without exposing reporter identities,
+      private evidence, configuration notes, or a network-wide verdict.
+
+For each row, record node/operator roles, UTC timestamps, software commit,
+subject and dimension, pre/post effective states, public reason code, whether
+a restart or partition was active, and the relevant audit IDs. Do not paste
+private evidence into GitHub. Summarize the completed exercise in issue #131
+and update the corresponding pending rows in
+`docs/NetBBS-phase4-readiness.md`.
+
 ### Ongoing, throughout the whole run
 
 - [ ] Periodically check disk growth (`du -sh` on the database file,
@@ -246,8 +291,9 @@ enough to remember what happened and when. At the end, convert it into:
 
 ## 5. Explicitly out of scope for this run
 
-- Proving public federation safe against a hostile/unknown peer —
-  that's Phase 4 (issue #55), not this.
+- Claiming public federation safe merely because this bounded private exercise
+  passed. Hostile/unknown-peer deployment remains prohibited until every
+  Phase-4 readiness gate is reviewed and explicitly closed.
 - Load/scale testing beyond this project's own declared target (design
   doc §2.3: dozens–low hundreds of concurrent sessions, small-to-medium
   Link deployments) — three nodes and a handful of test accounts is
