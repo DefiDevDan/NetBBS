@@ -2208,4 +2208,46 @@ MIGRATIONS = [
         );
         """,
     ),
+    Migration(
+        description=(
+            "Issue #127: immutable signed trust-object carrier storage. "
+            "Trust objects remain outside link_events/content flood gossip; "
+            "the original canonical envelope and detached issuer signature "
+            "are retained so a carrier can serve the unchanged object."
+        ),
+        sql="""
+        CREATE TABLE link_trust_wire_objects (
+            content_id         TEXT PRIMARY KEY,
+            issuer_fingerprint TEXT NOT NULL,
+            object_type        TEXT NOT NULL CHECK (
+                object_type IN (
+                    'trust_signal', 'trust_revocation',
+                    'trust_vouch', 'trust_vouch_revocation'
+                )
+            ),
+            envelope_json      TEXT NOT NULL,
+            signature_b64      TEXT NOT NULL,
+            subject_id         TEXT,
+            dimension          TEXT,
+            category           TEXT,
+            expires_at         TEXT,
+            revoked_by_content_id TEXT,
+            revoked_at         TEXT,
+            received_at        TEXT NOT NULL
+        );
+        CREATE INDEX idx_link_trust_wire_issuer_page
+            ON link_trust_wire_objects(issuer_fingerprint, received_at, content_id);
+        CREATE INDEX idx_link_trust_wire_active_quota
+            ON link_trust_wire_objects(
+                issuer_fingerprint, object_type, revoked_at, expires_at, subject_id, category
+            );
+        CREATE TABLE link_trust_pull_cursors (
+            responder_fingerprint TEXT NOT NULL,
+            issuer_fingerprint    TEXT NOT NULL,
+            after_content_id      TEXT NOT NULL,
+            updated_at            TEXT NOT NULL,
+            PRIMARY KEY (responder_fingerprint, issuer_fingerprint)
+        );
+        """,
+    ),
 ]

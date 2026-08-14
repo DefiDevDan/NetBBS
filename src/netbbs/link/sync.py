@@ -165,6 +165,16 @@ from netbbs.link.transport import (
     request_inventory,
     request_peer_list,
     request_relay_consent,
+    request_trust_objects,
+)
+from netbbs.link.trust_wire import (
+    SignedTrustObject,
+    TrustWireError,
+    build_trust_pull_request,
+    ingest_trust_objects,
+    list_trusted_reporter_fingerprints,
+    load_trust_pull_cursor,
+    save_trust_pull_cursor,
 )
 from netbbs.link.work_items import (
     KIND_LINK_MAIL_ACK,
@@ -183,6 +193,7 @@ _logger = logging.getLogger(__name__)
 # number" precedent (no reliability ranking exists yet to pick more
 # cleverly), not every entry in node.candidate_descriptors.
 _MAX_CANDIDATE_FALLBACK_ATTEMPTS = 5
+_MAX_TRUST_PULL_PAGES_PER_PASS = 10
 
 
 async def run_link_sync(
@@ -289,6 +300,7 @@ async def run_link_sync(
             # configuration and a genuinely live supplementary list
             # always take priority when either actually works.
             await _try_candidate_fallback(node, session, own_hello_provider, lane)
+        await _pull_trust_subscriptions(node, session, lane)
         # Issue #58: relay selection/pickup only makes sense
         # for an outgoing-only node -- a full peer is directly dialable
         # by definition, so it has nothing to gain from seeking relays
@@ -408,7 +420,84 @@ async def _sync_one_seed(
     except LinkTransportError as exc:
         _logger.warning("Link sync: could not request inventory from seed %s: %s", seed_url, exc)
 
+    configured_reporters = await lane.run(list_trusted_reporter_fingerprints)
+    if seed_peer.fingerprint in configured_reporters:
+        await _pull_one_trust_reporter(
+            node, session, lane, seed_peer.fingerprint, [seed_url]
+        )
+
     return True
+
+
+async def _pull_trust_subscriptions(
+    node: LinkNode, session: ClientSession, lane: DatabaseLane
+) -> None:
+    """Pull configured reporters explicitly; trust objects are never flood-gossiped."""
+    reporters = await lane.run(list_trusted_reporter_fingerprints)
+    for issuer in reporters:
+        peer = node.peers.get(issuer)
+        if peer is None:
+            _logger.warning("Link trust pull: configured reporter %s has no completed hello", issuer)
+            continue
+        addresses = _dialable_addresses(peer.descriptor)
+        if not addresses:
+            _logger.warning("Link trust pull: configured reporter %s has no dialable address", issuer)
+            continue
+        await _pull_one_trust_reporter(node, session, lane, issuer, addresses)
+
+
+async def _pull_one_trust_reporter(
+    node: LinkNode,
+    session: ClientSession,
+    lane: DatabaseLane,
+    issuer: str,
+    addresses: list[str],
+    responder_fingerprint: str | None = None,
+) -> None:
+    responder = responder_fingerprint or issuer
+    verify_key = node.resolve_peer_signing_key(issuer, "trust object")
+    completed = False
+    for base_url in addresses:
+        cursor = await lane.run(load_trust_pull_cursor, responder, issuer)
+        try:
+            for _page_number in range(_MAX_TRUST_PULL_PAGES_PER_PASS):
+                pull = build_trust_pull_request(
+                    signing_identity=node.identity.signing_key,
+                    requester_fingerprint=node.identity.fingerprint,
+                    responder_fingerprint=responder,
+                    issuer_fingerprint=issuer,
+                    after_content_id=cursor,
+                )
+                raw_objects, more = await request_trust_objects(node, session, base_url, pull)
+                parsed = [
+                    SignedTrustObject.from_dict(raw, issuer_verify_key=verify_key)
+                    for raw in raw_objects
+                ]
+                if any(obj.issuer_fingerprint != issuer for obj in parsed):
+                    raise TrustWireError("trust response contains an object from another issuer")
+                if parsed:
+                    await lane.run(ingest_trust_objects, parsed)
+                    cursor = parsed[-1].content_id
+                    await lane.run(save_trust_pull_cursor, responder, issuer, cursor)
+                if not more:
+                    completed = True
+                    break
+                if not parsed:
+                    raise TrustWireError("trust response claims another page but returned no objects")
+            if not completed:
+                _logger.warning(
+                    "Link trust pull: reporter %s exceeded the separate %d-page ingestion budget",
+                    issuer,
+                    _MAX_TRUST_PULL_PAGES_PER_PASS,
+                )
+            break
+        except (LinkTransportError, LinkProtocolError, TrustWireError, ValueError) as exc:
+            _logger.warning(
+                "Link trust pull: rejected response for reporter %s from direct peer %s: %s",
+                issuer,
+                issuer,
+                exc,
+            )
 
 
 def _dialable_addresses(descriptor: EndpointDescriptor) -> list[str]:

@@ -1306,6 +1306,18 @@ attempts/successes per fingerprint, neutral prior when unobserved) for fallback
 and relay selection. Its score must never become a security or content
 reputation input.
 
+**Signed trust transport remains an explicit-subscription boundary.** Durable
+`trust_signal`/revocation/vouch objects live in their own immutable carrier
+store, never in `link_events`; a carrier serves the original envelope and
+signature unchanged and gains no reporter authority. Pull requests are signed,
+fresh, replay-bounded, page/byte-limited exchanges with completed peers. The
+stable issuer fingerprint is distinct from its currently authorized
+operational signing key. Digest-only evidence counts against ingress quotas but
+does not enter the trust-policy tables until a bounded same-origin fetch has
+matched its signed size/hash and category-specific code has independently
+reproduced the claim. A pending digest object can still be revoked, and that
+revocation prevents later activation.
+
 Trust projections are derived caches, recomputed at node startup before any
 listener binds. Input mutation and projection/audit transition share one SQLite
 transaction. Inactive signals, observations, and vouches are pruned after 365
