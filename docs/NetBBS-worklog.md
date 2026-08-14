@@ -911,6 +911,14 @@ custom SysOp ANSI banner intentionally bypasses that generator. If dogfood does
 not show either behavior, first verify deployed revision, banner configuration,
 and Telnet/SSH/web capability negotiation before adding duplicate rendering.
 
+Ordinary screen composition now has a separate rendering-layer vocabulary in
+`netbbs.rendering.layout`. Keep those helpers pure: they accept already-safe
+display strings and terminal width, and must not query databases, sessions, or
+permissions. The home menu uses the same option set and hotkeys at every width;
+80 columns receives grouped columns and the 40-column minimum receives the same
+groups stacked vertically. Layout tests strip SGR before asserting visible
+width, because raw escape-byte length is not terminal column width.
+
 ---
 
 ## 8. Async ownership, shutdown, and background tasks

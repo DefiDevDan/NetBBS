@@ -165,9 +165,11 @@ from netbbs.rendering import (
     VALUE_COLOR,
     colored,
     colored_truncate,
+    menu_grid,
     menu_key,
     reflow,
     sanitize_text,
+    screen_title,
     truncate,
 )
 from netbbs.search import (
@@ -553,8 +555,14 @@ async def run_authenticated_session(
     # menu's own options line is already dense enough without adding a
     # permanent trailer to it too.
     welcome = (
-        f"\r\nWelcome, {sanitize_text(user.username)}! You are level {user.user_level}. "
-        f"(Ctrl-L redraws the current screen.)"
+        "\r\n"
+        + colored(
+            f"Welcome, {sanitize_text(user.username)}",
+            fg_color=ACCENT_COLOR,
+            bold=True,
+        )
+        + colored(f"  /  level {user.user_level}", fg_color=METADATA_COLOR)
+        + colored("  /  Ctrl-L redraws", fg_color=METADATA_COLOR)
     )
     if (
         node_controls is not None
@@ -914,36 +922,48 @@ async def _draw_main_menu(
     for text, created_at in mailbox.flush(session):
         await session.write_line(format_with_preference(db, user, text, created_at))
 
-    header = colored("Main menu:", fg_color=HEADER_COLOR, bold=True)
     unread = unread_mail_count(db, user)
     mail_label = f"-mail ({unread} unread)" if unread else "-mail"
-    option_list = []
+    explore_options = []
     if _has_visible_communities(db, user):
-        option_list.append(menu_key("C", "ommunities"))
+        explore_options.append(menu_key("C", "ommunities"))
     if _has_uncategorized_resources(db, user):
-        option_list.append(menu_key("U", "ncategorized"))
-    option_list.append(menu_key("J", "ump to..."))
-    option_list.append(menu_key("N", "ew scan"))
-    option_list.append(menu_key("F", "ind"))
-    option_list.extend(
+        explore_options.append(menu_key("U", "ncategorized"))
+    explore_options.extend(
         [
+            menu_key("J", "ump to..."),
+            menu_key("N", "ew scan"),
+            menu_key("F", "ind"),
+        ]
+    )
+    personal_options = [
             menu_key("D", "irectory"),
             menu_key("P", "rofile"),
             menu_key("E", mail_label),
             menu_key("H", "istory"),
-        ]
-    )
+    ]
     if node_controls is not None:
-        option_list.append(menu_key("W", "ho's online"))
+        personal_options.append(menu_key("W", "ho's online"))
     if list_pending_invitations_for_user(db, user):
-        option_list.append(menu_key("I", "nvitations"))
+        personal_options.append(menu_key("I", "nvitations"))
     if user.can_verify_identity or meets_level(user, SYSOP_LEVEL):
-        option_list.append(menu_key("V", "erify"))
+        personal_options.append(menu_key("V", "erify"))
+    system_options = []
     if meets_level(user, SYSOP_LEVEL):
-        option_list.append(menu_key("S", "ysOp"))
-    option_list.append(menu_key("L", "ogoff"))
-    options = "  ".join(option_list)
-    await session.write_line(f"\r\n{header} {options}")
+        system_options.append(menu_key("S", "ysOp"))
+    system_options.append(menu_key("L", "ogoff"))
+
+    title = screen_title(
+        "Main menu:",
+        subtitle=f"{sanitize_text(user.username)}  /  level {user.user_level}"
+        + (f"  /  {unread} unread mail" if unread else "  /  mail caught up"),
+        width=session.terminal_width,
+    )
+    options = menu_grid(
+        [("Explore", explore_options), ("You", personal_options), ("System", system_options)],
+        width=session.terminal_width,
+    )
+    await session.write_line(f"\r\n{title}\r\n{options}\r\n")
     await session.write(_main_menu_prompt(db, user, node_controls))
 
 
@@ -1573,11 +1593,20 @@ async def _login(
     whether they're blocked.
     """
     registration_mode = get_registration_mode(db)
-    prompt = (
-        "\r\nUsername: "
-        if registration_mode == RegistrationMode.CLOSED
-        else "\r\nNew here? Type 'new' to create an account.\r\nUsername: "
+    await session.write_line(
+        "\r\n"
+        + screen_title(
+            "Sign in",
+            breadcrumb=(),
+            subtitle=(
+                None
+                if registration_mode == RegistrationMode.CLOSED
+                else "New here? Type 'new' to create an account."
+            ),
+            width=session.terminal_width,
+        )
     )
+    prompt = colored("Username: ", fg_color=LABEL_COLOR, bold=True)
 
     for attempt in range(max_attempts):
         try:
@@ -1608,7 +1637,7 @@ async def _login(
             continue
 
         try:
-            await session.write("Password: ")
+            await session.write(colored("Password: ", fg_color=LABEL_COLOR, bold=True))
             password = await asyncio.wait_for(session.read_line(echo=False), timeout=idle_timeout)
         except asyncio.TimeoutError:
             return LoginOutcome.IDLE_TIMEOUT

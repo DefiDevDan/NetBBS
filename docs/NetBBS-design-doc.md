@@ -261,13 +261,33 @@ ANSI art editing and prose editing are separate concerns. Syntax highlighting,
 spell checking, and similar enhancements remain optional modules rather than
 core editor assumptions.
 
-### 3.3 Future presentation pass
+### 3.3 Product presentation and default visual identity
 
-Feature correctness and architectural stability take precedence over visual
-polish during active roadmap work. A dedicated presentation and usability pass
-is planned after feature completion. This does not excuse inaccessible,
-ambiguous, or broken UI in the meantime; it only postpones broad theming and
-cosmetic redesign.
+Presentation work proceeds as bounded vertical product increments rather than
+waiting for every later roadmap phase. NetBBS ships one intentional default
+visual identity before it grows an arbitrary theme engine. The default should
+feel like a modern terminal application with BBS character: restrained color,
+clear hierarchy, generous spacing, compact panels and badges, and recognizable
+NetBBS branding rather than a wall of prompts or ornamental ANSI everywhere.
+
+Ordinary screens share a small rendering vocabulary: title/breadcrumb,
+sections, responsive menu grids, metadata, status messages, empty states, and
+action hints. These primitives return styled terminal strings and never absorb
+domain behavior. A screen should make location, content, and available actions
+clear at a glance.
+
+Layouts target 80x24 as the classic baseline, use additional width when
+available, and collapse to one column at the 40x24 minimum. ASCII structure is
+the universal baseline because Telnet terminal encodings vary; Unicode box
+drawing must not be required for correct layout. Truecolor remains progressive
+enhancement. Motion, gratuitous full-screen clearing, and decoration which
+delays interaction are avoided.
+
+The first-impression surface is one coherent product slice: generated default
+banner, login, authenticated greeting, and home menu. Later increments apply
+the same vocabulary to Communities/boards, mail/files/search/directory, chat,
+and the SysOp operations console. Every increment covers narrow, ordinary, and
+wide terminals plus empty, populated, warning, and error states.
 
 ---
 

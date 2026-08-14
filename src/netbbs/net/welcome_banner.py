@@ -43,10 +43,13 @@ from netbbs.storage.database import Database
 _logger = logging.getLogger(__name__)
 
 DEFAULT_WELCOME_BANNER = colored(
-    "================================================\r\n"
-    "  Welcome to NetBBS\r\n"
-    "  NetBBS Link -- experimental federation\r\n"
-    "================================================",
+    "+------------------------------------------------------+\r\n"
+    "|                                                      |\r\n"
+    "|                      N E T B B S                     |\r\n"
+    "|        conversations across independent nodes        |\r\n"
+    "|                                                      |\r\n"
+    "+------------------------------------------------------+\r\n"
+    "  NetBBS Link  /  private experimental federation",
     fg_color=HEADER_COLOR,
     bold=True,
 )
@@ -68,16 +71,22 @@ def _default_welcome_banner(*, truecolor: bool) -> str:
     # The full-width border makes negotiated truecolor unmistakable at a
     # glance instead of confining the showcase to six subtly shaded letters.
     # The 256-color fallback above intentionally remains one flat cyan span.
-    border = gradient_text(
-        "================================================", "blue", bold=True, truecolor=True
+    border_text = "+------------------------------------------------------+"
+    border = gradient_text(border_text, "blue", bold=True, truecolor=True)
+    wordmark = gradient_text("N E T B B S", "blue", bold=True, truecolor=True)
+    welcome_line = colored("|                      ", fg_color=HEADER_COLOR, bold=True) + wordmark + colored(
+        "                     |", fg_color=HEADER_COLOR, bold=True
     )
-    welcome_line = colored("  Welcome to ", fg_color=HEADER_COLOR, bold=True) + gradient_text(
-        "NetBBS", "blue", bold=True, truecolor=True
+    blank = colored("|                                                      |", fg_color=HEADER_COLOR, bold=True)
+    tagline = colored(
+        "|        conversations across independent nodes        |",
+        fg_color=HEADER_COLOR,
+        bold=True,
     )
     subtitle = colored(
-        "  NetBBS Link -- experimental federation", fg_color=HEADER_COLOR, bold=True
+        "  NetBBS Link  /  private experimental federation", fg_color=HEADER_COLOR, bold=True
     )
-    return "\r\n".join([border, welcome_line, subtitle, border])
+    return "\r\n".join([border, blank, welcome_line, tagline, blank, border, subtitle])
 
 # Comfortably covers realistic ANSI art (typically a few KB, rarely
 # above ~150 KB even for elaborate multi-panel pieces) while bounding a

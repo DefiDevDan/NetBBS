@@ -96,6 +96,36 @@ def test_main_menu_hides_sysop_option_for_an_ordinary_user(tmp_path):
     db.close()
 
 
+def test_main_menu_is_a_two_column_home_surface_at_classic_width(tmp_path):
+    db = Database(tmp_path / "node.db")
+    user = create_user(db, "alice", password="hunter2", user_level=10)
+    session = FakeSession()
+
+    asyncio.run(_draw_main_menu(session, db, MessageMailbox(), user))
+
+    lines = _visible_text(session).splitlines()
+    assert "NetBBS / Main menu:" in lines
+    assert "alice  /  level 10  /  mail caught up" in lines
+    assert any("EXPLORE" in line and "YOU" in line for line in lines)
+    db.close()
+
+
+def test_main_menu_collapses_sections_at_minimum_width(tmp_path):
+    db = Database(tmp_path / "node.db")
+    user = create_user(db, "alice", password="hunter2", user_level=10)
+    session = FakeSession()
+    session.terminal_width = 40
+
+    asyncio.run(_draw_main_menu(session, db, MessageMailbox(), user))
+
+    lines = _visible_text(session).splitlines()
+    assert "EXPLORE" in lines
+    assert "YOU" in lines
+    assert not any("EXPLORE" in line and "YOU" in line for line in lines)
+    assert all(len(line) <= 40 for line in lines if "Choice:" not in line)
+    db.close()
+
+
 def test_pressing_s_reaches_the_sysop_branch_for_a_sysop_level_user(tmp_path):
     db = Database(tmp_path / "node.db")
     sysop = create_user(db, "root", password="hunter2", user_level=255)
