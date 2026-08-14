@@ -66,16 +66,17 @@ from netbbs.net.session import Session
 from netbbs.rendering import (
     ACCENT_COLOR,
     ERROR_COLOR,
-    HEADER_COLOR,
     LABEL_COLOR,
     METADATA_COLOR,
     MUTED_COLOR,
     SUCCESS_COLOR,
     VALUE_COLOR,
+    action_bar,
     colored,
     menu_key,
     reflow,
     sanitize_text,
+    screen_title,
 )
 from netbbs.storage.execution import DatabaseLane
 from netbbs.timeutil import format_for_display, resolve_display_preferences
@@ -125,19 +126,21 @@ async def browse_mail(
 
 async def _render_mail_menu(session: Session, lane: DatabaseLane, user: User) -> None:
     unread = await lane.run(unread_count, user)
-    header = colored("\r\nMail:", fg_color=HEADER_COLOR, bold=True)
-    suffix = colored(f" ({unread} unread)", fg_color=METADATA_COLOR) if unread else ""
-    await session.write_line(f"{header}{suffix}")
-
-    options = "  ".join(
-        [
-            menu_key("I", "nbox"),
-            menu_key("S", "ent"),
-            menu_key("C", "ompose"),
-            menu_key("B", "ack"),
-        ]
+    subtitle = (
+        f"{unread} unread message{'s' if unread != 1 else ''}"
+        if unread
+        else "Inbox caught up"
     )
-    await session.write_line(options)
+    header = screen_title("Mail", subtitle=subtitle, width=session.terminal_width)
+    await session.write_line(f"\r\n{header}")
+
+    options = [
+        menu_key("I", "nbox"),
+        menu_key("S", "ent"),
+        menu_key("C", "ompose"),
+        menu_key("B", "ack"),
+    ]
+    await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
     await session.write("Choice: ")
 
 
@@ -152,7 +155,7 @@ async def _show_inbox(session: Session, lane: DatabaseLane, user: User) -> None:
             f"({format_for_display(m.created_at, override_format=display_format, override_timezone=display_timezone)})"
             for m in messages
         }
-        names = {m.id: f"{'' if m.is_read else '* '}{m.subject}" for m in messages}
+        names = {m.id: f"{'' if m.is_read else '[NEW] '}{m.subject}" for m in messages}
 
         message = await pick_item(
             session,
@@ -161,7 +164,7 @@ async def _show_inbox(session: Session, lane: DatabaseLane, user: User) -> None:
             description_of=lambda m: descriptions[m.id],
             stable_id_of=lambda m: m.id,
             title="Inbox",
-            empty_message="Your inbox is empty.",
+            empty_message="Your inbox is empty. New mail will appear here.",
         )
         if message is None:
             return
@@ -197,7 +200,7 @@ async def _show_sent(session: Session, lane: DatabaseLane, user: User) -> None:
             description_of=lambda m: descriptions[m.id],
             stable_id_of=lambda m: m.id,
             title="Sent Mail",
-            empty_message="You haven't sent any mail.",
+            empty_message="You haven't sent any mail. Compose one from the Mail menu.",
         )
         if message is None:
             return
@@ -207,10 +210,13 @@ async def _show_sent(session: Session, lane: DatabaseLane, user: User) -> None:
 async def _render_message(
     session: Session, lane: DatabaseLane, *, message: MailMessage, to_label: str | None
 ) -> None:
-    header = colored("\r\nSubject: ", fg_color=LABEL_COLOR, bold=True) + colored(
-        sanitize_text(message.subject), fg_color=ACCENT_COLOR, bold=True
+    mailbox = "Sent" if to_label is not None else "Inbox"
+    header = screen_title(
+        sanitize_text(message.subject),
+        breadcrumb=("NetBBS", "Mail", mailbox),
+        width=session.terminal_width,
     )
-    await session.write_line(header)
+    await session.write_line(f"\r\n{header}")
     if to_label is not None:
         await session.write_line(
             colored("To: ", fg_color=LABEL_COLOR)
@@ -239,8 +245,8 @@ async def _show_inbox_message(session: Session, lane: DatabaseLane, user: User, 
     await _render_message(session, lane, message=message, to_label=None)
 
     while True:
-        options = "  ".join([menu_key("R", "eply"), menu_key("D", "elete"), menu_key("B", "ack")])
-        await session.write_line(f"\r\n{options}")
+        options = [menu_key("R", "eply"), menu_key("D", "elete"), menu_key("B", "ack")]
+        await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
         await session.write("Choice: ")
         choice = (await session.read_key()).lower()
 
@@ -276,8 +282,8 @@ async def _show_sent_message(session: Session, lane: DatabaseLane, user: User, m
     await _render_message(session, lane, message=message, to_label=to_label)
 
     while True:
-        options = "  ".join([menu_key("D", "elete"), menu_key("B", "ack")])
-        await session.write_line(f"\r\n{options}")
+        options = [menu_key("D", "elete"), menu_key("B", "ack")]
+        await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
         await session.write("Choice: ")
         choice = (await session.read_key()).lower()
 

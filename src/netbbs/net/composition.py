@@ -13,7 +13,18 @@ from enum import Enum, auto
 
 from netbbs.net.char_input import reject_unhandled_key
 from netbbs.net.session import Session
-from netbbs.rendering import HEADER_COLOR, MUTED_COLOR, colored, menu_key, reflow, sanitize_text
+from netbbs.rendering import (
+    ACCENT_COLOR,
+    HEADER_COLOR,
+    LABEL_COLOR,
+    MUTED_COLOR,
+    action_bar,
+    colored,
+    menu_key,
+    reflow,
+    sanitize_text,
+    screen_title,
+)
 
 
 class ReviewAction(Enum):
@@ -188,18 +199,30 @@ async def review_composition(
     commit_label: str,
 ) -> ReviewAction:
     """Render a complete draft and return one explicit review action."""
-    await session.write_line(colored("\r\nReview composition", fg_color=HEADER_COLOR, bold=True))
+    heading = screen_title(
+        "Review composition",
+        breadcrumb=("NetBBS", "Compose"),
+        subtitle="Check the draft before continuing",
+        width=session.terminal_width,
+    )
+    await session.write_line(f"\r\n{heading}")
     if recipient is not None:
-        await session.write_line(f"To: {sanitize_text(recipient)}")
-    await session.write_line(f"Subject: {sanitize_text(subject)}")
-    await session.write_line(colored("Body:", fg_color=MUTED_COLOR))
+        await session.write_line(
+            colored("To: ", fg_color=LABEL_COLOR)
+            + colored(sanitize_text(recipient), fg_color=ACCENT_COLOR)
+        )
+    await session.write_line(
+        colored("Subject: ", fg_color=LABEL_COLOR)
+        + colored(sanitize_text(subject), fg_color=ACCENT_COLOR, bold=True)
+    )
+    await session.write_line(colored("Body", fg_color=MUTED_COLOR, bold=True))
     await session.write_line(_preview_body(body, session.terminal_width))
 
     options = [menu_key(commit_key.upper(), commit_label)]
     if recipient is not None:
         options.append(menu_key("T", "o"))
     options.extend([menu_key("U", "pdate subject"), menu_key("B", "ody"), menu_key("C", "ancel")])
-    await session.write_line("  ".join(options))
+    await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
     await session.write("Choice: ")
 
     actions = {

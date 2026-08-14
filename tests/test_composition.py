@@ -78,8 +78,10 @@ def test_review_renders_all_fields_and_returns_explicit_actions():
     )
     text = _text(session)
     assert action is ReviewAction.EDIT_RECIPIENT
-    assert "To: bob" in text
-    assert "Subject: Hello" in text
+    assert "NetBBS / Compose / Review composition" in text
+    assert "Check the draft before continuing" in text
+    assert "To: " in text and "bob" in text
+    assert "Subject: " in text and "Hello" in text
     assert "first\nsecond" in text
     assert "\b" in text  # unsupported key was visibly rejected
 

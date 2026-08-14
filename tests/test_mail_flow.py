@@ -124,7 +124,8 @@ def test_main_menu_e_key_opens_mail(tmp_path):
         _main_menu(session, db, ChatHub(), PresenceRegistry(), MessageMailbox(), InputHistory(), bob, lane=lane)
     )
 
-    assert "Mail:" in _written_text(session)
+    assert "NetBBS / Mail" in _written_text(session)
+    assert "Inbox caught up" in _written_text(session)
     lane.close()
     db.close()
 
@@ -175,10 +176,10 @@ def test_inbox_shows_unread_marker_and_opening_marks_read(tmp_path):
     asyncio.run(browse_mail(session, lane, bob))
 
     text = _written_text(session)
-    assert "* Hello" in text  # unread marker on the inbox listing
+    assert "[NEW] Hello" in text  # explicit unread marker on the inbox listing
+    assert "1 unread message" in text
     assert "How are you?" in text
-    assert colored("\r\nSubject: ", fg_color=LABEL_COLOR, bold=True) in text
-    assert colored("Hello", fg_color=ACCENT_COLOR, bold=True) in text
+    assert "NetBBS / Mail / Inbox / Hello" in text
     assert colored("From: ", fg_color=LABEL_COLOR) in text
     assert colored("alice", fg_color=ACCENT_COLOR) in text
     assert colored("Date: ", fg_color=LABEL_COLOR) in text
@@ -260,6 +261,7 @@ def test_sent_lists_recipient_and_delete_removes_it(tmp_path):
 
     text = _written_text(session)
     assert "to bob" in text
+    assert "NetBBS / Mail / Sent / Hello" in text
     assert "Message deleted." in text
     assert list_sent(db, alice) == []
     lane.close()
