@@ -4439,7 +4439,7 @@ async def _area_menu(
             return
         elif choice == "c":
             await session.write_line("")
-            await _create_area_screen(session, lane, actor)
+            await _area_screen(session, lane, actor)
             await _draw_area_menu(session)
         elif choice == "l":
             await session.write_line("")
@@ -4514,58 +4514,135 @@ async def _write_gc_report(session: Session, report: GCReport) -> None:
         await session.write_line(colored(f"Error: {error}", fg_color=MUTED_COLOR))
 
 
-async def _create_area_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
-    await session.write_line(colored("\r\nCreate file area", fg_color=HEADER_COLOR, bold=True))
-    await session.write("Name: ")
-    name = (await session.read_line()).strip()
-    if not name:
-        await session.write_line(colored("Cancelled: name cannot be blank.", fg_color=MUTED_COLOR))
-        return
-    await session.write("Description (optional): ")
-    description = (await session.read_line()).strip() or None
-    min_read_level, ok = await _prompt_optional_int(session, "Minimum read level", current=0)
-    if not ok:
-        return
-    min_write_level, ok = await _prompt_optional_int(session, "Minimum write level", current=0)
-    if not ok:
-        return
-    community_id = await _pick_optional_community(session, lane)
-    category_id = await _pick_optional_category(
-        session, lane, list_top_level=list_top_level_file_categories,
-        list_subcategories=list_file_subcategories, title="File-area category",
-        community_id=community_id, resources=await lane.run(list_file_areas),
-    )
-    pinned = await prompt_yes_no(session, "Pinned?", default=False)
-    moderated = await prompt_yes_no(session, "Moderated (uploads need approval)?", default=False)
-    await session.write("Max file age in days (blank = unlimited): ")
-    max_age_raw = (await session.read_line()).strip()
-    max_file_age_days = None
-    if max_age_raw:
-        try:
-            max_file_age_days = int(max_age_raw)
-        except ValueError:
-            await session.write_line(colored("Not a number -- cancelled.", fg_color=MUTED_COLOR))
-            return
-    min_age, ok = await _prompt_min_age(session, current=None)
-    if not ok:
-        return
-    name_requirement, ok = await _prompt_name_requirement(session, current=None)
-    if not ok:
-        return
+def _area_field_specs() -> list[FieldSpec]:
+    """One shared field list drives both create and edit (design doc,
+    dogfood feature request) -- see `_area_screen`. Identical shape to
+    `_board_field_specs`, just "file" in place of "post" throughout."""
+    return [
+        FieldSpec(
+            key="name", hotkey="n", menu_text=menu_key("N", "ame"), label="Name",
+            render=lambda d: d.get("name") or "(blank)",
+            prompt=text_field("name", required=True),
+        ),
+        FieldSpec(
+            key="description", hotkey="d", menu_text=menu_key("D", "escription"), label="Description",
+            render=lambda d: d.get("description") or "(none)",
+            prompt=text_field("description"),
+        ),
+        FieldSpec(
+            key="min_read_level", hotkey="r", menu_text=menu_key("R", "ead level"), label="Min read level",
+            render=lambda d: _optional_int_label(d.get("min_read_level")),
+            prompt=_optional_int_field("min_read_level", "Minimum read level"),
+        ),
+        FieldSpec(
+            key="min_write_level", hotkey="w", menu_text=menu_key("W", "rite level"), label="Min write level",
+            render=lambda d: _optional_int_label(d.get("min_write_level")),
+            prompt=_optional_int_field("min_write_level", "Minimum write level"),
+        ),
+        FieldSpec(
+            key="community_id", hotkey="u", menu_text=menu_key("U", "nity", prefix="Comm"), label="Community",
+            render=lambda d: d.get("community_id_label") or "(none)",
+            prompt=_community_field(),
+        ),
+        FieldSpec(
+            key="category_id", hotkey="c", menu_text=menu_key("C", "ategory"), label="Category",
+            render=lambda d: d.get("category_id_label") or "(none)",
+            prompt=_category_field(
+                list_top_level=list_top_level_file_categories, list_subcategories=list_file_subcategories,
+                title="File-area category", list_resources=list_file_areas, get_by_id=get_file_area_category_by_id,
+            ),
+        ),
+        FieldSpec(
+            key="pinned", hotkey="p", menu_text=menu_key("P", "inned"), label="Pinned",
+            render=lambda d: "yes" if d.get("pinned") else "no",
+            prompt=bool_field("pinned", "Pinned?"),
+        ),
+        FieldSpec(
+            key="moderated", hotkey="m", menu_text=menu_key("M", "oderated"), label="Moderated",
+            render=lambda d: "yes" if d.get("moderated") else "no",
+            prompt=bool_field("moderated", "Moderated (uploads need approval)?"),
+        ),
+        FieldSpec(
+            key="max_file_age_days", hotkey="x", menu_text=menu_key("X", " file age", prefix="Ma"),
+            label="Max file age (days)",
+            render=lambda d: _optional_int_label(d.get("max_file_age_days"), none_word="unlimited"),
+            prompt=_optional_int_field("max_file_age_days", "Max file age in days"),
+        ),
+        FieldSpec(
+            key="min_age", hotkey="g", menu_text=menu_key("G", "e", prefix="Min a"), label="Min age",
+            render=lambda d: _optional_int_label(d.get("min_age")),
+            prompt=_min_age_field(),
+        ),
+        FieldSpec(
+            key="name_requirement", hotkey="q", menu_text=menu_key("Q", "uirement", prefix="Name req"),
+            label="Name requirement",
+            render=lambda d: d.get("name_requirement") or "none",
+            prompt=_name_requirement_field(),
+        ),
+    ]
 
-    try:
-        area = await lane.run(
-            create_file_area,
-            name, description=description, min_read_level=min_read_level,
-            min_write_level=min_write_level, category_id=category_id, pinned=pinned,
-            moderated=moderated, max_file_age_days=max_file_age_days,
-            min_age=min_age, name_requirement=name_requirement,
-            community_id=community_id, creator=actor,
+
+async def _area_screen(
+    session: Session, lane: DatabaseLane, actor: User, *, existing: FileArea | None = None
+) -> FileArea | None:
+    """Unified create/edit screen -- see `_board_screen`'s own
+    docstring for the general shape and reasoning, identical here."""
+    if existing is not None:
+        draft = {
+            "name": existing.name, "description": existing.description,
+            "min_read_level": existing.min_read_level, "min_write_level": existing.min_write_level,
+            "community_id": existing.community_id, "category_id": existing.category_id,
+            "pinned": existing.pinned, "moderated": existing.moderated,
+            "max_file_age_days": existing.max_file_age_days, "min_age": existing.min_age,
+            "name_requirement": existing.name_requirement,
+        }
+        draft["community_id_label"] = (
+            (await lane.run(get_community, existing.community_id)).name
+            if existing.community_id is not None else None
         )
-    except FileAreaError as exc:
-        await session.write_line(colored(f"Could not create file area: {exc}", fg_color=MUTED_COLOR))
-        return
-    await session.write_line(f"Created file area {area.name!r}.")
+        draft["category_id_label"] = (
+            (await lane.run(get_file_area_category_by_id, existing.category_id)).name
+            if existing.category_id is not None else None
+        )
+    else:
+        draft = {
+            "name": "", "description": None, "min_read_level": 0, "min_write_level": 0,
+            "community_id": None, "category_id": None, "pinned": False, "moderated": False,
+            "max_file_age_days": None, "min_age": None, "name_requirement": None,
+            "community_id_label": None, "category_id_label": None,
+        }
+
+    async def save(draft: dict) -> FileArea:
+        if not draft["name"]:
+            raise FileAreaError("name cannot be blank")
+        if existing is None:
+            return await lane.run(
+                create_file_area,
+                draft["name"], description=draft["description"], min_read_level=draft["min_read_level"],
+                min_write_level=draft["min_write_level"], category_id=draft["category_id"],
+                pinned=draft["pinned"], moderated=draft["moderated"],
+                max_file_age_days=draft["max_file_age_days"], min_age=draft["min_age"],
+                name_requirement=draft["name_requirement"], community_id=draft["community_id"], creator=actor,
+            )
+        return await lane.run(
+            update_file_area,
+            existing, name=draft["name"], description=draft["description"],
+            min_read_level=draft["min_read_level"], min_write_level=draft["min_write_level"],
+            category_id=draft["category_id"], pinned=draft["pinned"], moderated=draft["moderated"],
+            max_file_age_days=draft["max_file_age_days"], min_age=draft["min_age"],
+            name_requirement=draft["name_requirement"], community_id=draft["community_id"], changed_by=actor,
+        )
+
+    area = await edit_resource_draft(
+        session, lane,
+        title="Edit file area" if existing is not None else "Create file area",
+        fields=_area_field_specs(), draft=draft, save=save, error_type=FileAreaError,
+        save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+    )
+    if area is not None:
+        verb = "Updated" if existing is not None else "Created file area"
+        await session.write_line(f"{verb} {area.name!r}.")
+    return area
 
 
 async def _list_areas_screen(
@@ -4604,7 +4681,7 @@ async def _area_detail_screen(
             return
         elif choice == "e":
             await session.write_line("")
-            updated = await _edit_area_screen(session, lane, actor, area)
+            updated = await _area_screen(session, lane, actor, existing=area)
             if updated is not None:
                 area = updated
             await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context)
@@ -4725,64 +4802,6 @@ async def _link_area_screen(session: Session, lane: DatabaseLane, area: FileArea
     await session.write_line(f"Linked {area.name!r} -- it will be pushed to peers on the next sync pass.")
 
 
-async def _edit_area_screen(session: Session, lane: DatabaseLane, actor: User, area: FileArea) -> FileArea | None:
-    await session.write(f"Name [{area.name}]: ")
-    name = (await session.read_line()).strip() or area.name
-    await session.write(f"Description [{area.description or '(none)'}]: ")
-    description = (await session.read_line()).strip() or area.description
-    min_read_level, ok = await _prompt_optional_int(session, "Minimum read level", current=area.min_read_level)
-    if not ok:
-        return None
-    min_write_level, ok = await _prompt_optional_int(session, "Minimum write level", current=area.min_write_level)
-    if not ok:
-        return None
-    change_community = await prompt_yes_no(session, "Change Community?", default=False)
-    community_id = area.community_id
-    if change_community:
-        community_id = await _pick_optional_community(session, lane)
-    change_category = await prompt_yes_no(session, "Change category?", default=False)
-    category_id = area.category_id
-    if change_category:
-        category_id = await _pick_optional_category(
-            session, lane, list_top_level=list_top_level_file_categories,
-            list_subcategories=list_file_subcategories, title="File-area category",
-            community_id=community_id, resources=await lane.run(list_file_areas),
-        )
-    pinned = await prompt_yes_no_or_keep(session, "Pinned?", current=area.pinned)
-    moderated = await prompt_yes_no_or_keep(session, "Moderated?", current=area.moderated)
-    current_age = area.max_file_age_days if area.max_file_age_days is not None else "unlimited"
-    await session.write(f"Max file age in days [{current_age}] (blank = keep, 'none' = unlimited): ")
-    max_age_raw = (await session.read_line()).strip()
-    max_file_age_days = area.max_file_age_days
-    if max_age_raw.lower() == "none":
-        max_file_age_days = None
-    elif max_age_raw:
-        try:
-            max_file_age_days = int(max_age_raw)
-        except ValueError:
-            await session.write_line(colored("Not a number -- cancelled.", fg_color=MUTED_COLOR))
-            return None
-    min_age, ok = await _prompt_min_age(session, current=area.min_age)
-    if not ok:
-        return None
-    name_requirement, ok = await _prompt_name_requirement(session, current=area.name_requirement)
-    if not ok:
-        return None
-
-    try:
-        updated = await lane.run(
-            update_file_area,
-            area, name=name, description=description, min_read_level=min_read_level,
-            min_write_level=min_write_level, category_id=category_id, pinned=pinned,
-            moderated=moderated, max_file_age_days=max_file_age_days,
-            min_age=min_age, name_requirement=name_requirement,
-            community_id=community_id, changed_by=actor,
-        )
-    except FileAreaError as exc:
-        await session.write_line(colored(f"Could not update file area: {exc}", fg_color=MUTED_COLOR))
-        return None
-    await session.write_line(f"Updated {updated.name!r}.")
-    return updated
 
 
 async def _delete_area_screen(session: Session, lane: DatabaseLane, actor: User, area: FileArea) -> bool:

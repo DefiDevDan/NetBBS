@@ -2202,12 +2202,14 @@ def test_approving_a_pending_post_on_a_linked_board_queues_a_board_post(db, lane
 
 
 def test_create_and_delete_area_flow(db, lane, sysop):
+    # m,f -> file-area menu; c -> the shared draft editor (design doc,
+    # dogfood feature request) -- n(ame)/d(escription) select a field,
+    # then [S]ave; every other field keeps its own default.
     inputs = [
         "m", "f", "c",
-        "Docs", "Documents area", "0", "0",
-        "n",  # assign a Community? no
-        "n", "n", "n", "",
-        "", "",  # min age, name requirement -- both blank, no gate
+        "n", "Docs",
+        "d", "Documents area",
+        "s",
         "l", "0", "1", "d", "Docs",
         "b", "b", "b",
     ]
@@ -2219,6 +2221,31 @@ def test_create_and_delete_area_flow(db, lane, sysop):
     assert "Created file area 'Docs'." in text
     assert "'Docs' deleted." in text
     assert list_file_areas(db) == []
+
+
+def test_create_area_can_be_cancelled_without_creating_anything(db, lane, sysop):
+    """Dogfood item 6: [B]ack on the shared draft editor discards the
+    whole draft, even after fields were already filled in."""
+    inputs = ["m", "f", "c", "n", "Abandoned", "b", "b", "b", "b"]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+    from netbbs.files.areas import list_file_areas
+
+    assert list_file_areas(db) == []
+
+
+def test_edit_file_area_flow(db, lane, sysop):
+    from netbbs.files.areas import create_file_area, get_file_area_by_name
+
+    create_file_area(db, "Docs", creator=sysop)
+
+    # list -> pick(01) -> e(dit) -> rename via the field menu -> [S]ave.
+    inputs = ["m", "f", "l", "0", "1", "e", "n", "Docs2", "s", "b", "b", "b", "b"]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+
+    assert "Updated 'Docs2'" in _written_text(session)
+    assert get_file_area_by_name(db, "Docs2") is not None
 
 
 def test_gc_screen_reclaims_an_orphaned_blob(db, lane, sysop):
