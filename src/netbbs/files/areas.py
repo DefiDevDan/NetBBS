@@ -29,10 +29,11 @@ from netbbs.moderation.log import record_action
 from netbbs.storage.database import Database
 from netbbs.timeutil import utc_now_iso
 
-# Mirrors netbbs.boards.boards._VALID_SORT_ORDERS exactly — same three
+# Mirrors netbbs.boards.boards._VALID_SORT_ORDERS exactly — same four
 # signals are meaningful for file areas as for boards: activity (most
-# recent upload), alphabetical, and volume (file count).
-_VALID_SORT_ORDERS = ("activity", "alphabetical", "volume")
+# recent upload), alphabetical, recent (newest area first), and volume
+# (file count).
+_VALID_SORT_ORDERS = ("activity", "alphabetical", "recent", "volume")
 
 
 class FileAreaError(Exception):
@@ -176,6 +177,7 @@ def list_file_areas(db: Database, *, order_by: str = "activity") -> list[FileAre
         creation time) -- pending/expired entries don't count, same
         reasoning as list_boards (GitHub issue #36).
       - "alphabetical": by name, case-insensitive.
+      - "recent": newest area first, by the area's own creation time.
       - "volume": count of approved, non-expired files, highest first
         -- not a raw row count (GitHub issue #36).
 
@@ -207,6 +209,10 @@ def list_file_areas(db: Database, *, order_by: str = "activity") -> list[FileAre
     if order_by == "alphabetical":
         rows = db.connection.execute(
             "SELECT * FROM file_areas ORDER BY pinned DESC, name COLLATE NOCASE ASC"
+        ).fetchall()
+    elif order_by == "recent":
+        rows = db.connection.execute(
+            "SELECT * FROM file_areas ORDER BY pinned DESC, created_at DESC"
         ).fetchall()
     elif order_by == "volume":
         now = utc_now_iso()

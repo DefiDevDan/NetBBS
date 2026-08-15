@@ -126,6 +126,9 @@ def delete_category(db: Database, category: FileAreaCategory, *, deleted_by: Use
         "UPDATE file_area_categories SET parent_category_id = NULL WHERE parent_category_id = ?",
         (category.id,),
     )
+    db.connection.execute(
+        "DELETE FROM user_sort_preferences WHERE resource_kind = 'file_area' AND category_id = ?", (category.id,)
+    )
     db.connection.execute("DELETE FROM file_area_categories WHERE id = ?", (category.id,))
     db.connection.commit()
 

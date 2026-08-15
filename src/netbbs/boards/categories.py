@@ -138,6 +138,12 @@ def delete_category(db: Database, category: Category, *, deleted_by: User) -> No
     (verified unsafe by direct testing, not by inspection, when the
     referencing and referenced tables are rebuilt in the same
     migration).
+
+    Any per-user sort-preference override scoped to this category
+    (`netbbs.sort_preferences`) is removed too -- unlike a board's own
+    `category_id`, there's no "falls back to uncategorized" concept for
+    an override that named this specific category; it just stops
+    applying, the same as any other override whose target is gone.
     """
     record_action(
         db, actor=deleted_by, action="delete_board_category", object_type="board_category",
@@ -147,6 +153,9 @@ def delete_category(db: Database, category: Category, *, deleted_by: User) -> No
     db.connection.execute(
         "UPDATE board_categories SET parent_category_id = NULL WHERE parent_category_id = ?",
         (category.id,),
+    )
+    db.connection.execute(
+        "DELETE FROM user_sort_preferences WHERE resource_kind = 'board' AND category_id = ?", (category.id,)
     )
     db.connection.execute("DELETE FROM board_categories WHERE id = ?", (category.id,))
     db.connection.commit()

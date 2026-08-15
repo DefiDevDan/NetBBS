@@ -152,27 +152,43 @@ def get_channel_by_name(db: Database, name: str) -> Channel:
     return _row_to_channel(row)
 
 
-def list_channels(db: Database) -> list[Channel]:
-    """
-    List all channels, pinned first, then alphabetically.
+_VALID_SORT_ORDERS = ("alphabetical", "recent")
 
-    Deliberately doesn't offer an "activity" sort here the way
-    `netbbs.boards.boards.list_boards` does — chat messages aren't
-    persisted (see `netbbs.chat.hub`'s module docstring), so there's no
-    stored history to compute "most recent activity" from. That signal
-    exists only in-memory, via `netbbs.chat.hub.ChatHub.last_activity`,
-    which the caller (see `netbbs.net.chat_flow`) combines with this
-    function's output — keeping this module free of any dependency on
-    the in-memory hub, a cleaner separation than threading `ChatHub`
-    through the storage layer.
+
+def list_channels(db: Database, *, order_by: str = "alphabetical") -> list[Channel]:
+    """
+    List all channels, pinned first, then in the chosen `order_by`:
+
+      - "alphabetical" (default): by name, case-insensitive.
+      - "recent": newest channel first, by its own creation time.
+
+    Deliberately doesn't offer `netbbs.boards.boards.list_boards`'s
+    "activity"/"volume" modes *here* — chat messages aren't persisted
+    (see `netbbs.chat.hub`'s module docstring), so there's no stored
+    history in this table to rank by. Those two signals exist only
+    in-memory, via `netbbs.chat.hub.ChatHub.last_activity`/
+    `participant_count`, which the caller (`netbbs.net.chat_flow`'s
+    `_pick_channel`) combines with this function's own alphabetical
+    output when a user has actually chosen one of them
+    (`netbbs.sort_preferences`) — keeping this module free of any
+    dependency on the in-memory hub, a cleaner separation than
+    threading `ChatHub` through the storage layer.
 
     Same "caller filters by level" pattern as
     `netbbs.boards.boards.list_boards` — see that function's docstring
     for why filtering isn't baked in here either.
     """
-    rows = db.connection.execute(
-        "SELECT * FROM channels ORDER BY pinned DESC, name COLLATE NOCASE ASC"
-    ).fetchall()
+    if order_by not in _VALID_SORT_ORDERS:
+        raise ValueError(f"order_by must be one of {_VALID_SORT_ORDERS}, got {order_by!r}")
+
+    if order_by == "recent":
+        rows = db.connection.execute(
+            "SELECT * FROM channels ORDER BY pinned DESC, created_at DESC"
+        ).fetchall()
+    else:  # "alphabetical"
+        rows = db.connection.execute(
+            "SELECT * FROM channels ORDER BY pinned DESC, name COLLATE NOCASE ASC"
+        ).fetchall()
     return [_row_to_channel(row) for row in rows]
 
 

@@ -126,6 +126,35 @@ def test_list_boards_alphabetical_order_is_case_insensitive(db, alice):
     assert [b.name for b in boards] == ["apple", "Banana", "Zebra"]
 
 
+def test_list_boards_recent_order_is_by_creation_time_not_activity(db, alice):
+    """Unlike "activity", "recent" must not move once a board's own
+    creation time is fixed -- newest-created board first, regardless of
+    which board has the freshest post."""
+    first = create_board(db, "first", creator=alice)
+    create_board(db, "second", creator=alice)
+    db.connection.execute(
+        "UPDATE boards SET created_at = ? WHERE name = ?",
+        ("2026-01-01T00:00:00.000000Z", "first"),
+    )
+    db.connection.execute(
+        "UPDATE boards SET created_at = ? WHERE name = ?",
+        ("2026-01-02T00:00:00.000000Z", "second"),
+    )
+    db.connection.commit()
+
+    # A fresh post on the older board would flip "activity" order, but
+    # "recent" must stay keyed on created_at alone.
+    post = create_post(db, first, alice, "New activity", "does not affect recent order")
+    db.connection.execute(
+        "UPDATE posts SET created_at = ? WHERE id = ?",
+        ("2026-01-03T00:00:00.000000Z", post.id),
+    )
+    db.connection.commit()
+
+    boards = list_boards(db, order_by="recent")
+    assert [b.name for b in boards] == ["second", "first"]
+
+
 def test_list_boards_volume_order_is_by_post_count_descending(db, alice):
     quiet = create_board(db, "quiet", creator=alice)
     medium = create_board(db, "medium", creator=alice)

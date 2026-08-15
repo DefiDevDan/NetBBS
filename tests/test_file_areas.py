@@ -133,6 +133,33 @@ def test_list_file_areas_alphabetical_order_is_case_insensitive(db, alice):
     assert [a.name for a in areas] == ["apple", "Banana", "Zebra"]
 
 
+def test_list_file_areas_recent_order_is_by_creation_time_not_activity(db, alice):
+    """Unlike "activity", "recent" must not move once an area's own
+    creation time is fixed -- newest-created area first, regardless of
+    which area has the freshest upload."""
+    first = create_file_area(db, "first", creator=alice)
+    create_file_area(db, "second", creator=alice)
+    db.connection.execute(
+        "UPDATE file_areas SET created_at = ? WHERE name = ?",
+        ("2026-01-01T00:00:00.000000Z", "first"),
+    )
+    db.connection.execute(
+        "UPDATE file_areas SET created_at = ? WHERE name = ?",
+        ("2026-01-02T00:00:00.000000Z", "second"),
+    )
+    db.connection.commit()
+
+    entry = upload_file(db, first, alice, "readme.txt", b"hello")
+    db.connection.execute(
+        "UPDATE files SET created_at = ? WHERE id = ?",
+        ("2026-01-03T00:00:00.000000Z", entry.id),
+    )
+    db.connection.commit()
+
+    areas = list_file_areas(db, order_by="recent")
+    assert [a.name for a in areas] == ["second", "first"]
+
+
 def test_list_file_areas_volume_order_is_by_file_count_descending(db, alice):
     quiet = create_file_area(db, "quiet", creator=alice)
     busy = create_file_area(db, "busy", creator=alice)

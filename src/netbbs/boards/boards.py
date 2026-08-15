@@ -30,9 +30,12 @@ from netbbs.timeutil import utc_now_iso
 # from "activity" (most recent post) -- a board with one post today but
 # otherwise dead ranks high under activity but low under volume; a board
 # with huge historical traffic but nothing new today is the reverse.
-# Per-user sort preference is real future scope once user preferences
-# exist (not yet) -- this is the node-wide default in the meantime.
-_VALID_SORT_ORDERS = ("activity", "alphabetical", "volume")
+# Per-user sort preference (netbbs.sort_preferences, design doc) now
+# resolves which of these a given caller actually passes -- this
+# remains the node-wide default a caller falls back to before any
+# per-user resolution, and what a caller passes when it has none to
+# resolve against (e.g. an admin listing with no requesting user).
+_VALID_SORT_ORDERS = ("activity", "alphabetical", "recent", "volume")
 
 
 class BoardError(Exception):
@@ -200,6 +203,9 @@ def list_boards(db: Database, *, order_by: str = "activity") -> list[Board]:
         granularities: intra-board feed position vs. board-list
         activity ranking (GitHub issue #36).
       - "alphabetical": by name, case-insensitive.
+      - "recent": newest board first, by the board's own creation
+        time -- unlike "activity", not affected by anything that
+        happens inside the board after it's created.
       - "volume": count of logical posts with a currently-approved
         version, highest first -- not a raw row count, which would
         double-count every edit revision of the same logical post as
@@ -243,6 +249,10 @@ def list_boards(db: Database, *, order_by: str = "activity") -> list[Board]:
     if order_by == "alphabetical":
         rows = db.connection.execute(
             "SELECT * FROM boards ORDER BY pinned DESC, name COLLATE NOCASE ASC"
+        ).fetchall()
+    elif order_by == "recent":
+        rows = db.connection.execute(
+            "SELECT * FROM boards ORDER BY pinned DESC, created_at DESC"
         ).fetchall()
     elif order_by == "volume":
         now = utc_now_iso()

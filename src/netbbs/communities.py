@@ -219,6 +219,12 @@ def delete_community(db: Database, community: Community, *, deleted_by: User) ->
     member boards/channels/areas, which keep their own follow rows
     regardless of Community deletion) has that follow row removed too;
     there's no read-cursor concept for a Community itself.
+
+    Any per-user sort-preference override scoped to this Community
+    (`netbbs.sort_preferences`) is removed the same way -- a
+    category-scoped override survives, since the category and its
+    boards/channels/areas all survive too (just losing this Community,
+    same as above), unaffected by this function.
     """
     record_action(
         db, actor=deleted_by, action="delete_community", object_type="community", object_id=community.id,
@@ -231,6 +237,7 @@ def delete_community(db: Database, community: Community, *, deleted_by: User) ->
     db.connection.execute(
         "DELETE FROM user_follows WHERE object_type = 'community' AND object_id = ?", (community.id,)
     )
+    db.connection.execute("DELETE FROM user_sort_preferences WHERE community_id = ?", (community.id,))
     db.connection.execute("DELETE FROM communities WHERE id = ?", (community.id,))
     db.connection.commit()
 

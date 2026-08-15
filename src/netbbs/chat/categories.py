@@ -127,6 +127,9 @@ def delete_category(db: Database, category: Category, *, deleted_by: User) -> No
         "UPDATE channel_categories SET parent_category_id = NULL WHERE parent_category_id = ?",
         (category.id,),
     )
+    db.connection.execute(
+        "DELETE FROM user_sort_preferences WHERE resource_kind = 'channel' AND category_id = ?", (category.id,)
+    )
     db.connection.execute("DELETE FROM channel_categories WHERE id = ?", (category.id,))
     db.connection.commit()
 

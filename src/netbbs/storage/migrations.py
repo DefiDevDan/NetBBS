@@ -2363,4 +2363,57 @@ MIGRATIONS = [
         );
         """,
     ),
+    Migration(
+        description=(
+            "Dogfood feature request: per-user, per-resource-kind sort "
+            "preference for the channel/board/file-area pickers, with "
+            "Community- and category-scoped overrides (design doc). "
+            "Three specificity levels in one table rather than three: "
+            "category_id set means a category-scoped row, community_id "
+            "set (with category_id NULL) means Community-scoped, both "
+            "NULL means the bare per-kind global default. category_id "
+            "is deliberately not a single FK -- board_categories/"
+            "channel_categories/file_area_categories are three separate "
+            "tables with independent id sequences, so resource_kind is "
+            "what disambiguates a given category_id, the same polymorphic "
+            "shape moderator_grants/user_follows already use for "
+            "object_type/object_id."
+        ),
+        sql="""
+        CREATE TABLE user_sort_preferences (
+            id             INTEGER PRIMARY KEY,
+            user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            resource_kind  TEXT NOT NULL CHECK (resource_kind IN ('channel', 'board', 'file_area')),
+            community_id   INTEGER REFERENCES communities(id),
+            category_id    INTEGER,
+            sort_mode      TEXT NOT NULL CHECK (sort_mode IN ('activity', 'alphabetical', 'recent', 'volume')),
+            created_at     TEXT NOT NULL,
+            -- A category-scoped row's Community is implied by the
+            -- category itself, not stored redundantly here -- keeps
+            -- exactly one specificity dimension set at a time (global:
+            -- neither; Community: community_id only; category:
+            -- category_id only), which the three partial unique
+            -- indexes below each assume.
+            CHECK (community_id IS NULL OR category_id IS NULL)
+        );
+
+        -- SQLite treats every NULL as distinct for uniqueness purposes,
+        -- so a plain UNIQUE(user_id, resource_kind, community_id,
+        -- category_id) would not stop a user from getting two separate
+        -- global (both NULL) rows for the same resource_kind -- three
+        -- partial indexes, one per specificity level, same pattern
+        -- moderator_grants' own idx_moderator_grants_per_object/
+        -- idx_moderator_grants_blanket pair already established for an
+        -- identical NULL-means-"blanket" shape.
+        CREATE UNIQUE INDEX idx_user_sort_preferences_global
+            ON user_sort_preferences(user_id, resource_kind)
+            WHERE community_id IS NULL AND category_id IS NULL;
+        CREATE UNIQUE INDEX idx_user_sort_preferences_community
+            ON user_sort_preferences(user_id, resource_kind, community_id)
+            WHERE community_id IS NOT NULL;
+        CREATE UNIQUE INDEX idx_user_sort_preferences_category
+            ON user_sort_preferences(user_id, resource_kind, category_id)
+            WHERE category_id IS NOT NULL;
+        """,
+    ),
 ]

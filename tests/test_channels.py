@@ -74,11 +74,42 @@ def test_get_nonexistent_channel_fails(db):
         get_channel_by_name(db, "nope")
 
 
-def test_list_channels_returns_all_in_creation_order(db, alice):
+def test_list_channels_default_order_is_alphabetical(db, alice):
+    create_channel(db, "Zebra", creator=alice)
+    create_channel(db, "apple", creator=alice)
+    channels = list_channels(db)
+    assert [c.name for c in channels] == ["apple", "Zebra"]
+
+
+def test_list_channels_alphabetical_order_is_case_insensitive(db, alice):
+    create_channel(db, "Zebra", creator=alice)
+    create_channel(db, "apple", creator=alice)
+    create_channel(db, "Banana", creator=alice)
+    channels = list_channels(db, order_by="alphabetical")
+    assert [c.name for c in channels] == ["apple", "Banana", "Zebra"]
+
+
+def test_list_channels_recent_order_is_newest_creation_first(db, alice):
     create_channel(db, "first", creator=alice)
     create_channel(db, "second", creator=alice)
-    channels = list_channels(db)
-    assert [c.name for c in channels] == ["first", "second"]
+    db.connection.execute(
+        "UPDATE channels SET created_at = ? WHERE name = ?",
+        ("2026-01-01T00:00:00.000000Z", "first"),
+    )
+    db.connection.execute(
+        "UPDATE channels SET created_at = ? WHERE name = ?",
+        ("2026-01-02T00:00:00.000000Z", "second"),
+    )
+    db.connection.commit()
+
+    channels = list_channels(db, order_by="recent")
+    assert [c.name for c in channels] == ["second", "first"]
+
+
+def test_list_channels_rejects_an_unknown_order_by(db, alice):
+    create_channel(db, "lobby", creator=alice)
+    with pytest.raises(ValueError):
+        list_channels(db, order_by="volume")
 
 
 # -- update/delete -----------------------------------------------------------
