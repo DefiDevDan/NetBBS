@@ -52,7 +52,7 @@ import asyncio
 import json
 import logging
 import math
-from typing import Callable, Sequence
+from typing import Awaitable, Callable, Sequence
 
 import nacl.signing
 
@@ -74,6 +74,7 @@ from netbbs.boards.boards import Board, BoardError, create_board, delete_board, 
 from netbbs.boards.categories import Category, CategoryError
 from netbbs.boards.categories import create_category as create_board_category
 from netbbs.boards.categories import delete_category as delete_board_category
+from netbbs.boards.categories import get_category_by_id as get_board_category_by_id
 from netbbs.boards.categories import list_subcategories as list_board_subcategories
 from netbbs.boards.categories import list_top_level_categories as list_top_level_board_categories
 from netbbs.boards.posts import (
@@ -88,6 +89,7 @@ from netbbs.boards.posts import (
 from netbbs.chat.categories import CategoryError as ChannelCategoryError
 from netbbs.chat.categories import create_category as create_channel_category
 from netbbs.chat.categories import delete_category as delete_channel_category
+from netbbs.chat.categories import get_category_by_id as get_channel_category_by_id
 from netbbs.chat.categories import list_subcategories as list_channel_subcategories
 from netbbs.chat.categories import list_top_level_categories as list_top_level_channel_categories
 from netbbs.chat.channels import Channel, ChannelError, create_channel, delete_channel, list_channels, update_channel
@@ -106,6 +108,7 @@ from netbbs.files.categories import FileAreaCategory
 from netbbs.files.categories import FileAreaCategoryError as FileCategoryError
 from netbbs.files.categories import create_category as create_file_category
 from netbbs.files.categories import delete_category as delete_file_category
+from netbbs.files.categories import get_category_by_id as get_file_area_category_by_id
 from netbbs.files.categories import list_subcategories as list_file_subcategories
 from netbbs.files.categories import list_top_level_categories as list_top_level_file_categories
 from netbbs.files.gc import GCReport, reclaim_orphaned_blobs
@@ -198,6 +201,7 @@ from netbbs.moderation.roles import (
 from netbbs.net.char_input import REDRAW_KEY, REFRESH_KEY, reject_unhandled_key
 from netbbs.net.confirm import prompt_yes_no, prompt_yes_no_or_keep
 from netbbs.net.picker import pick_item
+from netbbs.net.resource_editor import FieldSpec, bool_field, edit_resource_draft, text_field
 from netbbs.net.session import Session
 from netbbs.net.session_registry import SessionSummary
 from netbbs.net.shutdown import (
@@ -3422,6 +3426,88 @@ async def _pick_optional_community(session: Session, lane: DatabaseLane) -> int 
     return selected.id if selected is not None else None
 
 
+def _optional_int_label(value: int | None, *, none_word: str = "none") -> str:
+    return str(value) if value is not None else none_word
+
+
+# -- FieldSpec adapters (design doc, dogfood feature request) --------
+#
+# Thin wrappers turning this module's own existing per-type prompt
+# helpers (above) into the `netbbs.net.resource_editor.FieldPrompt`
+# shape a draft-based create/edit screen needs: read/parse, then
+# mutate `draft[key]` in place on success, leave it untouched
+# (draft-preserving, not screen-aborting) on a rejected entry -- unlike
+# every one of these helpers' own original callers, which used to
+# treat a `False` `ok` as "abandon the entire in-progress wizard."
+
+
+def _optional_int_field(key: str, label: str) -> Callable[[Session, DatabaseLane, dict], Awaitable[None]]:
+    async def prompt(session: Session, lane: DatabaseLane, draft: dict) -> None:
+        value, ok = await _prompt_optional_int(session, label, current=draft.get(key))
+        if ok:
+            draft[key] = value
+
+    return prompt
+
+
+def _min_age_field(key: str = "min_age") -> Callable[[Session, DatabaseLane, dict], Awaitable[None]]:
+    async def prompt(session: Session, lane: DatabaseLane, draft: dict) -> None:
+        value, ok = await _prompt_min_age(session, current=draft.get(key))
+        if ok:
+            draft[key] = value
+
+    return prompt
+
+
+def _name_requirement_field(key: str = "name_requirement") -> Callable[[Session, DatabaseLane, dict], Awaitable[None]]:
+    async def prompt(session: Session, lane: DatabaseLane, draft: dict) -> None:
+        value, ok = await _prompt_name_requirement(session, current=draft.get(key))
+        if ok:
+            draft[key] = value
+
+    return prompt
+
+
+def _community_field(key: str = "community_id") -> Callable[[Session, DatabaseLane, dict], Awaitable[None]]:
+    """Also stashes the chosen Community's own name into
+    `draft[f"{key}_label"]` -- the field's `render` callback must stay
+    a pure, synchronous dict read (`edit_resource_draft`'s own
+    contract), so the name is resolved here, at prompt time, where a
+    `lane` round-trip is already in flight, rather than re-fetched on
+    every redraw."""
+
+    async def prompt(session: Session, lane: DatabaseLane, draft: dict) -> None:
+        community_id = await _pick_optional_community(session, lane)
+        draft[key] = community_id
+        community = await lane.run(get_community, community_id) if community_id is not None else None
+        draft[f"{key}_label"] = community.name if community is not None else None
+
+    return prompt
+
+
+def _category_field(
+    *, list_top_level, list_subcategories, title: str, list_resources, get_by_id
+) -> Callable[[Session, DatabaseLane, dict], Awaitable[None]]:
+    """`list_resources` is the plain `netbbs.<kind>.list_*` domain
+    function (e.g. `list_boards`) -- dispatched through `lane` here,
+    same as `_pick_optional_category`'s own existing call sites already
+    did, rather than asking every field-spec builder to pre-fetch it.
+    `get_by_id` resolves the chosen category's own name into
+    `draft["category_id_label"]`, same reasoning as `_community_field`'s
+    own `_label` companion above."""
+
+    async def prompt(session: Session, lane: DatabaseLane, draft: dict) -> None:
+        category_id = await _pick_optional_category(
+            session, lane, list_top_level=list_top_level, list_subcategories=list_subcategories,
+            title=title, community_id=draft.get("community_id"), resources=await lane.run(list_resources),
+        )
+        draft["category_id"] = category_id
+        category = await lane.run(get_by_id, category_id) if category_id is not None else None
+        draft["category_id_label"] = category.name if category is not None else None
+
+    return prompt
+
+
 def _community_label(db: Database, community_id: int | None) -> str:
     """Detail-screen display helper -- `(none)` for `community_id is
     None`, else the Community's own name (sanitized, same as every
@@ -3638,7 +3724,7 @@ async def _board_menu(
             return
         elif choice == "c":
             await session.write_line("")
-            await _create_board_screen(session, lane, actor)
+            await _board_screen(session, lane, actor)
             await _draw_board_menu(session)
         elif choice == "l":
             await session.write_line("")
@@ -3655,58 +3741,141 @@ async def _draw_board_menu(session: Session) -> None:
     await session.write("Choice: ")
 
 
-async def _create_board_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
-    await session.write_line(colored("\r\nCreate board", fg_color=HEADER_COLOR, bold=True))
-    await session.write("Name: ")
-    name = (await session.read_line()).strip()
-    if not name:
-        await session.write_line(colored("Cancelled: name cannot be blank.", fg_color=MUTED_COLOR))
-        return
-    await session.write("Description (optional): ")
-    description = (await session.read_line()).strip() or None
-    min_read_level, ok = await _prompt_optional_int(session, "Minimum read level", current=0)
-    if not ok:
-        return
-    min_write_level, ok = await _prompt_optional_int(session, "Minimum write level", current=0)
-    if not ok:
-        return
-    community_id = await _pick_optional_community(session, lane)
-    category_id = await _pick_optional_category(
-        session, lane, list_top_level=list_top_level_board_categories,
-        list_subcategories=list_board_subcategories, title="Board category",
-        community_id=community_id, resources=await lane.run(list_boards),
-    )
-    pinned = await prompt_yes_no(session, "Pinned?", default=False)
-    moderated = await prompt_yes_no(session, "Moderated (posts need approval)?", default=False)
-    await session.write("Max post age in days (blank = unlimited): ")
-    max_age_raw = (await session.read_line()).strip()
-    max_post_age_days = None
-    if max_age_raw:
-        try:
-            max_post_age_days = int(max_age_raw)
-        except ValueError:
-            await session.write_line(colored("Not a number -- cancelled.", fg_color=MUTED_COLOR))
-            return
-    min_age, ok = await _prompt_min_age(session, current=None)
-    if not ok:
-        return
-    name_requirement, ok = await _prompt_name_requirement(session, current=None)
-    if not ok:
-        return
+def _board_field_specs() -> list[FieldSpec]:
+    """One shared field list drives both create and edit (design doc,
+    dogfood feature request) -- see `_board_screen`."""
+    return [
+        FieldSpec(
+            key="name", hotkey="n", menu_text=menu_key("N", "ame"), label="Name",
+            render=lambda d: d.get("name") or "(blank)",
+            prompt=text_field("name", required=True),
+        ),
+        FieldSpec(
+            key="description", hotkey="d", menu_text=menu_key("D", "escription"), label="Description",
+            render=lambda d: d.get("description") or "(none)",
+            prompt=text_field("description"),
+        ),
+        FieldSpec(
+            key="min_read_level", hotkey="r", menu_text=menu_key("R", "ead level"), label="Min read level",
+            render=lambda d: _optional_int_label(d.get("min_read_level")),
+            prompt=_optional_int_field("min_read_level", "Minimum read level"),
+        ),
+        FieldSpec(
+            key="min_write_level", hotkey="w", menu_text=menu_key("W", "rite level"), label="Min write level",
+            render=lambda d: _optional_int_label(d.get("min_write_level")),
+            prompt=_optional_int_field("min_write_level", "Minimum write level"),
+        ),
+        FieldSpec(
+            key="community_id", hotkey="u", menu_text=menu_key("U", "nity", prefix="Comm"), label="Community",
+            render=lambda d: d.get("community_id_label") or "(none)",
+            prompt=_community_field(),
+        ),
+        FieldSpec(
+            key="category_id", hotkey="c", menu_text=menu_key("C", "ategory"), label="Category",
+            render=lambda d: d.get("category_id_label") or "(none)",
+            prompt=_category_field(
+                list_top_level=list_top_level_board_categories, list_subcategories=list_board_subcategories,
+                title="Board category", list_resources=list_boards, get_by_id=get_board_category_by_id,
+            ),
+        ),
+        FieldSpec(
+            key="pinned", hotkey="p", menu_text=menu_key("P", "inned"), label="Pinned",
+            render=lambda d: "yes" if d.get("pinned") else "no",
+            prompt=bool_field("pinned", "Pinned?"),
+        ),
+        FieldSpec(
+            key="moderated", hotkey="m", menu_text=menu_key("M", "oderated"), label="Moderated",
+            render=lambda d: "yes" if d.get("moderated") else "no",
+            prompt=bool_field("moderated", "Moderated (posts need approval)?"),
+        ),
+        FieldSpec(
+            key="max_post_age_days", hotkey="x", menu_text=menu_key("X", " post age", prefix="Ma"),
+            label="Max post age (days)",
+            render=lambda d: _optional_int_label(d.get("max_post_age_days"), none_word="unlimited"),
+            prompt=_optional_int_field("max_post_age_days", "Max post age in days"),
+        ),
+        FieldSpec(
+            key="min_age", hotkey="g", menu_text=menu_key("G", "e", prefix="Min a"), label="Min age",
+            render=lambda d: _optional_int_label(d.get("min_age")),
+            prompt=_min_age_field(),
+        ),
+        FieldSpec(
+            key="name_requirement", hotkey="q", menu_text=menu_key("Q", "uirement", prefix="Name req"),
+            label="Name requirement",
+            render=lambda d: d.get("name_requirement") or "none",
+            prompt=_name_requirement_field(),
+        ),
+    ]
 
-    try:
-        board = await lane.run(
-            create_board,
-            name, description=description, min_read_level=min_read_level,
-            min_write_level=min_write_level, category_id=category_id, pinned=pinned,
-            moderated=moderated, max_post_age_days=max_post_age_days,
-            min_age=min_age, name_requirement=name_requirement,
-            community_id=community_id, creator=actor,
+
+async def _board_screen(
+    session: Session, lane: DatabaseLane, actor: User, *, existing: Board | None = None
+) -> Board | None:
+    """Unified create/edit screen (design doc, dogfood feature request):
+    creating a board is editing a fresh draft of defaults, then [S]ave
+    inserts instead of updates -- every field addressable independently,
+    in any order, and [B]ack discards the whole draft with nothing ever
+    written to the database, directly answering the "no way to cancel
+    mid-creation" complaint. Editing an existing board no longer walks
+    the same linear step-by-step wizard creating one does -- both are
+    now this one screen. See `netbbs.net.resource_editor`'s own module
+    docstring for the general shape."""
+    if existing is not None:
+        draft = {
+            "name": existing.name, "description": existing.description,
+            "min_read_level": existing.min_read_level, "min_write_level": existing.min_write_level,
+            "community_id": existing.community_id, "category_id": existing.category_id,
+            "pinned": existing.pinned, "moderated": existing.moderated,
+            "max_post_age_days": existing.max_post_age_days, "min_age": existing.min_age,
+            "name_requirement": existing.name_requirement,
+        }
+        draft["community_id_label"] = (
+            (await lane.run(get_community, existing.community_id)).name
+            if existing.community_id is not None else None
         )
-    except BoardError as exc:
-        await session.write_line(colored(f"Could not create board: {exc}", fg_color=MUTED_COLOR))
-        return
-    await session.write_line(f"Created board {board.name!r}.")
+        draft["category_id_label"] = (
+            (await lane.run(get_board_category_by_id, existing.category_id)).name
+            if existing.category_id is not None else None
+        )
+    else:
+        draft = {
+            "name": "", "description": None, "min_read_level": 0, "min_write_level": 0,
+            "community_id": None, "category_id": None, "pinned": False, "moderated": False,
+            "max_post_age_days": None, "min_age": None, "name_requirement": None,
+            "community_id_label": None, "category_id_label": None,
+        }
+
+    async def save(draft: dict) -> Board:
+        if not draft["name"]:
+            raise BoardError("name cannot be blank")
+        if existing is None:
+            return await lane.run(
+                create_board,
+                draft["name"], description=draft["description"], min_read_level=draft["min_read_level"],
+                min_write_level=draft["min_write_level"], category_id=draft["category_id"],
+                pinned=draft["pinned"], moderated=draft["moderated"],
+                max_post_age_days=draft["max_post_age_days"], min_age=draft["min_age"],
+                name_requirement=draft["name_requirement"], community_id=draft["community_id"], creator=actor,
+            )
+        return await lane.run(
+            update_board,
+            existing, name=draft["name"], description=draft["description"],
+            min_read_level=draft["min_read_level"], min_write_level=draft["min_write_level"],
+            category_id=draft["category_id"], pinned=draft["pinned"], moderated=draft["moderated"],
+            max_post_age_days=draft["max_post_age_days"], min_age=draft["min_age"],
+            name_requirement=draft["name_requirement"], community_id=draft["community_id"], changed_by=actor,
+        )
+
+    board = await edit_resource_draft(
+        session, lane,
+        title="Edit board" if existing is not None else "Create board",
+        fields=_board_field_specs(), draft=draft, save=save, error_type=BoardError,
+        save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+    )
+    if board is not None:
+        verb = "Updated" if existing is not None else "Created board"
+        await session.write_line(f"{verb} {board.name!r}.")
+    return board
 
 
 async def _list_boards_screen(
@@ -3747,7 +3916,7 @@ async def _board_detail_screen(
             return
         elif choice == "e":
             await session.write_line("")
-            updated = await _edit_board_screen(session, lane, actor, board)
+            updated = await _board_screen(session, lane, actor, existing=board)
             if updated is not None:
                 board = updated
             is_origin, has_incoming_offer, is_closed = await _draw_board_detail(
@@ -4137,66 +4306,6 @@ async def _draw_board_detail(
     await session.write_line(f"\r\n{'  '.join(options)}")
     await session.write("Choice: ")
     return is_origin, has_incoming_offer, is_closed
-
-
-async def _edit_board_screen(session: Session, lane: DatabaseLane, actor: User, board: Board) -> Board | None:
-    await session.write(f"Name [{board.name}]: ")
-    name = (await session.read_line()).strip() or board.name
-    await session.write(f"Description [{board.description or '(none)'}]: ")
-    description = (await session.read_line()).strip() or board.description
-    min_read_level, ok = await _prompt_optional_int(session, "Minimum read level", current=board.min_read_level)
-    if not ok:
-        return None
-    min_write_level, ok = await _prompt_optional_int(session, "Minimum write level", current=board.min_write_level)
-    if not ok:
-        return None
-    change_community = await prompt_yes_no(session, "Change Community?", default=False)
-    community_id = board.community_id
-    if change_community:
-        community_id = await _pick_optional_community(session, lane)
-    change_category = await prompt_yes_no(session, "Change category?", default=False)
-    category_id = board.category_id
-    if change_category:
-        category_id = await _pick_optional_category(
-            session, lane, list_top_level=list_top_level_board_categories,
-            list_subcategories=list_board_subcategories, title="Board category",
-            community_id=community_id, resources=await lane.run(list_boards),
-        )
-    pinned = await prompt_yes_no_or_keep(session, "Pinned?", current=board.pinned)
-    moderated = await prompt_yes_no_or_keep(session, "Moderated?", current=board.moderated)
-    current_age = board.max_post_age_days if board.max_post_age_days is not None else "unlimited"
-    await session.write(f"Max post age in days [{current_age}] (blank = keep, 'none' = unlimited): ")
-    max_age_raw = (await session.read_line()).strip()
-    max_post_age_days = board.max_post_age_days
-    if max_age_raw.lower() == "none":
-        max_post_age_days = None
-    elif max_age_raw:
-        try:
-            max_post_age_days = int(max_age_raw)
-        except ValueError:
-            await session.write_line(colored("Not a number -- cancelled.", fg_color=MUTED_COLOR))
-            return None
-    min_age, ok = await _prompt_min_age(session, current=board.min_age)
-    if not ok:
-        return None
-    name_requirement, ok = await _prompt_name_requirement(session, current=board.name_requirement)
-    if not ok:
-        return None
-
-    try:
-        updated = await lane.run(
-            update_board,
-            board, name=name, description=description, min_read_level=min_read_level,
-            min_write_level=min_write_level, category_id=category_id, pinned=pinned,
-            moderated=moderated, max_post_age_days=max_post_age_days,
-            min_age=min_age, name_requirement=name_requirement,
-            community_id=community_id, changed_by=actor,
-        )
-    except BoardError as exc:
-        await session.write_line(colored(f"Could not update board: {exc}", fg_color=MUTED_COLOR))
-        return None
-    await session.write_line(f"Updated {updated.name!r}.")
-    return updated
 
 
 async def _delete_board_screen(session: Session, lane: DatabaseLane, actor: User, board: Board) -> bool:

@@ -1765,16 +1765,18 @@ def test_lock_and_drain_screen_never_disables_maintenance_that_predates_it(db, l
 
 
 def test_create_board_flow(db, lane, sysop):
+    # m,m -> board menu; c -> the shared draft editor (design doc,
+    # dogfood feature request): n(ame)/d(escription)/m(oderated) select
+    # a field, then [S]ave -- every other field stays at its own
+    # sensible default (read/write level 0, not pinned, no age/name
+    # gate) without needing an explicit keystroke per field, unlike the
+    # old linear wizard this replaced.
     inputs = [
         "m", "m", "c",
-        "General", "A general board", "0", "0",
-        "n",  # assign a Community? no
-        "n",  # assign category? no
-        "n",  # pinned? no
-        "y",  # moderated? yes
-        "",   # max age blank = unlimited
-        "",   # min age blank = no gate
-        "",   # name requirement blank = no gate
+        "n", "General",
+        "d", "A general board",
+        "m", "y",
+        "s",
         "b", "b", "b",
     ]
     session = FakeSession(inputs)
@@ -1787,22 +1789,31 @@ def test_create_board_flow(db, lane, sysop):
     assert "Created board" in _written_text(session)
 
 
+def test_create_board_can_be_cancelled_without_creating_anything(db, lane, sysop):
+    """Dogfood item 6: no way to cancel mid-creation used to mean
+    finishing the wizard and deleting the result afterward -- [B]ack on
+    the shared draft editor now discards the whole draft, even after
+    fields were already filled in, with nothing ever written."""
+    inputs = ["m", "m", "c", "n", "Abandoned", "b", "b", "b", "b"]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+    from netbbs.boards.boards import list_boards
+
+    assert list_boards(db) == []
+
+
 def test_edit_and_delete_board_flow(db, lane, sysop):
     from netbbs.boards.boards import create_board, list_boards
 
     create_board(db, "General", creator=sysop)
 
-    # list -> pick(01) -> e(dit) -> new name, blank desc(keep), blank
-    # read level(keep), blank write level(keep), n(don't change
-    # Community), n(don't change category), y(pin), n(mod),
-    # 'none'(unlimited), blank(keep min age), blank(keep name
-    # requirement) -> back to detail -> d(elete) -> retype new name ->
-    # back x3
+    # list -> pick(01) -> e(dit) -> rename via the field menu -> [S]ave
+    # -> back to detail -> d(elete) -> retype new name -> back x3.
+    # Every other field is left untouched (no keystroke needed to
+    # "keep" it, unlike the old linear wizard).
     inputs = [
         "m", "m", "l", "0", "1", "e",
-        "General2", "", "", "",
-        "n", "n", "y", "n", "none",
-        "", "",
+        "n", "General2", "s",
         "d", "General2",
         "b", "b", "b",
     ]
@@ -1812,6 +1823,22 @@ def test_edit_and_delete_board_flow(db, lane, sysop):
     assert "Updated 'General2'" in text
     assert "'General2' deleted." in text
     assert list_boards(db) == []
+
+
+def test_edit_board_field_menu_can_be_navigated_in_any_order(db, lane, sysop):
+    """Proves fields are independently addressable, not a fixed
+    sequence -- edits Moderated before Name, the reverse of create's
+    own field order in the test above."""
+    from netbbs.boards.boards import create_board, get_board_by_name
+
+    create_board(db, "General", creator=sysop)
+
+    inputs = ["m", "m", "l", "0", "1", "e", "m", "y", "n", "General2", "s", "b", "b", "b", "b"]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+
+    updated = get_board_by_name(db, "General2")
+    assert updated.moderated is True
 
 
 def test_sysop_approves_a_pending_post_with_zero_grants(db, lane, sysop):
@@ -2485,10 +2512,9 @@ def test_create_board_assigns_a_community(db, lane, sysop):
 
     inputs = [
         "m", "m", "c",
-        "Amiga", "Old computers", "0", "0",
-        "y", "0", "1",  # assign a Community? yes -> pick #01
-        "n",  # assign category? no
-        "n", "n", "", "", "",
+        "n", "Amiga",
+        "u", "y", "0", "1",  # Community field -> assign? yes -> pick #01
+        "s",
         "b", "b", "b",
     ]
     session = FakeSession(inputs)
@@ -2508,18 +2534,18 @@ def test_admin_category_picker_leak_prevention(db, lane, sysop):
     hardware = create_category(db, "Hardware", created_by=sysop)
     create_board(db, "elections", community_id=politics.id, category_id=hardware.id, creator=sysop)
 
-    # content menu -> boards -> create: name, description, read/write
-    # levels, assign a Community (yes, pick Vintage Computing, #02),
-    # assign a category (yes) -- "Hardware" is only used by a Politics
-    # board, so it must not be offered here (design doc §16's
-    # admin-side leak prevention): the picker reports no categories
-    # exist for this Community rather than showing Hardware.
+    # content menu -> boards -> create: set name, assign a Community
+    # (yes, pick Vintage Computing, #02), assign a category (yes) --
+    # "Hardware" is only used by a Politics board, so it must not be
+    # offered here (design doc §16's admin-side leak prevention): the
+    # picker reports no categories exist for this Community rather
+    # than showing Hardware.
     inputs = [
         "m", "m", "c",
-        "Amiga", "Old computers", "0", "0",
-        "y", "0", "2",
-        "y",
-        "n", "n", "", "", "",
+        "n", "Amiga",
+        "u", "y", "0", "2",
+        "c", "y",
+        "s",
         "b", "b", "b",
     ]
     session = FakeSession(inputs)
