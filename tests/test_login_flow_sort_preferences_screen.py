@@ -1,0 +1,143 @@
+"""
+Tests for the "Your sort preferences" review/clear screen
+(`netbbs.net.login_flow._sort_preferences_screen`, reached from
+`_edit_profile`'s own `[S]ort preferences` option) -- design doc,
+dogfood feature request: the discoverability half of the `[O]rder`
+command, so a saved override is never a silent, forgotten surprise.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import re
+
+import pytest
+
+from netbbs.auth.users import create_user
+from netbbs.communities import create_community
+from netbbs.net import login_flow
+from netbbs.net.session import Session
+from netbbs.sort_preferences import get_effective_sort_mode, set_sort_preference
+from netbbs.storage.database import Database
+
+
+class FakeSession(Session):
+    """One ordered input queue serves both `read_key()` (pick_item's
+    browsing/selection) and `read_line()` (prompt_yes_no's line-
+    oriented fallback, since read_editor_key isn't implemented here) --
+    same shape tests/test_chat_flow_picker_authorization.py's own
+    FakeSession already established for this exact mixed-input need."""
+
+    def __init__(self, inputs: list[str] | None = None):
+        self._inputs = list(inputs or [])
+        self.written: list[str] = []
+        self.terminal_width = 80
+        self.terminal_height = 24
+        self.peer_address = "203.0.113.5"
+
+    async def write(self, text: str) -> None:
+        self.written.append(text)
+
+    async def write_line(self, text: str = "") -> None:
+        self.written.append(text + "\n")
+
+    async def read_key(self, echo: bool = True) -> str:
+        return self._inputs.pop(0)
+
+    async def read_line(self, echo: bool = True, history=None, completer=None, **kwargs) -> str:
+        return self._inputs.pop(0)
+
+    async def read_editor_key(self):
+        raise NotImplementedError
+
+    async def close(self) -> None:
+        pass
+
+    async def read_byte(self) -> int | None:
+        raise NotImplementedError
+
+    async def write_raw(self, data: bytes) -> None:
+        raise NotImplementedError
+
+
+def _written_text(session: FakeSession) -> str:
+    return "".join(session.written)
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _visible_text(session: FakeSession) -> str:
+    return _ANSI_ESCAPE_RE.sub("", _written_text(session))
+
+
+@pytest.fixture
+def db(tmp_path):
+    database = Database(tmp_path / "node.db")
+    yield database
+    database.close()
+
+
+@pytest.fixture
+def alice(db):
+    return create_user(db, "alice", password="hunter2", user_level=10)
+
+
+def test_no_preferences_shows_a_friendly_empty_message(db, alice):
+    session = FakeSession([])
+    asyncio.run(login_flow._sort_preferences_screen(session, db, alice))
+    text = _written_text(session)
+    assert "no saved sort preferences" in text
+
+
+def test_global_preference_is_listed_and_can_be_cleared(db, alice):
+    # "board" (default "activity"), not "channel" -- channels default to
+    # "alphabetical" (DEFAULT_SORT_MODE_BY_KIND), so setting that exact
+    # mode wouldn't let clearing be observed against the fallback.
+    set_sort_preference(db, alice, "board", "alphabetical")
+    session = FakeSession(["0", "1", "y"])
+    asyncio.run(login_flow._sort_preferences_screen(session, db, alice))
+    text = _written_text(session)
+    assert "Boards" in text
+    assert "Global default" in text
+    assert get_effective_sort_mode(db, alice, "board") == "activity"  # cleared, back to default
+
+
+def test_declining_the_clear_confirmation_leaves_the_preference_intact(db, alice):
+    set_sort_preference(db, alice, "board", "alphabetical")
+    # The screen loops back to the picker after a decline (the
+    # preference is still there to show) -- "b" backs out of that
+    # second pass.
+    session = FakeSession(["0", "1", "n", "b"])
+    asyncio.run(login_flow._sort_preferences_screen(session, db, alice))
+    assert get_effective_sort_mode(db, alice, "board") == "alphabetical"  # not cleared
+
+
+def test_community_scoped_preference_shows_the_communitys_real_name(db, alice):
+    community = create_community(db, "Retro Computing", creator=alice)
+    set_sort_preference(db, alice, "board", "volume", community_id=community.id)
+    session = FakeSession(["b"])
+    asyncio.run(login_flow._sort_preferences_screen(session, db, alice))
+    text = _written_text(session)
+    assert "Community: Retro Computing" in text
+
+
+def test_category_scoped_preference_shows_the_categorys_real_name(db, alice):
+    from netbbs.boards.categories import create_category
+
+    category = create_category(db, "Amiga", created_by=alice)
+    set_sort_preference(db, alice, "board", "recent", category_id=category.id)
+    session = FakeSession(["b"])
+    asyncio.run(login_flow._sort_preferences_screen(session, db, alice))
+    text = _written_text(session)
+    assert "Category: Amiga" in text
+
+
+def test_profile_screen_shows_the_saved_preference_count_and_offers_the_menu_option(db, alice):
+    set_sort_preference(db, alice, "channel", "alphabetical")
+    set_sort_preference(db, alice, "board", "volume")
+    session = FakeSession(["b"])
+    asyncio.run(login_flow._edit_profile(session, db, alice))
+    text = _visible_text(session)
+    assert "Sort preferences: 2 saved" in text
+    assert "ort preferences" in text  # the [S]ort preferences menu option itself

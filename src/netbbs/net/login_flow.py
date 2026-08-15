@@ -84,7 +84,8 @@ from netbbs.boards import (
     list_posts_page,
     tombstone_post,
 )
-from netbbs.boards.categories import Category, get_category_by_id, list_subcategories, list_top_level_categories
+from netbbs.boards.categories import Category, list_subcategories, list_top_level_categories
+from netbbs.boards.categories import get_category_by_id as get_board_category_by_id
 from netbbs.chat import (
     ChatHub,
     DirectChatInvites,
@@ -93,6 +94,7 @@ from netbbs.chat import (
     format_with_preference,
     list_pending_invitations_for_user,
 )
+from netbbs.chat.categories import get_category_by_id as get_channel_category_by_id
 from netbbs.chat.channels import Channel
 from netbbs.communities import (
     Community,
@@ -115,6 +117,7 @@ from netbbs.directory import (
     set_bio_visible,
 )
 from netbbs.files.areas import FileArea, list_file_areas
+from netbbs.files.categories import get_category_by_id as get_file_area_category_by_id
 from netbbs.link.boards import (
     LinkContext,
     queue_board_post_edit_if_linked,
@@ -196,7 +199,13 @@ from netbbs.session_history import (
     session_history_name_visible,
     set_session_history_name_visible,
 )
-from netbbs.sort_preferences import get_effective_sort_mode, set_sort_preference
+from netbbs.sort_preferences import (
+    SortPreference,
+    clear_sort_preference,
+    get_effective_sort_mode,
+    list_sort_preferences,
+    set_sort_preference,
+)
 from netbbs.storage.database import Database
 from netbbs.storage.execution import DatabaseLane
 from netbbs.timeutil import format_for_display, utc_now_iso
@@ -2239,7 +2248,7 @@ async def _browse_boards_in_category(
         db, user, "board", community_id=effective_community_id, category_id=category_id
     )
     boards_here, categories_here = _load(current_mode)
-    category_name = get_category_by_id(db, category_id).name if category_id is not None else None
+    category_name = get_board_category_by_id(db, category_id).name if category_id is not None else None
     community = get_community(db, effective_community_id)
     community_name = community.name if community is not None else None
     mode_box = {"mode": current_mode}
@@ -3098,6 +3107,79 @@ async def _last_sessions_screen(session: Session, db: Database, user: User) -> N
         )
 
 
+_SORT_PREFERENCE_KIND_LABELS = {"channel": "Channels", "board": "Boards", "file_area": "File areas"}
+
+
+def _sort_preference_scope_label(db: Database, pref: SortPreference) -> str:
+    if pref.category_id is not None:
+        if pref.resource_kind == "channel":
+            name = get_channel_category_by_id(db, pref.category_id).name
+        elif pref.resource_kind == "board":
+            name = get_board_category_by_id(db, pref.category_id).name
+        else:
+            name = get_file_area_category_by_id(db, pref.category_id).name
+        return f"Category: {name}"
+    if pref.community_id is not None:
+        community = get_community(db, pref.community_id)
+        name = community.name if community is not None else f"Community #{pref.community_id}"
+        return f"Community: {name}"
+    return "Global default"
+
+
+async def _sort_preferences_screen(session: Session, db: Database, user: User) -> None:
+    """
+    Review/clear your saved sort-mode overrides (design doc, dogfood
+    feature request) -- the discoverability half of the `[O]rder`
+    command's own design conversation: a 3-level cascade is invisible
+    complexity right up until someone forgets they set an override
+    months ago and can't tell why one list looks "wrong." `netbbs.
+    sort_preferences.list_sort_preferences` deliberately returns raw
+    `community_id`/`category_id`, leaving name resolution to the
+    caller (that module's own docstring) -- this is the one place that
+    resolution happens, since no other screen needs to enumerate a
+    user's *entire* set of overrides across all three resource kinds
+    and every scope at once.
+    """
+    while True:
+        prefs = list_sort_preferences(db, user)
+        if not prefs:
+            await session.write_line(
+                colored("\r\nYou have no saved sort preferences yet.", fg_color=MUTED_COLOR)
+            )
+            await session.write_line(
+                colored(
+                    "Set one from any channel/board/file-area picker's [O]rder command.",
+                    fg_color=MUTED_COLOR,
+                )
+            )
+            return
+
+        selected = await pick_item(
+            session,
+            prefs,
+            name_of=lambda p: f"{_SORT_PREFERENCE_KIND_LABELS[p.resource_kind]} — {_sort_preference_scope_label(db, p)}",
+            stable_id_of=lambda p: p.id,
+            description_of=lambda p: SORT_MODE_LABELS[p.sort_mode],
+            title="Your sort preferences",
+            empty_message="You have no saved sort preferences yet.",
+        )
+        if selected is None:
+            return
+
+        clear = await prompt_yes_no(
+            session,
+            f"Clear this override ({_sort_preference_scope_label(db, selected)}, "
+            f"{SORT_MODE_LABELS[selected.sort_mode]})?",
+            default=False,
+        )
+        if clear:
+            clear_sort_preference(
+                db, user, selected.resource_kind,
+                community_id=selected.community_id, category_id=selected.category_id,
+            )
+            await session.write_line(colored("Cleared.", fg_color=MUTED_COLOR))
+
+
 def _profile_field(label: str, value: str, *, value_color: int = VALUE_COLOR) -> str:
     """Compose one trusted label with a separately sanitized value span."""
     return colored(f"{label}: ", fg_color=LABEL_COLOR) + colored(
@@ -3153,6 +3235,13 @@ async def _render_profile(session: Session, db: Database, user: User) -> bool:
             value_color=METADATA_COLOR,
         )
     )
+    sort_preference_count = len(list_sort_preferences(db, user))
+    await session.write_line(
+        _profile_field(
+            "Sort preferences",
+            f"{sort_preference_count} saved" if sort_preference_count else "none saved",
+        )
+    )
 
     options = [
             menu_key("E", "dit bio"),
@@ -3162,6 +3251,7 @@ async def _render_profile(session: Session, db: Database, user: User) -> bool:
             menu_key("H", "istory visibility"),
             menu_key("C", "olor depth"),
             menu_key("N", "ame & details"),
+            menu_key("S", "ort preferences"),
             menu_key("B", "ack"),
         ]
     await session.write_line("\r\n" + action_bar(options, width=session.terminal_width))
@@ -3232,6 +3322,10 @@ async def _edit_profile(session: Session, db: Database, user: User) -> None:
         elif choice == "n":
             await session.write_line("")
             await _identity_details_screen(session, db, user)
+            visible = await _render_profile(session, db, user)
+        elif choice == "s":
+            await session.write_line("")
+            await _sort_preferences_screen(session, db, user)
             visible = await _render_profile(session, db, user)
         else:
             await session.write(reject_unhandled_key(choice))
