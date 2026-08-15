@@ -216,6 +216,33 @@ def test_render_omits_topic_when_unset(db, hub, presence, channel, alice):
     assert '"' not in text
 
 
+def test_render_falls_back_to_the_description_when_no_topic_has_ever_been_set(db, hub, presence, alice):
+    # Thiesi's dogfooders: a channel's description (set at creation, and
+    # what the channel picker already shows) looked like it "vanished"
+    # from chat until someone ran /topic once -- because this row used to
+    # check only channel.topic, with no such fallback, unlike the
+    # join-header subtitle a few lines up in _chat_loop which already
+    # falls back to description. Matching that existing precedent so the
+    # two don't disagree with each other.
+    described_channel = create_channel(db, "lounge", creator=alice, description="Welcome to the lounge!")
+    assert described_channel.topic is None
+    text = _plain(chat_flow._render_chat_status_line(db, hub, presence, described_channel, alice))
+    assert '"Welcome to the lounge!"' in text
+
+
+def test_render_prefers_an_explicit_topic_over_the_description(db, hub, presence, alice):
+    described_channel = create_channel(db, "lounge", creator=alice, description="Old description")
+    grant_permissions(
+        db, alice, object_type="channel", object_id=described_channel.id,
+        permissions=ChannelPermission.EDIT, granted_by=alice,
+    )
+    set_topic(db, described_channel, "Real topic", set_by=alice)
+    described_channel = get_channel_by_name(db, described_channel.name)
+    text = _plain(chat_flow._render_chat_status_line(db, hub, presence, described_channel, alice))
+    assert '"Real topic"' in text
+    assert "Old description" not in text
+
+
 def test_render_reflects_a_topic_changed_after_the_channel_snapshot_was_taken(db, hub, presence, channel, alice):
     # `channel` here is deliberately the pre-change snapshot passed by
     # the caller -- the same shape `_chat_loop` holds for its whole

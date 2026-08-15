@@ -903,9 +903,15 @@ async def _trust_domains_screen(session: Session, lane: DatabaseLane, actor: Use
     await session.write_line(colored("\r\nTrust domains:", fg_color=HEADER_COLOR, bold=True))
     for domain in domains:
         await session.write_line(f"{domain.domain_id}: {domain.display_name} (weight {domain.weight:.2f})")
-    await session.write("[A]dd/update or [B]ack: ")
-    if (await session.read_key()).lower() != "a":
-        return
+    while True:
+        await session.write("[A]dd/update or [B]ack: ")
+        choice = (await session.read_key()).lower()
+        if choice == "b":
+            return
+        if choice == "a":
+            break
+        await session.write(reject_unhandled_key(choice))
+    await session.write_line("")
     await session.write("Domain ID: ")
     domain_id = (await session.read_line()).strip()
     await session.write("Display name: ")
@@ -914,6 +920,10 @@ async def _trust_domains_screen(session: Session, lane: DatabaseLane, actor: Use
     raw_weight = (await session.read_line()).strip()
     try:
         weight = float(raw_weight)
+    except ValueError:
+        await session.write_line(colored("Not a number -- cancelled.", fg_color=MUTED_COLOR))
+        return
+    try:
         await lane.run(
             configure_trust_domain, domain_id, display_name=display_name,
             weight=weight, actor_user_id=actor.id,
@@ -929,10 +939,15 @@ async def _trust_anchors_screen(session: Session, lane: DatabaseLane, actor: Use
     await session.write_line(colored("\r\nTrust anchors:", fg_color=HEADER_COLOR, bold=True))
     for anchor in anchors:
         await session.write_line(f"{anchor.fingerprint}: {anchor.reason}")
-    await session.write("[A]dd/update  [R]emove  [B]ack: ")
-    choice = (await session.read_key()).lower()
-    if choice not in {"a", "r"}:
-        return
+    while True:
+        await session.write("[A]dd/update  [R]emove  [B]ack: ")
+        choice = (await session.read_key()).lower()
+        if choice == "b":
+            return
+        if choice in {"a", "r"}:
+            break
+        await session.write(reject_unhandled_key(choice))
+    await session.write_line("")
     await session.write("Fingerprint: ")
     fingerprint = (await session.read_line()).strip()
     try:
@@ -972,10 +987,15 @@ async def _trust_reporters_screen(session: Session, lane: DatabaseLane, actor: U
             f"{reporter.fingerprint} domain={reporter.domain_id} scopes={scopes} "
             f"vouch(node={reporter.can_vouch_nodes}, user={reporter.can_vouch_users})"
         )
-    await session.write("[A]dd/update  [R]emove  [B]ack: ")
-    choice = (await session.read_key()).lower()
-    if choice not in {"a", "r"}:
-        return
+    while True:
+        await session.write("[A]dd/update  [R]emove  [B]ack: ")
+        choice = (await session.read_key()).lower()
+        if choice == "b":
+            return
+        if choice in {"a", "r"}:
+            break
+        await session.write(reject_unhandled_key(choice))
+    await session.write_line("")
     await session.write("Reporter fingerprint: ")
     fingerprint = (await session.read_line()).strip()
     try:
@@ -1014,10 +1034,15 @@ async def _attestation_authorities_screen(
         await session.write_line(
             colored("None. Remote attestations fail closed.", fg_color=SUCCESS_COLOR)
         )
-    await session.write("[A]dd/update  [R]emove  [B]ack: ")
-    choice = (await session.read_key()).lower()
-    if choice not in {"a", "r"}:
-        return
+    while True:
+        await session.write("[A]dd/update  [R]emove  [B]ack: ")
+        choice = (await session.read_key()).lower()
+        if choice == "b":
+            return
+        if choice in {"a", "r"}:
+            break
+        await session.write(reject_unhandled_key(choice))
+    await session.write_line("")
     await session.write("Authority node fingerprint: ")
     fingerprint = (await session.read_line()).strip()
     try:
@@ -1134,10 +1159,15 @@ async def _trust_exceptions_screen(session: Session, lane: DatabaseLane, actor: 
         )
     if not exceptions:
         await session.write_line(colored("None. Two independent domains remain required.", fg_color=SUCCESS_COLOR))
-    await session.write("[A]dd/update  [R]emove  [B]ack: ")
-    choice = (await session.read_key()).lower()
-    if choice not in {"a", "r"}:
-        return
+    while True:
+        await session.write("[A]dd/update  [R]emove  [B]ack: ")
+        choice = (await session.read_key()).lower()
+        if choice == "b":
+            return
+        if choice in {"a", "r"}:
+            break
+        await session.write(reject_unhandled_key(choice))
+    await session.write_line("")
     await session.write("Reporter fingerprint: ")
     fingerprint = (await session.read_line()).strip()
     dimension = await _pick_trust_dimension(session)

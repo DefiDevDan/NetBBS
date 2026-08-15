@@ -669,6 +669,45 @@ def test_repeated_threshold_crossings_track_the_current_height_each_time(
     assert text.endswith("\x1b[r" + "\x1b[2J\x1b[H")
 
 
+def test_resize_within_the_pinned_range_clears_the_stale_row_instead_of_leaving_it(
+    lane, hub, presence, mailbox, channel, alice
+):
+    """Dogfood report: resizing the local window (while staying well
+    above `_PINNED_UI_MIN_HEIGHT` the whole time, e.g. 24 rows to 40)
+    left the old pinned status/input rows on screen -- nothing ever
+    crossed the threshold, so the old only-on-threshold-crossing check
+    never fired, and the periodic per-message repaint redraws the
+    pinned rows at the *new* row position without ever clearing the
+    *old* one. On a grow, that stale content just became ordinary text
+    sitting in the middle of the now-taller scrollable area, covering
+    real chat until enough new lines happened to scroll past it."""
+
+    async def scenario():
+        session = _LiveTypingSession()  # starts at 24 rows, well above minimum
+        task = asyncio.create_task(
+            chat_flow._chat_loop(session, lane, hub, presence, mailbox, InputHistory(), channel, alice)
+        )
+        await asyncio.sleep(0.05)
+
+        session.terminal_height = 40  # grows, but never dips below the threshold
+        session.feed("hello")
+        session.feed_enter()
+        await asyncio.sleep(0.05)
+
+        session.feed("/quit")
+        session.feed_enter()
+        await asyncio.wait_for(task, timeout=2)
+        return session
+
+    session = asyncio.run(scenario())
+    text = session.output
+    # A fresh clear-and-repaint at the *new* height happened -- not just
+    # the ordinary per-message repaint's own set_scroll_region call
+    # (which never clears the screen), but the same clear_screen() +
+    # set_scroll_region() pair a threshold crossing already gets.
+    assert "\x1b[2J\x1b[H\x1b[1;38r" in text  # clear_screen() + set_scroll_region(1, 40 - 2)
+
+
 # -- Session.pinned_notice_hook (out-of-band notices, e.g. shutdown) --------
 
 

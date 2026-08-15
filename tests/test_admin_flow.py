@@ -229,6 +229,58 @@ def test_sysop_menu_reaches_trust_domain_configuration(db, lane, sysop):
     assert "Trust domain saved and audited." in text
 
 
+def test_trust_domains_screen_writes_a_newline_before_the_next_prompt(db, lane, sysop):
+    """Dogfood report, from a real SysOp session capture: the typed
+    choice and the next prompt rendered glued together on one line
+    ("aDomain ID:") because nothing wrote a line break between reading
+    the "[A]dd/update or [B]ack:" choice and printing the next prompt --
+    true of all five trust-config screens; this is the one the capture
+    actually showed."""
+    session = FakeSession(
+        ["s", "p", "d", "a", "friends", "Known independent operators", "0.75", "b", "b", "b"]
+    )
+    _run(session, lane, sysop)
+
+    text = _written_text(session)
+    assert "[B]ack: \r\nDomain ID: " in text
+
+
+def test_trust_domains_screen_rejects_an_unrecognized_key_and_reprompts_instead_of_exiting(
+    db, lane, sysop
+):
+    """Dogfood report, from the same capture: typing anything other than
+    "a" (e.g. a typo) at the "[A]dd/update or [B]ack:" prompt silently
+    exited back to the parent Trust policy menu with zero feedback,
+    indistinguishable from deliberately pressing [B]ack. It should
+    instead reject the key and re-prompt on the same screen."""
+    session = FakeSession(["s", "p", "d", "q", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+
+    text = _written_text(session)
+    # Re-prompted on the same screen rather than falling straight back
+    # to the parent menu -- the prompt appears twice: once before the
+    # rejected "q", once more before the "b" that actually exits.
+    assert text.count("[A]dd/update or [B]ack:") == 2
+    assert list_trust_domains(db) == []
+
+
+def test_trust_domains_screen_gives_a_friendly_message_for_a_non_numeric_weight(db, lane, sysop):
+    """Dogfood report, from the same capture: a blank/invalid weight
+    leaked Python's own exception text ("could not convert string to
+    float: ''") straight to the SysOp, instead of a message matching
+    the rest of the admin UI's numeric-input convention (_read_int's
+    "Not a number -- cancelled.")."""
+    session = FakeSession(
+        ["s", "p", "d", "a", "friends", "Known independent operators", "", "b", "b", "b"]
+    )
+    _run(session, lane, sysop)
+
+    text = _written_text(session)
+    assert "Not a number -- cancelled." in text
+    assert "could not convert string to float" not in text
+    assert list_trust_domains(db) == []
+
+
 def test_sysop_can_apply_reasoned_override_through_real_menu_path(db, lane, sysop):
     subject = TrustSubject.node("remote-node")
     register_subject(db, subject, first_accepted_at="2026-08-01T00:00:00.000000Z")

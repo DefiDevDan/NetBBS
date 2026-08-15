@@ -416,11 +416,19 @@ async def _pick_channel(
         all_channels = _visible_channels_for(db, user)
         if community_scoped:
             all_channels = [c for c in all_channels if c.community_id == community_id]
-        # Activity-sort applied before splitting by category, so ordering
-        # within each category's channel list is still most-recent-first —
-        # same node-wide default as boards (design doc).
-        all_channels.sort(key=lambda c: hub.last_activity(c.name) or c.created_at, reverse=True)
-        all_channels.sort(key=lambda c: not c.pinned)
+        # Deliberately no activity-based default here, unlike
+        # `netbbs.boards.boards.list_boards`: that function's "activity"
+        # order ranks by real, persisted, Link-synced post timestamps, so
+        # every node agrees on it. A channel's activity only exists as
+        # `netbbs.chat.hub.ChatHub.last_activity` -- in-memory, per-node,
+        # and reset on restart (that class's own docstring) -- so ranking
+        # a Linked channel by it made two nodes silently disagree on the
+        # order of the very same channel list (dogfood report). Relying
+        # instead on `_visible_channels_for`'s own order (`list_channels`'
+        # `pinned DESC, name ASC`, both real synced columns) keeps this
+        # picker's order identical everywhere. A user-selectable sort
+        # mode (activity included, opt-in and clearly node-local) is
+        # separate follow-up work, not done here.
         channels_here = [c for c in all_channels if c.category_id == category_id]
 
         categories_here = (
@@ -2401,8 +2409,9 @@ def _render_chat_status_line(
         ],
     ]
 
-    if channel.topic:
-        groups.append([_StatusSpan(f'"{sanitize_text(channel.topic)}"', fg_color=TOPIC_COLOR, bold=True)])
+    topic_text = channel.topic or channel.description
+    if topic_text:
+        groups.append([_StatusSpan(f'"{sanitize_text(topic_text)}"', fg_color=TOPIC_COLOR, bold=True)])
 
     nick = get_nick(db, user)
     identity: _StatusGroup = [_StatusSpan(sanitize_text(user.username), fg_color=SELF_COLOR, bold=True)]
@@ -2737,9 +2746,26 @@ class _PinnedUIState:
     `receive_loop`/`send_loop` must always agree on which regime is
     currently active rather than each independently guessing from a
     possibly-stale read of `terminal_height`.
+
+    A dogfood report (GitHub issue tracker, real SysOp reproduction)
+    found the gap this only-on-threshold-crossing check originally left:
+    resizing *within* the pinned-UI-active range (e.g. 24 rows to 40,
+    both above `_PINNED_UI_MIN_HEIGHT`) never re-triggered the `if`
+    block at all, since `now_active` stayed `True` throughout. The
+    pinned status/input rows were still redrawn (every other call site's
+    own periodic repaint re-issues `set_scroll_region` from whatever
+    height it's handed), but always at the *new* row position -- nothing
+    ever cleared the *old* one. On a grow, that stale row simply became
+    ordinary content sitting in the middle of the now-taller scrollable
+    area, covering real chat until enough new lines scrolled past it.
+    `last_height` tracks the height `sync()` last actually saw, so a
+    plain in-range resize gets the exact same clear-and-repaint treatment
+    a threshold crossing already does, rather than a different, lesser
+    one invented just for this case.
     """
 
     active: bool
+    last_height: int | None = None
 
     async def sync(
         self,
@@ -2751,17 +2777,20 @@ class _PinnedUIState:
         user: User,
         live_buffer: LiveInputBuffer,
     ) -> bool:
-        now_active = session.terminal_height >= _PINNED_UI_MIN_HEIGHT
-        if now_active != self.active:
+        height = session.terminal_height
+        now_active = height >= _PINNED_UI_MIN_HEIGHT
+        resized_in_place = now_active and self.active and height != self.last_height
+        if now_active != self.active or resized_in_place:
             if now_active:
                 await session.write(
-                    clear_screen() + set_scroll_region(1, session.terminal_height - 2)
+                    clear_screen() + set_scroll_region(1, height - 2)
                 )
                 await _repaint_status_line(session, lane, hub, presence, channel, user)
-                await _repaint_input_row(session, live_buffer, session.terminal_height)
+                await _repaint_input_row(session, live_buffer, height)
             else:
                 await session.write(reset_scroll_region() + clear_screen())
             self.active = now_active
+        self.last_height = height
         return self.active
 
 
@@ -2977,7 +3006,7 @@ async def _chat_loop(
         # activation work itself (and repainting the status/input rows here
         # would be premature -- scrollback and the join notice haven't been
         # written yet).
-        pinned_ui = _PinnedUIState(active=pinned_ui_enabled)
+        pinned_ui = _PinnedUIState(active=pinned_ui_enabled, last_height=session.terminal_height)
         if pinned_ui_enabled:
             await session.write(clear_screen() + set_scroll_region(1, session.terminal_height - 2))
 
@@ -3674,7 +3703,8 @@ async def _repaint_direct_chat_status_line(
 @dataclass
 class _DirectChatPinnedUIState:
     """Direct-chat sibling of `_PinnedUIState` (GitHub issue #46) -- same
-    resize-tracking shape, calling this module's own DM status-line
+    resize-tracking shape (including `last_height`'s own in-range-resize
+    fix, a dogfood report), calling this module's own DM status-line
     repaint instead of the channel one. Kept as its own small class
     rather than generalizing `_PinnedUIState` itself: the two would
     otherwise need an injectable repaint callback for one caller, and
@@ -3682,19 +3712,23 @@ class _DirectChatPinnedUIState:
     isn't worth the risk for what a dozen-line sibling already covers."""
 
     active: bool
+    last_height: int | None = None
 
     async def sync(
         self, session: Session, user: User, other_user: User, presence: PresenceRegistry, live_buffer: LiveInputBuffer
     ) -> bool:
-        now_active = session.terminal_height >= _PINNED_UI_MIN_HEIGHT
-        if now_active != self.active:
+        height = session.terminal_height
+        now_active = height >= _PINNED_UI_MIN_HEIGHT
+        resized_in_place = now_active and self.active and height != self.last_height
+        if now_active != self.active or resized_in_place:
             if now_active:
-                await session.write(clear_screen() + set_scroll_region(1, session.terminal_height - 2))
+                await session.write(clear_screen() + set_scroll_region(1, height - 2))
                 await _repaint_direct_chat_status_line(session, user, other_user, presence)
-                await _repaint_input_row(session, live_buffer, session.terminal_height)
+                await _repaint_input_row(session, live_buffer, height)
             else:
                 await session.write(reset_scroll_region() + clear_screen())
             self.active = now_active
+        self.last_height = height
         return self.active
 
 
@@ -3760,7 +3794,7 @@ async def run_direct_chat_loop(
         pinned_ui_enabled = session.terminal_height >= _PINNED_UI_MIN_HEIGHT
         live_buffer = LiveInputBuffer()
         lock = asyncio.Lock()
-        pinned_ui = _DirectChatPinnedUIState(active=pinned_ui_enabled)
+        pinned_ui = _DirectChatPinnedUIState(active=pinned_ui_enabled, last_height=session.terminal_height)
         if pinned_ui_enabled:
             await session.write(clear_screen() + set_scroll_region(1, session.terminal_height - 2))
 

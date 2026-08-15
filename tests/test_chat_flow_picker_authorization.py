@@ -208,6 +208,28 @@ def test_selecting_an_open_channel_still_works_unaffected(db, lane, hub, presenc
     assert "Joined" in _written_text(session)
 
 
+def test_picker_order_ignores_node_local_activity_and_stays_alphabetical(db, lane, hub, presence, alice):
+    """Dogfood report: the same Linked channel list sorted differently
+    for different SysOps. Root cause: unlike netbbs.boards.boards.
+    list_boards' "activity" order (real, persisted, Link-synced post
+    timestamps, so every node agrees), a channel's activity only ever
+    existed as netbbs.chat.hub.ChatHub.last_activity -- in-memory,
+    per-node, reset on restart -- so two nodes with different local
+    chat histories for the same Linked channel silently disagreed on
+    its position. "zebra" gets local activity recorded here; if the
+    picker still preferred activity over the deterministic
+    pinned/alphabetical order, position 01 would be zebra, not apple."""
+    create_channel(db, "apple", creator=alice)
+    create_channel(db, "zebra", creator=alice)
+
+    async def scenario():
+        await hub.broadcast("zebra", "hello")
+        return await _run(lane, hub, presence, alice, ["0", "1", "/quit"])
+
+    session = asyncio.run(scenario())
+    assert "NetBBS / Chat / #apple" in _written_text(session)
+
+
 # -- identity attestation: age/name gating on channel entry (design doc §18) --
 
 
