@@ -3450,6 +3450,21 @@ def _optional_int_field(key: str, label: str) -> Callable[[Session, DatabaseLane
     return prompt
 
 
+def _int_field(key: str, label: str) -> Callable[[Session, DatabaseLane, dict], Awaitable[None]]:
+    """A plain, non-nullable int field (channel's own `min_level` has
+    no Community-inheritance concept the way boards'/areas' `min_read_
+    level`/`min_write_level` do, so `_read_int`, not `_prompt_optional_
+    int`, is the right underlying primitive here)."""
+
+    async def prompt(session: Session, lane: DatabaseLane, draft: dict) -> None:
+        await session.write(f"{label} [{draft.get(key)}]: ")
+        value = await _read_int(session, default=draft.get(key))
+        if value is not None:
+            draft[key] = value
+
+    return prompt
+
+
 def _min_age_field(key: str = "min_age") -> Callable[[Session, DatabaseLane, dict], Awaitable[None]]:
     async def prompt(session: Session, lane: DatabaseLane, draft: dict) -> None:
         value, ok = await _prompt_min_age(session, current=draft.get(key))
@@ -4880,7 +4895,7 @@ async def _channel_menu(
             return
         elif choice == "c":
             await session.write_line("")
-            await _create_channel_screen(session, lane, actor)
+            await _channel_screen(session, lane, actor)
             await _draw_channel_menu(session)
         elif choice == "l":
             await session.write_line("")
@@ -4897,51 +4912,134 @@ async def _draw_channel_menu(session: Session) -> None:
     await session.write("Choice: ")
 
 
-async def _create_channel_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
-    await session.write_line(colored("\r\nCreate channel", fg_color=HEADER_COLOR, bold=True))
-    await session.write("Name: ")
-    name = (await session.read_line()).strip()
-    if not name:
-        await session.write_line(colored("Cancelled: name cannot be blank.", fg_color=MUTED_COLOR))
-        return
-    await session.write("Description (optional): ")
-    description = (await session.read_line()).strip() or None
-    await session.write("Minimum level [0]: ")
-    min_level = await _read_int(session, default=0)
-    if min_level is None:
-        return
-    community_id = await _pick_optional_community(session, lane)
-    category_id = await _pick_optional_category(
-        session, lane, list_top_level=list_top_level_channel_categories,
-        list_subcategories=list_channel_subcategories, title="Channel category",
-        community_id=community_id, resources=await lane.run(list_channels),
-    )
-    pinned = await prompt_yes_no(session, "Pinned?", default=False)
-    hidden = await prompt_yes_no(session, "Hidden (omitted from listings)?", default=False)
-    members_only = await prompt_yes_no(session, "Members-only (invite-only access)?", default=False)
-    allow_member_invites = False
-    if members_only:
-        allow_member_invites = await prompt_yes_no(session, "Allow members to invite others?", default=False)
-    min_age, ok = await _prompt_min_age(session, current=None)
-    if not ok:
-        return
-    name_requirement, ok = await _prompt_name_requirement(session, current=None)
-    if not ok:
-        return
+def _channel_field_specs() -> list[FieldSpec]:
+    """One shared field list drives both create and edit (design doc,
+    dogfood feature request) -- see `_channel_screen`."""
+    return [
+        FieldSpec(
+            key="name", hotkey="n", menu_text=menu_key("N", "ame"), label="Name",
+            render=lambda d: d.get("name") or "(blank)",
+            prompt=text_field("name", required=True),
+        ),
+        FieldSpec(
+            key="description", hotkey="d", menu_text=menu_key("D", "escription"), label="Description",
+            render=lambda d: d.get("description") or "(none)",
+            prompt=text_field("description"),
+        ),
+        FieldSpec(
+            key="min_level", hotkey="l", menu_text=menu_key("L", "evel"), label="Min level",
+            render=lambda d: str(d.get("min_level")),
+            prompt=_int_field("min_level", "Minimum level"),
+        ),
+        FieldSpec(
+            key="community_id", hotkey="u", menu_text=menu_key("U", "nity", prefix="Comm"), label="Community",
+            render=lambda d: d.get("community_id_label") or "(none)",
+            prompt=_community_field(),
+        ),
+        FieldSpec(
+            key="category_id", hotkey="c", menu_text=menu_key("C", "ategory"), label="Category",
+            render=lambda d: d.get("category_id_label") or "(none)",
+            prompt=_category_field(
+                list_top_level=list_top_level_channel_categories, list_subcategories=list_channel_subcategories,
+                title="Channel category", list_resources=list_channels, get_by_id=get_channel_category_by_id,
+            ),
+        ),
+        FieldSpec(
+            key="pinned", hotkey="p", menu_text=menu_key("P", "inned"), label="Pinned",
+            render=lambda d: "yes" if d.get("pinned") else "no",
+            prompt=bool_field("pinned", "Pinned?"),
+        ),
+        FieldSpec(
+            key="hidden", hotkey="h", menu_text=menu_key("H", "idden"), label="Hidden",
+            render=lambda d: "yes" if d.get("hidden") else "no",
+            prompt=bool_field("hidden", "Hidden (omitted from listings)?"),
+        ),
+        FieldSpec(
+            key="members_only", hotkey="m", menu_text=menu_key("M", "embers-only"), label="Members-only",
+            render=lambda d: "yes" if d.get("members_only") else "no",
+            prompt=bool_field("members_only", "Members-only (invite-only access)?"),
+        ),
+        FieldSpec(
+            key="allow_member_invites", hotkey="i", menu_text=menu_key("I", "nvites"),
+            label="Allow member invites",
+            render=lambda d: "yes" if d.get("allow_member_invites") else "no",
+            prompt=bool_field("allow_member_invites", "Allow members to invite others?"),
+        ),
+        FieldSpec(
+            key="min_age", hotkey="g", menu_text=menu_key("G", "e", prefix="Min a"), label="Min age",
+            render=lambda d: _optional_int_label(d.get("min_age")),
+            prompt=_min_age_field(),
+        ),
+        FieldSpec(
+            key="name_requirement", hotkey="q", menu_text=menu_key("Q", "uirement", prefix="Name req"),
+            label="Name requirement",
+            render=lambda d: d.get("name_requirement") or "none",
+            prompt=_name_requirement_field(),
+        ),
+    ]
 
-    try:
-        channel = await lane.run(
-            create_channel,
-            name, description=description, min_level=min_level, category_id=category_id,
-            pinned=pinned, hidden=hidden, members_only=members_only,
-            allow_member_invites=allow_member_invites,
-            min_age=min_age, name_requirement=name_requirement,
-            community_id=community_id, creator=actor,
+
+async def _channel_screen(
+    session: Session, lane: DatabaseLane, actor: User, *, existing: Channel | None = None
+) -> Channel | None:
+    """Unified create/edit screen -- see `_board_screen`'s own
+    docstring for the general shape and reasoning, identical here."""
+    if existing is not None:
+        draft = {
+            "name": existing.name, "description": existing.description, "min_level": existing.min_level,
+            "community_id": existing.community_id, "category_id": existing.category_id,
+            "pinned": existing.pinned, "hidden": existing.hidden, "members_only": existing.members_only,
+            "allow_member_invites": existing.allow_member_invites,
+            "min_age": existing.min_age, "name_requirement": existing.name_requirement,
+        }
+        draft["community_id_label"] = (
+            (await lane.run(get_community, existing.community_id)).name
+            if existing.community_id is not None else None
         )
-    except ChannelError as exc:
-        await session.write_line(colored(f"Could not create channel: {exc}", fg_color=MUTED_COLOR))
-        return
-    await session.write_line(f"Created channel {channel.name!r}.")
+        draft["category_id_label"] = (
+            (await lane.run(get_channel_category_by_id, existing.category_id)).name
+            if existing.category_id is not None else None
+        )
+    else:
+        draft = {
+            "name": "", "description": None, "min_level": 0,
+            "community_id": None, "category_id": None, "pinned": False, "hidden": False,
+            "members_only": False, "allow_member_invites": False,
+            "min_age": None, "name_requirement": None,
+            "community_id_label": None, "category_id_label": None,
+        }
+
+    async def save(draft: dict) -> Channel:
+        if not draft["name"]:
+            raise ChannelError("name cannot be blank")
+        if existing is None:
+            return await lane.run(
+                create_channel,
+                draft["name"], description=draft["description"], min_level=draft["min_level"],
+                category_id=draft["category_id"], pinned=draft["pinned"], hidden=draft["hidden"],
+                members_only=draft["members_only"], allow_member_invites=draft["allow_member_invites"],
+                min_age=draft["min_age"], name_requirement=draft["name_requirement"],
+                community_id=draft["community_id"], creator=actor,
+            )
+        return await lane.run(
+            update_channel,
+            existing, name=draft["name"], description=draft["description"], min_level=draft["min_level"],
+            category_id=draft["category_id"], pinned=draft["pinned"], hidden=draft["hidden"],
+            members_only=draft["members_only"], allow_member_invites=draft["allow_member_invites"],
+            min_age=draft["min_age"], name_requirement=draft["name_requirement"],
+            community_id=draft["community_id"], changed_by=actor,
+        )
+
+    channel = await edit_resource_draft(
+        session, lane,
+        title="Edit channel" if existing is not None else "Create channel",
+        fields=_channel_field_specs(), draft=draft, save=save, error_type=ChannelError,
+        save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+    )
+    if channel is not None:
+        verb = "Updated" if existing is not None else "Created channel"
+        await session.write_line(f"{verb} {channel.name!r}.")
+    return channel
 
 
 async def _list_channels_screen(
@@ -4982,7 +5080,7 @@ async def _channel_detail_screen(
             return
         elif choice == "e":
             await session.write_line("")
-            updated = await _edit_channel_screen(session, lane, actor, channel)
+            updated = await _channel_screen(session, lane, actor, existing=channel)
             if updated is not None:
                 channel = updated
             await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context)
@@ -5081,54 +5179,6 @@ async def _link_channel_screen(session: Session, lane: DatabaseLane, channel: Ch
     await session.write_line(f"Linked {channel.name!r} -- it will be pushed to peers on the next sync pass.")
 
 
-async def _edit_channel_screen(session: Session, lane: DatabaseLane, actor: User, channel: Channel) -> Channel | None:
-    await session.write(f"Name [{channel.name}]: ")
-    name = (await session.read_line()).strip() or channel.name
-    await session.write(f"Description [{channel.description or '(none)'}]: ")
-    description = (await session.read_line()).strip() or channel.description
-    await session.write(f"Minimum level [{channel.min_level}]: ")
-    min_level = await _read_int(session, default=channel.min_level)
-    if min_level is None:
-        return None
-    change_community = await prompt_yes_no(session, "Change Community?", default=False)
-    community_id = channel.community_id
-    if change_community:
-        community_id = await _pick_optional_community(session, lane)
-    change_category = await prompt_yes_no(session, "Change category?", default=False)
-    category_id = channel.category_id
-    if change_category:
-        category_id = await _pick_optional_category(
-            session, lane, list_top_level=list_top_level_channel_categories,
-            list_subcategories=list_channel_subcategories, title="Channel category",
-            community_id=community_id, resources=await lane.run(list_channels),
-        )
-    pinned = await prompt_yes_no_or_keep(session, "Pinned?", current=channel.pinned)
-    hidden = await prompt_yes_no_or_keep(session, "Hidden?", current=channel.hidden)
-    members_only = await prompt_yes_no_or_keep(session, "Members-only?", current=channel.members_only)
-    allow_member_invites = await prompt_yes_no_or_keep(
-        session, "Allow member invites?", current=channel.allow_member_invites
-    )
-    min_age, ok = await _prompt_min_age(session, current=channel.min_age)
-    if not ok:
-        return None
-    name_requirement, ok = await _prompt_name_requirement(session, current=channel.name_requirement)
-    if not ok:
-        return None
-
-    try:
-        updated = await lane.run(
-            update_channel,
-            channel, name=name, description=description, min_level=min_level,
-            category_id=category_id, pinned=pinned, hidden=hidden, members_only=members_only,
-            allow_member_invites=allow_member_invites,
-            min_age=min_age, name_requirement=name_requirement,
-            community_id=community_id, changed_by=actor,
-        )
-    except ChannelError as exc:
-        await session.write_line(colored(f"Could not update channel: {exc}", fg_color=MUTED_COLOR))
-        return None
-    await session.write_line(f"Updated {updated.name!r}.")
-    return updated
 
 
 async def _delete_channel_screen(session: Session, lane: DatabaseLane, actor: User, channel: Channel) -> bool:

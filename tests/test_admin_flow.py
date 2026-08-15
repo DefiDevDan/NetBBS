@@ -2352,15 +2352,14 @@ def test_grant_blanket_across_all_boards(db, lane, sysop):
 
 
 def test_create_channel_flow(db, lane, sysop):
+    # m,n -> channel menu; c -> the shared draft editor (design doc,
+    # dogfood feature request) -- n(ame)/d(escription) select a field,
+    # then [S]ave; every other field keeps its own default.
     inputs = [
         "m", "n", "c",
-        "Lobby", "A general channel", "0",
-        "n",  # assign a Community? no
-        "n",  # assign category? no
-        "n",  # pinned? no
-        "n",  # hidden? no
-        "n",  # members-only? no
-        "", "",  # min age, name requirement -- both blank, no gate
+        "n", "Lobby",
+        "d", "A general channel",
+        "s",
         "b", "b", "b",
     ]
     session = FakeSession(inputs)
@@ -2372,21 +2371,28 @@ def test_create_channel_flow(db, lane, sysop):
     assert "Created channel" in _written_text(session)
 
 
+def test_create_channel_can_be_cancelled_without_creating_anything(db, lane, sysop):
+    """Dogfood item 6: [B]ack on the shared draft editor discards the
+    whole draft, even after fields were already filled in."""
+    inputs = ["m", "n", "c", "n", "Abandoned", "b", "b", "b", "b"]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+    from netbbs.chat.channels import list_channels
+
+    assert list_channels(db) == []
+
+
 def test_edit_and_delete_channel_flow(db, lane, sysop):
     from netbbs.chat.channels import create_channel, list_channels
 
     create_channel(db, "Lobby", creator=sysop)
 
-    # list -> pick(01) -> e(dit) -> new name, blank desc(keep), blank
-    # min level(keep), n(don't change Community), n(don't change
-    # category), y(pin), n(hidden), n(members-only), n(allow invites),
-    # blank(min age), blank(name requirement) -> back to detail ->
-    # d(elete) -> retype new name -> back x3
+    # list -> pick(01) -> e(dit) -> rename via the field menu -> [S]ave
+    # -> back to detail -> d(elete) -> retype new name -> back x3.
+    # Every other field is left untouched.
     inputs = [
         "m", "n", "l", "0", "1", "e",
-        "Lobby2", "", "",
-        "n", "n", "y", "n", "n", "n",
-        "", "",
+        "n", "Lobby2", "s",
         "d", "Lobby2",
         "b", "b", "b",
     ]
