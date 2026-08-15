@@ -450,7 +450,7 @@ async def _draw_admin_menu(
          menu_key("S", "ettings"), menu_key("D", "ashboard"), menu_key("B", "ack")],
         width=session.terminal_width,
     ))
-    quick = [menu_key("K", "backup")]
+    quick = [menu_key("K", "up", prefix="Bac")]
     if node_controls is not None:
         quick.insert(0, menu_key("N", "ode"))
     if link_context is not None:
@@ -550,7 +550,7 @@ async def _operations_menu(
                 width=session.terminal_width,
             )
         )
-        options = [menu_key("K", "backup status")]
+        options = [menu_key("K", "up status", prefix="Bac")]
         if node_controls is not None:
             options.insert(0, menu_key("N", "ode and sessions"))
         if link_context is not None:

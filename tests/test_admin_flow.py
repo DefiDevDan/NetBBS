@@ -190,7 +190,14 @@ def test_operations_are_a_coherent_top_level_console_area(db, lane, sysop):
     text = _written_text(session)
     assert "NetBBS / SysOp / Operations" in text
     assert "Observe the running node, investigate trouble, and recover work." in text
-    assert "backup status" in text
+    # "Bac[K]up status", not "[K]backup status" -- K isn't backup's first
+    # letter, so the hotkey is picked out from inside the word via
+    # menu_key's own prefix parameter (see admin_flow.py's own history:
+    # this was already fixed once and must not silently regress back to
+    # a stray bracketed letter sitting in front of the word).
+    assert "Bac" in text
+    assert "up status" in text
+    assert "[K]backup status" not in text
 
 
 def test_operations_console_wraps_actions_on_a_narrow_terminal(db, lane, sysop):
