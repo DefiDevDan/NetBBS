@@ -76,6 +76,77 @@ def cut_to_width(text: str, width: int) -> str:
     return text[:cut]
 
 
+def wrap_to_width(text: str, width: int) -> list[str]:
+    """
+    Greedy word-wrap using display columns, not stdlib `textwrap`'s
+    character count. Splits on whitespace the same way `textwrap.wrap`
+    does, but measures each word against `display_width` instead of
+    `len`, and rejoins a wrapped line's words with single spaces (the
+    same internal-whitespace normalization `textwrap.wrap` already
+    applies -- `netbbs.rendering.prose_buffer.wrap_lines`'s own
+    `line.index(segment, col)` re-location trick already accounts for
+    this, unaffected by which wrapping function produced the segments).
+
+    A single whitespace-delimited "word" wider than `width` itself (a
+    long URL, or -- the case that actually matters here -- an entire
+    run of CJK text, since that script doesn't use spaces between
+    words at all) is hard-broken at a real display-column boundary
+    instead of overflowing the line. That fallback is what makes CJK
+    wrap correctly with no script-specific line-breaking logic of its
+    own: an unspaced CJK paragraph is just one long "word" under this
+    splitting rule, and breaking between any two characters at the
+    width boundary is already the linguistically correct behavior for
+    that script -- not an approximation adopted for lack of a better
+    option.
+    """
+    if width < 1:
+        raise ValueError(f"width must be >= 1, got {width}")
+
+    words = text.split()
+    if not words:
+        return []
+
+    lines: list[str] = []
+    current: list[str] = []
+    current_width = 0
+    for word in words:
+        word_width = display_width(word)
+        if word_width > width:
+            if current:
+                lines.append(" ".join(current))
+                current = []
+                current_width = 0
+            while display_width(word) > width:
+                piece = cut_to_width(word, width)
+                if not piece:
+                    # Even this word's first character alone exceeds
+                    # `width` (e.g. one CJK character, width=1) -- take
+                    # it anyway rather than looping forever; the line
+                    # unavoidably overflows by one character's width,
+                    # the same "can't split a character in half"
+                    # reality `wrap_to_width`'s own callers already
+                    # accept elsewhere for a too-narrow budget.
+                    piece = word[:1]
+                lines.append(piece)
+                word = word[len(piece):]
+            if word:
+                current = [word]
+                current_width = display_width(word)
+            continue
+
+        separator_width = 1 if current else 0
+        if current and current_width + separator_width + word_width > width:
+            lines.append(" ".join(current))
+            current = []
+            current_width = 0
+            separator_width = 0
+        current.append(word)
+        current_width += separator_width + word_width
+    if current:
+        lines.append(" ".join(current))
+    return lines
+
+
 def truncate_to_width(text: str, width: int, *, ellipsis: str = "...") -> str:
     """Truncate `text` to fit within `width` display columns, appending
     `ellipsis` if truncation actually occurred -- the width-aware

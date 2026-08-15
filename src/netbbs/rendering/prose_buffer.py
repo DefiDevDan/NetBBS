@@ -19,8 +19,9 @@ rewrap at *display* time, same as it always has for any post body.
 
 from __future__ import annotations
 
-import textwrap
 from dataclasses import dataclass
+
+from netbbs.rendering.width import wrap_to_width
 
 
 @dataclass(frozen=True)
@@ -32,7 +33,7 @@ class VisualRow:
     Every logical line, including an empty one (a blank paragraph
     separator), produces at least one `VisualRow`, so blank lines stay
     visible and navigable rather than silently vanishing the way
-    `textwrap.wrap("")` (`[]`, no rows) would produce on its own.
+    `wrap_to_width("", width)` (`[]`, no rows) would produce on its own.
     """
 
     line_index: int
@@ -47,13 +48,16 @@ def wrap_lines(lines: list[str], width: int) -> list[VisualRow]:
 
     rows: list[VisualRow] = []
     for line_index, line in enumerate(lines):
-        segments = textwrap.wrap(line, width=width) or [""]
+        segments = wrap_to_width(line, width) or [""]
         col = 0
         for segment in segments:
             # Re-locate the segment's actual start column in the
             # original line rather than assuming `len(segment)`-sized
-            # steps -- textwrap collapses runs of whitespace between
-            # words, so segment lengths don't sum back to len(line).
+            # steps -- wrap_to_width collapses runs of whitespace
+            # between words, so segment lengths don't sum back to
+            # len(line). This is a character offset (for indexing back
+            # into `line`), not a display column -- unaffected by the
+            # width-aware wrapper swap.
             col = line.index(segment, col) if segment else col
             rows.append(VisualRow(line_index=line_index, start_col=col, text=segment))
             col += len(segment)

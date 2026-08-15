@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from netbbs.rendering.width import char_width, display_width, truncate_to_width
+from netbbs.rendering.width import char_width, display_width, truncate_to_width, wrap_to_width
 
 # "Hello" romanized greeting in Chinese -- 4 CJK characters, each 2
 # columns wide on a real terminal.
@@ -98,3 +98,58 @@ def test_truncate_to_width_no_truncation_needed_returns_the_original_text():
     text = _CJK  # width 8
     assert truncate_to_width(text, 8) == text
     assert truncate_to_width(text, 100) == text
+
+
+# -- wrap_to_width -------------------------------------------------------
+
+
+def test_wrap_to_width_rejects_a_width_below_one():
+    with pytest.raises(ValueError):
+        wrap_to_width("hello", 0)
+
+
+def test_wrap_to_width_of_empty_text_is_no_lines():
+    assert wrap_to_width("", 10) == []
+    assert wrap_to_width("   ", 10) == []
+
+
+def test_wrap_to_width_ascii_matches_textwraps_own_behavior():
+    import textwrap
+
+    text = "the quick brown fox jumps over the lazy dog"
+    assert wrap_to_width(text, 15) == textwrap.wrap(text, width=15)
+
+
+def test_wrap_to_width_never_produces_a_line_wider_than_the_budget_for_ascii():
+    text = "a fairly long sentence with several words of varying length"
+    for width in range(3, 20):
+        for line in wrap_to_width(text, width):
+            assert display_width(line) <= width
+
+
+def test_wrap_to_width_breaks_cjk_text_at_display_column_boundaries():
+    # No spaces at all -- one long "word" under the whitespace-split
+    # rule -- must still wrap, not overflow into one unbroken line.
+    text = _CJK * 3  # 12 characters, 24 display columns, no spaces
+    lines = wrap_to_width(text, 8)
+    assert len(lines) > 1
+    for line in lines:
+        assert display_width(line) <= 8
+    # Every character survives, in order, none dropped or duplicated.
+    assert "".join(lines) == text
+
+
+def test_wrap_to_width_a_single_wide_character_narrower_than_budget_still_fits_alone():
+    lines = wrap_to_width("你", 1)
+    # Width 1 can't fit a 2-column character at all -- the documented
+    # "take it anyway rather than looping forever" fallback -- but it
+    # must still terminate and return the character, not raise or hang.
+    assert lines == ["你"]
+
+
+def test_wrap_to_width_mixed_ascii_and_cjk_wraps_by_words_where_possible():
+    text = "hello " + _CJK
+    lines = wrap_to_width(text, 6)
+    assert lines[0] == "hello"
+    for line in lines:
+        assert display_width(line) <= 6

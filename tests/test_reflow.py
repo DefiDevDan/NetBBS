@@ -74,6 +74,24 @@ def test_narrow_width_like_40_columns():
         assert len(line) <= 40
 
 
+def test_reflow_wraps_cjk_text_at_display_column_boundaries_not_character_count():
+    # Dogfood report: international users found non-ASCII handling poor.
+    # No spaces at all -- one long "word" under whitespace-splitting --
+    # must still wrap at real column boundaries (2 columns/character),
+    # not overflow into one unbroken line the way a len()-based wrap
+    # would (12 characters, 24 display columns, all "fitting" under an
+    # 8-character-count budget).
+    text = "你好世界" * 3
+    result = reflow(text, width=8)
+    lines = result.split("\n")
+    assert len(lines) > 1
+    from netbbs.rendering.width import display_width
+
+    for line in lines:
+        assert display_width(line) <= 8
+    assert "".join(lines) == text
+
+
 # -- colored_truncate ---------------------------------------------------
 
 

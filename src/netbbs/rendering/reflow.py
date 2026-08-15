@@ -1,23 +1,26 @@
 """
 Text reflow: wraps long text to fit a target terminal width.
 
-Uses Python's stdlib `textwrap` rather than a hand-rolled wrapper —
-word-wrapping correctly (hyphenation edge cases, not breaking mid-word,
-etc.) is a solved problem with no reason to reinvent it. This module
-exists to apply stdlib `textwrap` with NetBBS-appropriate defaults:
-specifically, preserving blank-line paragraph breaks, which a single
-`textwrap.wrap()` call over multi-paragraph text does not do on its own
-(it collapses all whitespace, including intentional blank lines,
-uniformly).
+Word-wrapping via `netbbs.rendering.width.wrap_to_width`, not stdlib
+`textwrap` (design doc, dogfood feature request) -- `textwrap.wrap`
+measures line width in characters, which undercounts every East Asian
+Wide/Fullwidth character (2 real terminal columns, not 1); `wrap_to_
+width` is display-column-aware instead, see that module's own
+docstring for the full reasoning. This module exists to apply that
+wrapping with NetBBS-appropriate defaults on top: specifically,
+preserving blank-line paragraph breaks, which one `wrap_to_width()`
+call over multi-paragraph text does not do on its own (it collapses
+all whitespace, including intentional blank lines, uniformly, matching
+`textwrap.wrap`'s own longstanding behavior here -- unchanged by the
+underlying wrapper swap).
 """
 
 from __future__ import annotations
 
-import textwrap
 from typing import Sequence
 
 from netbbs.rendering.ansi import colored
-from netbbs.rendering.width import cut_to_width, display_width, truncate_to_width
+from netbbs.rendering.width import cut_to_width, display_width, truncate_to_width, wrap_to_width
 
 DEFAULT_WIDTH = 80
 
@@ -29,15 +32,14 @@ def reflow(text: str, width: int = DEFAULT_WIDTH) -> str:
     Splits on blank lines first, wraps each paragraph independently, then
     rejoins with blank lines restored — so intentional paragraph
     structure survives, even though within a paragraph all whitespace
-    (including single line breaks) is still collapsed and rewrapped, the
-    normal `textwrap` behavior.
+    (including single line breaks) is still collapsed and rewrapped.
     """
     if width < 1:
         raise ValueError(f"width must be >= 1, got {width}")
 
     paragraphs = text.split("\n\n")
     wrapped_paragraphs = [
-        "\n".join(textwrap.wrap(paragraph, width=width)) if paragraph.strip() else ""
+        "\n".join(wrap_to_width(paragraph, width)) if paragraph.strip() else ""
         for paragraph in paragraphs
     ]
     return "\n\n".join(wrapped_paragraphs)

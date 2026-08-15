@@ -54,6 +54,25 @@ def test_wrap_lines_rejects_non_positive_width():
         wrap_lines(["x"], width=0)
 
 
+def test_wrap_lines_wraps_cjk_text_at_display_column_boundaries():
+    # Dogfood report: international users found non-ASCII handling poor.
+    # Each CJK character is 2 display columns; a len()-based wrap would
+    # let a line run twice as wide as the terminal actually is.
+    from netbbs.rendering.width import display_width
+
+    line = "你好世界" * 3  # 12 characters, 24 display columns, no spaces
+    rows = wrap_lines([line], width=8)
+    assert len(rows) > 1
+    assert all(row.line_index == 0 for row in rows)
+    for row in rows:
+        assert display_width(row.text) <= 8
+        # start_col/text bookkeeping is still character-offset-based
+        # (Phase 3 scope, unchanged here) -- must still correctly
+        # re-locate each segment in the original line.
+        assert line[row.start_col : row.start_col + len(row.text)] == row.text
+    assert "".join(row.text for row in rows) == line
+
+
 # -- visual_position / logical_position round-trip -------------------------
 
 
