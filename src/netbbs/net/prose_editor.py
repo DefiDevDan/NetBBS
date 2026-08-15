@@ -48,6 +48,7 @@ from netbbs.rendering import (
     truncate,
 )
 from netbbs.rendering.prose_buffer import ProseBuffer, logical_position, visual_position, wrap_lines
+from netbbs.rendering.width import char_width, display_width
 
 _logger = logging.getLogger(__name__)
 
@@ -256,16 +257,44 @@ def _render(state: _EditorState, width: int, height: int) -> Snapshot:
     soft-wrapped text into a `ScreenBuffer`, reusing the same diffed-
     render primitives `netbbs.net.ansi_editor` does -- the only place
     this module touches `ScreenBuffer` at all; every actual edit
-    operation works purely on `ProseBuffer`, wrap-unaware."""
+    operation works purely on `ProseBuffer`, wrap-unaware.
+
+    Advances by each character's real display width (design doc,
+    dogfood feature request: international users found non-ASCII
+    handling poor), not one grid column per character: an East Asian
+    Wide/Fullwidth character reserves two grid columns via `Screen
+    Buffer.write_wide_cell` (matching the two physical terminal columns
+    it actually occupies), and a zero-width combining mark is merged
+    into the previous cell's own glyph rather than claiming a column of
+    its own. `wrap_lines` already bounds every row to `width` display
+    columns, so the `col + w > width` guard below is defensive, not
+    something normal wrapped text should ever hit."""
     canvas = ScreenBuffer(width, height)
     rows = wrap_lines(state.buffer.lines, width)
     for viewport_row in range(height):
         row_index = state.scroll_row + viewport_row
         if row_index >= len(rows):
             break
-        text = rows[row_index].text
-        for col, char in enumerate(text[:width]):
-            canvas.write_cell(viewport_row, col, char, fg=None, bg=None, bold=False)
+        col = 0
+        last_col: int | None = None
+        for char in rows[row_index].text:
+            w = char_width(char)
+            if w == 0:
+                if last_col is not None:
+                    existing = canvas.get_cell(viewport_row, last_col)
+                    canvas.write_cell(
+                        viewport_row, last_col, existing.char + char,
+                        fg=existing.fg, bg=existing.bg, bold=existing.bold,
+                    )
+                continue
+            if col + w > width:
+                break
+            if w == 2:
+                canvas.write_wide_cell(viewport_row, col, char, fg=None, bg=None, bold=False)
+            else:
+                canvas.write_cell(viewport_row, col, char, fg=None, bg=None, bold=False)
+            last_col = col
+            col += w
     return canvas.snapshot()
 
 
@@ -281,8 +310,17 @@ async def _redraw(session: Session, state: _EditorState, previous: Snapshot, wid
 async def _flush(session: Session, state: _EditorState, width: int, height: int) -> None:
     """Redraws the status line and repositions the terminal's real
     cursor to the logical edit position, mirroring
-    `netbbs.net.ansi_editor._flush` exactly in shape."""
+    `netbbs.net.ansi_editor._flush` in shape -- except the cursor's
+    real terminal column, unlike the ANSI editor's fixed-width CP437
+    grid, has to be measured in display columns, not `pos.col`'s
+    character offset within the row (design doc, dogfood feature
+    request: international users found non-ASCII handling poor) -- an
+    East Asian Wide/Fullwidth character before the cursor pushes it two
+    columns right, not one."""
+    rows = wrap_lines(state.buffer.lines, width)
     pos = visual_position(state.buffer.lines, width, state.buffer.cursor_line, state.buffer.cursor_col)
+    row_text = rows[pos.row_index].text if rows else ""
+    display_col = display_width(row_text[: pos.col])
     screen_row = pos.row_index - state.scroll_row
     status = (
         f"Line {state.buffer.cursor_line + 1}  Col {state.buffer.cursor_col + 1}  "
@@ -298,7 +336,7 @@ async def _flush(session: Session, state: _EditorState, width: int, height: int)
     await session.write(move_cursor(height + _STATUS_ROW_OFFSET, 1))
     await session.write(clear_line())
     await session.write(colored(status, fg_color=MUTED_COLOR))
-    await session.write(move_cursor(max(1, screen_row + 1), pos.col + 1))
+    await session.write(move_cursor(max(1, screen_row + 1), display_col + 1))
 
 
 async def _offer_draft_recovery(session: Session) -> bool:

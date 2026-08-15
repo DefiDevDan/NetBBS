@@ -187,3 +187,65 @@ def test_masked_read_ignores_left_arrow_and_keeps_simple_behavior():
 def test_masked_read_backspace_still_removes_from_the_end():
     line, _ = _run(b"secret" + b"\x08\x08" + _CRLF, echo=False)
     assert line == "secr"
+
+
+# -- CJK text moves the real cursor by display columns, not characters --
+# (design doc, dogfood feature request: international users found
+# non-ASCII handling poor) -- each of these characters is 2 display
+# columns wide on a real terminal, not 1.
+
+
+def test_left_over_a_cjk_character_moves_the_cursor_two_columns():
+    line, written = _run("你".encode("utf-8") + _LEFT + b"X" + _CRLF)
+    assert line == "X你"
+    assert written == "你" + "\x1b[2D" + "\x1b[K" + "X你" + "\x1b[2D" + "\r\n"
+
+
+def test_right_over_a_cjk_character_moves_the_cursor_two_columns():
+    line, written = _run("你".encode("utf-8") + _LEFT + _RIGHT + b"X" + _CRLF)
+    assert line == "你X"
+    assert written == "你" + "\x1b[2D" + "\x1b[2C" + "X" + "\r\n"
+
+
+def test_home_with_cjk_text_moves_the_cursor_the_full_display_width():
+    line, written = _run("你好".encode("utf-8") + _HOME + b"X" + _CRLF)
+    assert line == "X你好"
+    assert written == "你好" + "\x1b[4D" + "\x1b[K" + "X你好" + "\x1b[4D" + "\r\n"
+
+
+def test_end_with_cjk_text_moves_the_cursor_the_full_display_width():
+    line, written = _run("你好".encode("utf-8") + _HOME + _END + b"X" + _CRLF)
+    assert line == "你好X"
+    assert written == "你好" + "\x1b[4D" + "\x1b[4C" + "X" + "\r\n"
+
+
+def test_backspace_over_a_cjk_character_moves_the_cursor_two_columns():
+    line, written = _run("你".encode("utf-8") + b"\x08" + b"X" + _CRLF)
+    assert line == "X"
+    assert written == "你" + "\x1b[2D" + "\x1b[K" + "X" + "\r\n"
+
+
+def test_mid_line_insert_between_cjk_characters_produces_the_expected_escape_sequence():
+    # "你好", Left once (cursor -> 1, between the two characters), type
+    # "X" -> "你X好". The old tail ("好") is 2 display columns, not 1
+    # character -- the final reposition must move back 2 columns.
+    line, written = _run("你好".encode("utf-8") + _LEFT + b"X" + _CRLF)
+    assert line == "你X好"
+    assert written == "你好" + "\x1b[2D" + "\x1b[K" + "X好" + "\x1b[2D" + "\r\n"
+
+
+def test_overwrite_mode_replacing_a_cjk_character_with_ascii_redraws_the_tail():
+    # Overwriting a 2-column character with a 1-column one via a plain
+    # character write would leave a stale column from the old glyph on
+    # a real terminal -- must fall back to a full tail redraw instead.
+    line, written = _run("你好".encode("utf-8") + _HOME + _INSERT + b"X" + _CRLF)
+    assert line == "X好"
+    assert written == "你好" + "\x1b[4D" + "\x1b[K" + "X好" + "\x1b[2D" + "\r\n"
+
+
+def test_overwrite_mode_same_width_replacement_still_writes_just_the_character():
+    # Same-width overwrite (ASCII replacing ASCII) keeps the cheap direct
+    # write, no full redraw -- unaffected by the width-mismatch fallback.
+    line, written = _run(b"abc" + _HOME + _INSERT + b"X" + _CRLF)
+    assert line == "Xbc"
+    assert written == "abc" + "\x1b[3D" + "X" + "\r\n"

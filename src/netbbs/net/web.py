@@ -57,6 +57,7 @@ from netbbs.net.char_input import (
     redraw_tail,
 )
 from netbbs.net.session import Session, SessionClosedError, clamp_terminal_size
+from netbbs.rendering.width import char_width, display_width
 
 _logger = logging.getLogger(__name__)
 
@@ -406,25 +407,29 @@ class WebSession(Session):
                         if key == "LEFT":
                             if cursor > 0:
                                 cursor -= 1
-                                await self.write(move_cursor(1, forward=False))
+                                await self.write(move_cursor(char_width(line[cursor]), forward=False))
                         elif key == "RIGHT":
                             if cursor < len(line):
+                                width = char_width(line[cursor])
                                 cursor += 1
-                                await self.write(move_cursor(1, forward=True))
+                                await self.write(move_cursor(width, forward=True))
                         elif key == "HOME":
                             if cursor > 0:
-                                await self.write(move_cursor(cursor, forward=False))
+                                await self.write(
+                                    move_cursor(display_width("".join(line[:cursor])), forward=False)
+                                )
                                 cursor = 0
                         elif key == "END":
                             if cursor < len(line):
-                                await self.write(move_cursor(len(line) - cursor, forward=True))
+                                await self.write(
+                                    move_cursor(display_width("".join(line[cursor:])), forward=True)
+                                )
                                 cursor = len(line)
                         elif key == "DELETE":
                             if cursor < len(line):
-                                terminal_col = cursor
                                 del line[cursor]
                                 await redraw_tail(
-                                    self.write, terminal_col=terminal_col, edit_pos=cursor,
+                                    self.write, move_back=0, edit_pos=cursor,
                                     line=line, new_cursor=cursor,
                                 )
                         elif key == "INSERT":
@@ -442,11 +447,11 @@ class WebSession(Session):
                                     history.entry(history_index)
                                 )
                             if recalled is not None:
-                                terminal_col = cursor
+                                move_back = display_width("".join(line[:cursor]))
                                 line = recalled
                                 cursor = len(line)
                                 await redraw_tail(
-                                    self.write, terminal_col=terminal_col, edit_pos=0,
+                                    self.write, move_back=move_back, edit_pos=0,
                                     line=line, new_cursor=cursor,
                                 )
                         continue
@@ -470,11 +475,11 @@ class WebSession(Session):
 
                     if char in (_BS, _DEL):
                         if cursor > 0:
-                            terminal_col = cursor
+                            move_back = char_width(line[cursor - 1])
                             del line[cursor - 1]
                             cursor -= 1
                             await redraw_tail(
-                                self.write, terminal_col=terminal_col, edit_pos=cursor,
+                                self.write, move_back=move_back, edit_pos=cursor,
                                 line=line, new_cursor=cursor,
                             )
                         continue
@@ -491,22 +496,34 @@ class WebSession(Session):
                         continue
 
                     if overwrite and cursor < len(line):
+                        same_width = char_width(line[cursor]) == char_width(char)
+                        edit_pos = cursor
                         line[cursor] = char
                         cursor += 1
-                        await self.write(char)
+                        if same_width:
+                            await self.write(char)
+                        else:
+                            # Width mismatch (e.g. overwriting a CJK
+                            # character with an ASCII one) -- mirrors
+                            # netbbs.net.char_input's identical fallback,
+                            # see that call site's comment for why a
+                            # plain write isn't enough here.
+                            await redraw_tail(
+                                self.write, move_back=0, edit_pos=edit_pos, line=line, new_cursor=cursor
+                            )
                         continue
 
                     if len(line) >= _MAX_LINE_LENGTH:
                         continue
 
-                    terminal_col = cursor
+                    edit_pos = cursor
                     line.insert(cursor, char)
                     cursor += 1
                     if cursor == len(line):
                         await self.write(char)
                     else:
                         await redraw_tail(
-                            self.write, terminal_col=terminal_col, edit_pos=terminal_col,
+                            self.write, move_back=0, edit_pos=edit_pos,
                             line=line, new_cursor=cursor,
                         )
                 finally:

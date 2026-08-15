@@ -54,6 +54,39 @@ def test_zero_or_negative_dimensions_are_clamped_to_at_least_one():
     assert buf.height >= 1
 
 
+# -- write_wide_cell (design doc, dogfood feature request: international --
+# -- users found non-ASCII handling poor) ----------------------------------
+
+
+def test_write_wide_cell_reserves_a_continuation_cell():
+    buf = ScreenBuffer(3, 1)
+    buf.write_wide_cell(0, 0, "你", fg=1, bg=2, bold=True)
+    assert buf.get_cell(0, 0) == Cell(char="你", fg=1, bg=2, bold=True)
+    assert buf.get_cell(0, 1) == Cell(char="", fg=1, bg=2, bold=True)
+
+
+def test_write_wide_cell_at_the_last_column_omits_the_continuation():
+    buf = ScreenBuffer(1, 1)
+    # Writing at col+1 would be out of bounds -- must degrade (glyph
+    # still written) rather than raise.
+    buf.write_wide_cell(0, 0, "你", fg=None, bg=None, bold=False)
+    assert buf.get_cell(0, 0) == Cell(char="你")
+
+
+def test_diff_ansi_omits_the_wide_cell_continuation_from_printed_text():
+    before = ScreenBuffer(4, 1).snapshot()
+    after = ScreenBuffer(4, 1)
+    after.write_wide_cell(0, 0, "你", fg=None, bg=None, bold=False)
+    after.write_cell(0, 2, "!", fg=None, bg=None, bold=False)
+    result = diff_ansi(before, after.snapshot())
+    # The continuation cell's empty char contributes nothing to the
+    # printed text -- "你" and "!" end up adjacent in one run, and the
+    # real terminal's own rendering (not an extra move_cursor) is what
+    # correctly lands "!" at real column 3, one grid column having been
+    # legitimately consumed by "你"'s own second physical column.
+    assert result == move_cursor(1, 1) + colored("你!")
+
+
 def test_snapshot_is_independent_of_later_mutation():
     buf = ScreenBuffer(2, 1)
     buf.write_cell(0, 0, "A")

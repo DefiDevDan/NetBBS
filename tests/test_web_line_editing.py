@@ -203,3 +203,40 @@ def test_mid_line_insert_produces_the_expected_wire_messages():
     # Telnet/SSH, confirming WebSession's parallel implementation
     # produces identical output.
     assert messages == ["a", "b", "c", "\x1b[1D", "\x1b[K", "Xc", "\x1b[1D"]
+
+
+# -- CJK text moves the real cursor by display columns, not characters --
+# (design doc, dogfood feature request: international users found
+# non-ASCII handling poor) -- WebSession's parallel implementation of
+# the same fix tests/test_char_input_line_editing.py already proves.
+
+
+def test_left_over_a_cjk_character_moves_before_it():
+    assert _read_line_result("你" + _LEFT + "X\r") == "X你"
+
+
+def test_mid_line_insert_between_cjk_characters_produces_the_expected_wire_messages():
+    received = []
+
+    async def handler(session: Session):
+        received.append(await session.read_line())
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            async with aiohttp.ClientSession() as client:
+                async with client.ws_connect(f"http://127.0.0.1:{server.port}/ws") as ws:
+                    await ws.send_json({"type": "key", "data": "你好" + _LEFT + "X\r"})
+                    messages = []
+                    for _ in range(6):
+                        messages.append((await ws.receive_json(timeout=2))["data"])
+                    return messages
+        finally:
+            await server.stop()
+
+    messages = asyncio.run(scenario())
+    # Each CJK character is 2 display columns -- the move-back before
+    # erasing and the final reposition after reprinting the tail ("好")
+    # must both be "\x1b[2D", not "\x1b[1D" the way a character-count
+    # would produce.
+    assert messages == ["你", "好", "\x1b[2D", "\x1b[K", "X好", "\x1b[2D"]

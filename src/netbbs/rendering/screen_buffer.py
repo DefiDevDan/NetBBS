@@ -72,6 +72,29 @@ class ScreenBuffer:
         self._check_bounds(row, col)
         self._rows[row][col] = Cell(char=char, fg=fg, bg=bg, bold=bold)
 
+    def write_wide_cell(
+        self, row: int, col: int, char: str, *, fg: int | None = None, bg: int | None = None, bold: bool = False
+    ) -> None:
+        """Writes a double-width glyph (`netbbs.rendering.width.
+        char_width(char) == 2`, e.g. an East Asian Wide/Fullwidth
+        character -- design doc, dogfood feature request) at `col`,
+        reserving `col + 1` as an empty continuation cell sharing its
+        style: a real terminal renders such a glyph across two physical
+        columns, and `diff_ansi`/`full_render_ansi` below must never
+        independently address (or leave stale content behind in) that
+        second column -- an empty `char` contributes nothing to either
+        function's own `"".join(chars)` output, so the continuation
+        cell naturally renders as nothing while still correctly
+        occupying its grid column for every position calculated after
+        it. If `col + 1` is out of bounds (a wide glyph landing in the
+        buffer's last column), the continuation is simply omitted --
+        the glyph itself still prints, overflowing by one column the
+        same way `netbbs.rendering.width.wrap_to_width`'s own too-
+        narrow-budget fallback already does, rather than raising."""
+        self.write_cell(row, col, char, fg=fg, bg=bg, bold=bold)
+        if col + 1 < self.width:
+            self.write_cell(row, col + 1, "", fg=fg, bg=bg, bold=bold)
+
     def get_cell(self, row: int, col: int) -> Cell:
         self._check_bounds(row, col)
         return self._rows[row][col]

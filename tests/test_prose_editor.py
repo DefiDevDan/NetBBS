@@ -9,9 +9,10 @@ import asyncio
 import pytest
 
 from netbbs.net.char_input import EditorKey, EditorKeyKind
-from netbbs.net.prose_editor import edit_prose
+from netbbs.net.prose_editor import _EditorState, _flush, _render, edit_prose
 from netbbs.net.session import Session, SessionClosedError
 from netbbs.rendering import clear_screen
+from netbbs.rendering.prose_buffer import ProseBuffer
 
 _EDITOR_KEY_SENTINELS: dict[str, EditorKeyKind] = {
     "ENTER": EditorKeyKind.ENTER,
@@ -208,6 +209,41 @@ def test_saving_clears_the_screen_before_returning(tmp_path):
 
     session = asyncio.run(scenario())
     assert session.written[-1] == clear_screen()
+
+
+# -- CJK text positions the real cursor by display column, not character -
+# -- offset (design doc, dogfood feature request: international users ----
+# -- found non-ASCII handling poor) ----------------------------------------
+
+
+def test_flush_positions_the_cursor_at_the_correct_display_column_after_cjk_text():
+    buffer = ProseBuffer(lines=["你好"], cursor_line=0, cursor_col=2)
+    state = _EditorState(buffer=buffer, max_bytes=100_000)
+    session = FakeSession(width=40, height=24)
+
+    asyncio.run(_flush(session, state, width=40, height=20))
+
+    # display_width("你好") == 4, so the real terminal cursor must land
+    # at column 5 (1-indexed) -- a character-count-based `pos.col + 1`
+    # would instead produce column 3.
+    assert session.written[-1] == "\x1b[1;5H"
+
+
+def test_render_places_a_wide_character_across_two_grid_columns():
+    buffer = ProseBuffer(lines=["你好X"], cursor_line=0, cursor_col=0)
+    state = _EditorState(buffer=buffer, max_bytes=100_000)
+    snapshot = _render(state, width=10, height=1)
+    row = snapshot[0]
+    assert [cell.char for cell in row[:5]] == ["你", "", "好", "", "X"]
+
+
+def test_typing_cjk_text_then_moving_left_and_inserting_lands_correctly(tmp_path):
+    async def scenario():
+        session = FakeSession(_type("你好") + ["LEFT"] + _type("X") + ["CTRL+O"])
+        return await edit_prose(session, initial_text=None, draft_path=tmp_path / "d.draft", max_bytes=100_000)
+
+    result = asyncio.run(scenario())
+    assert result == "你X好"
 
 
 def test_quit_without_editing_clears_the_screen_before_returning(tmp_path):

@@ -45,6 +45,7 @@ from typing import Awaitable, Callable, Protocol, Sequence
 
 from netbbs.net.session import SessionClosedError
 from netbbs.rendering.ansi import reject_keystroke
+from netbbs.rendering.width import char_width, display_width
 
 # Control byte values relevant to character-mode line building.
 _CR = 0x0D
@@ -217,15 +218,27 @@ def move_cursor(count: int, *, forward: bool) -> str:
 
 
 async def redraw_tail(
-    write: WriteFunc, *, terminal_col: int, edit_pos: int, line: list[str], new_cursor: int
+    write: WriteFunc, *, move_back: int, edit_pos: int, line: list[str], new_cursor: int
 ) -> None:
     """
     The one redraw primitive every mid-line edit (insert, Backspace,
-    Delete, full-line history recall) goes through: reposition the
-    terminal cursor from wherever it currently is (`terminal_col`) to
-    `edit_pos`, erase to the end of the visible line (`ESC[K`), reprint
-    `line[edit_pos:]` — whatever the edit left there — then reposition
-    to `new_cursor`.
+    Delete, full-line history recall) goes through: move the terminal
+    cursor back `move_back` display columns to `edit_pos`, erase to the
+    end of the visible line (`ESC[K`), reprint `line[edit_pos:]` —
+    whatever the edit left there — then reposition to `new_cursor`.
+
+    `move_back` (design doc, dogfood feature request: international
+    users found non-ASCII handling poor) is display columns, supplied
+    by the caller rather than derived here from `edit_pos` alone: by
+    the time this runs, `line` already reflects the edit (e.g.
+    Backspace's deleted character is already gone from it), so the
+    width of whatever changed has to be captured by the caller before
+    mutating `line`, against `netbbs.rendering.width.display_width` —
+    an East Asian Wide character moves the real terminal cursor 2
+    columns, not 1. Every real call site only ever needs to move
+    backward or not at all (the terminal cursor is always at or right
+    of `edit_pos` when a redraw is triggered), so there's no forward
+    case to support.
 
     Reprinting only the tail (not the whole line) keeps this cheap for
     the common case of editing near the end of a short line, and erasing
@@ -234,13 +247,11 @@ async def redraw_tail(
     trailing whitespace to clear, which is simpler and can't drift out
     of sync with the actual old line length.
     """
-    if terminal_col > edit_pos:
-        await write(move_cursor(terminal_col - edit_pos, forward=False))
-    elif terminal_col < edit_pos:
-        await write(move_cursor(edit_pos - terminal_col, forward=True))
+    if move_back > 0:
+        await write(move_cursor(move_back, forward=False))
     await write("\x1b[K")
     await write("".join(line[edit_pos:]))
-    await write(move_cursor(len(line) - new_cursor, forward=False))
+    await write(move_cursor(display_width("".join(line[new_cursor:])), forward=False))
 
 
 @dataclass
@@ -444,22 +455,22 @@ async def apply_tab_completion(
     word_start = _current_word_start(line, cursor)
 
     if len(candidates) == 1:
+        move_back = display_width("".join(line[word_start:cursor]))
         replacement = list(candidates[0]) + [" "]
-        terminal_col = cursor
         line[word_start:cursor] = replacement
         new_cursor = word_start + len(replacement)
         await redraw_tail(
-            write, terminal_col=terminal_col, edit_pos=word_start, line=line, new_cursor=new_cursor
+            write, move_back=move_back, edit_pos=word_start, line=line, new_cursor=new_cursor
         )
         return new_cursor
 
     prefix = list(_common_prefix(candidates))
     if prefix != line[word_start:cursor]:
-        terminal_col = cursor
+        move_back = display_width("".join(line[word_start:cursor]))
         line[word_start:cursor] = prefix
         cursor = word_start + len(prefix)
         await redraw_tail(
-            write, terminal_col=terminal_col, edit_pos=word_start, line=line, new_cursor=cursor
+            write, move_back=move_back, edit_pos=word_start, line=line, new_cursor=cursor
         )
 
     if last_candidates is not None:
@@ -472,7 +483,7 @@ async def apply_tab_completion(
     else:
         await write("\r\n" + "  ".join(candidates) + "\r\n")
         await write("".join(line))
-        await write(move_cursor(len(line) - cursor, forward=False))
+        await write(move_cursor(display_width("".join(line[cursor:])), forward=False))
     return cursor
 
 
@@ -670,11 +681,11 @@ async def _read_line_editable(
 
                 if b in (_BS, _DEL):
                     if cursor > 0:
-                        terminal_col = cursor
+                        move_back = char_width(line[cursor - 1])
                         del line[cursor - 1]
                         cursor -= 1
                         await redraw_tail(
-                            write, terminal_col=terminal_col, edit_pos=cursor, line=line, new_cursor=cursor
+                            write, move_back=move_back, edit_pos=cursor, line=line, new_cursor=cursor
                         )
                     continue
 
@@ -691,25 +702,25 @@ async def _read_line_editable(
                     if key == "LEFT":
                         if cursor > 0:
                             cursor -= 1
-                            await write(move_cursor(1, forward=False))
+                            await write(move_cursor(char_width(line[cursor]), forward=False))
                     elif key == "RIGHT":
                         if cursor < len(line):
+                            width = char_width(line[cursor])
                             cursor += 1
-                            await write(move_cursor(1, forward=True))
+                            await write(move_cursor(width, forward=True))
                     elif key == "HOME":
                         if cursor > 0:
-                            await write(move_cursor(cursor, forward=False))
+                            await write(move_cursor(display_width("".join(line[:cursor])), forward=False))
                             cursor = 0
                     elif key == "END":
                         if cursor < len(line):
-                            await write(move_cursor(len(line) - cursor, forward=True))
+                            await write(move_cursor(display_width("".join(line[cursor:])), forward=True))
                             cursor = len(line)
                     elif key == "DELETE":
                         if cursor < len(line):
-                            terminal_col = cursor
                             del line[cursor]
                             await redraw_tail(
-                                write, terminal_col=terminal_col, edit_pos=cursor, line=line, new_cursor=cursor
+                                write, move_back=0, edit_pos=cursor, line=line, new_cursor=cursor
                             )
                     elif key == "INSERT":
                         overwrite = not overwrite
@@ -726,11 +737,11 @@ async def _read_line_editable(
                                 history.entry(history_index)
                             )
                         if recalled is not None:
-                            terminal_col = cursor
+                            move_back = display_width("".join(line[:cursor]))
                             line = recalled
                             cursor = len(line)
                             await redraw_tail(
-                                write, terminal_col=terminal_col, edit_pos=0, line=line, new_cursor=cursor
+                                write, move_back=move_back, edit_pos=0, line=line, new_cursor=cursor
                             )
                     continue
 
@@ -748,9 +759,30 @@ async def _read_line_editable(
                         continue  # malformed/interrupted multi-byte sequence
 
                 if overwrite and cursor < len(line):
+                    same_width = char_width(line[cursor]) == char_width(char)
+                    edit_pos = cursor
                     line[cursor] = char
                     cursor += 1
-                    await write(char)
+                    if same_width:
+                        # The common case (an ASCII overwrite, or any
+                        # same-width replacement) needs only the literal
+                        # character written -- the terminal's own
+                        # rendering advances the cursor correctly on its
+                        # own, same reasoning as the plain-append case
+                        # below.
+                        await write(char)
+                    else:
+                        # A width mismatch (e.g. overwriting a CJK
+                        # character with an ASCII one) can leave a stale
+                        # column from the old, wider glyph un-erased if
+                        # just the literal character is written --
+                        # dogfood feature request, international users
+                        # found non-ASCII handling poor -- so fall back
+                        # to a full tail redraw, the same primitive a
+                        # mid-line insert already uses.
+                        await redraw_tail(
+                            write, move_back=0, edit_pos=edit_pos, line=line, new_cursor=cursor
+                        )
                     continue
 
                 if len(line) >= _MAX_LINE_LENGTH:
@@ -759,7 +791,7 @@ async def _read_line_editable(
                     # past the cap.
                     continue
 
-                terminal_col = cursor
+                edit_pos = cursor
                 line.insert(cursor, char)
                 cursor += 1
                 if cursor == len(line):
@@ -769,7 +801,7 @@ async def _read_line_editable(
                     await write(char)
                 else:
                     await redraw_tail(
-                        write, terminal_col=terminal_col, edit_pos=terminal_col, line=line, new_cursor=cursor
+                        write, move_back=0, edit_pos=edit_pos, line=line, new_cursor=cursor
                     )
             finally:
                 if live_buffer is not None:
