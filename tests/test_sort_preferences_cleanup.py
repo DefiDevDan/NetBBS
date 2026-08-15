@@ -45,9 +45,11 @@ def test_deleting_a_community_removes_its_sort_preference_override(db, alice):
     assert db.connection.execute(
         "SELECT 1 FROM user_sort_preferences WHERE community_id = ?", (community.id,)
     ).fetchone() is None
-    # Falls all the way back to the hardcoded default -- the community
-    # it was scoped to no longer exists to look up by id anyway.
-    assert get_effective_sort_mode(db, alice, "channel") == "activity"
+    # Falls all the way back to the per-kind hardcoded default -- the
+    # community it was scoped to no longer exists to look up by id
+    # anyway. Channels default to "alphabetical", not "activity" --
+    # see DEFAULT_SORT_MODE_BY_KIND's own comment.
+    assert get_effective_sort_mode(db, alice, "channel") == "alphabetical"
 
 
 def test_deleting_a_board_category_removes_its_sort_preference_override(db, alice):

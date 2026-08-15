@@ -40,10 +40,22 @@ VALID_RESOURCE_KINDS = ("channel", "board", "file_area")
 VALID_SORT_MODES = ("activity", "alphabetical", "recent", "volume")
 
 # The node-wide default when a user has never set any preference at any
-# scope -- matches list_boards'/list_file_areas' own pre-existing
-# order_by default, so a user who never touches this feature sees
-# exactly the same ordering behavior as before it existed.
-DEFAULT_SORT_MODE = "activity"
+# scope, per resource kind -- boards/file areas keep "activity" (their
+# own pre-existing order_by default: real, persisted, Link-synced post/
+# upload timestamps every node agrees on). Channels default to
+# "alphabetical" instead, deliberately *not* matching boards/areas:
+# unlike them, a channel's "activity" is only ever `netbbs.chat.hub.
+# ChatHub.last_activity` -- in-memory, per-node, reset on restart --
+# so defaulting every user to it silently reintroduces the exact
+# cross-node-disagreement dogfood bug fixed before this whole feature
+# existed (`netbbs.net.chat_flow._pick_channel`'s own docstring).
+# "activity" stays fully available as an explicit, opt-in choice --
+# only the *unset* fallback differs.
+DEFAULT_SORT_MODE_BY_KIND: dict[str, str] = {
+    "channel": "alphabetical",
+    "board": "activity",
+    "file_area": "activity",
+}
 
 
 def _check_resource_kind(resource_kind: str) -> None:
@@ -82,8 +94,9 @@ def get_effective_sort_mode(
     """
     Resolves `user`'s sort mode for `resource_kind`, most specific
     override first: a `category_id` match, then a `community_id` match,
-    then the bare per-kind global default, then `DEFAULT_SORT_MODE` if
-    the user has never set anything at any scope.
+    then the bare per-kind global default, then
+    `DEFAULT_SORT_MODE_BY_KIND[resource_kind]` if the user has never
+    set anything at any scope.
 
     Pass whichever of `community_id`/`category_id` describe *where* the
     picker being rendered actually is -- e.g. browsing boards inside
@@ -120,7 +133,7 @@ def get_effective_sort_mode(
     if row is not None:
         return row["sort_mode"]
 
-    return DEFAULT_SORT_MODE
+    return DEFAULT_SORT_MODE_BY_KIND[resource_kind]
 
 
 def set_sort_preference(

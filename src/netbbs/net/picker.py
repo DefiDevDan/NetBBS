@@ -84,6 +84,8 @@ async def pick_item(
     title: str,
     empty_message: str,
     refresh: Callable[[], Awaitable[Sequence[T]]] | None = None,
+    on_sort: Callable[[], Awaitable[Sequence[T] | None]] | None = None,
+    sort_label: Callable[[], str] | None = None,
 ) -> T | None:
     """
     Let the user browse/search/jump through `items` and pick one, or
@@ -145,6 +147,21 @@ async def pick_item(
     return behavior. Ctrl-L/Ctrl-R are deliberately unechoed by
     `read_key`, so rejection paths must not erase a character that was
     never written to the terminal.
+
+    `on_sort` (design doc, dogfood feature request), if given, offers an
+    `[O]rder` command -- this function has no concept of what sort
+    modes exist or how to persist a choice (that's
+    `netbbs.net.sort_ui.prompt_sort_change`, resource-kind-agnostic in
+    the same way this function itself is), so `on_sort` fully owns its
+    own sub-prompt and returns the freshly re-sorted *entire* item
+    sequence, or `None` if the user backed out without changing
+    anything. A non-`None` result replaces both `items` and
+    `working_set` (so a later `search`/`goto` reflects the new order
+    too) and resets to page 1. `sort_label`, if given alongside, is
+    read fresh on every render and appended to the nav trailer (e.g.
+    "Sort: Activity") so the current mode is never a mystery -- exactly
+    the ambiguity the dogfood report behind this feature complained
+    about.
     """
     if not items and refresh is None:
         await session.write_line(colored(f"\r\n{empty_message}", fg_color=MUTED_COLOR))
@@ -206,15 +223,16 @@ async def pick_item(
                 segments.append((f" - {sanitize_text(description)}", MUTED_COLOR))
             await session.write_line(colored_truncate(segments, session.terminal_width))
 
-        nav = "  ".join(
-            [
-                menu_key("N", "ext"),
-                menu_key("P", "rev"),
-                menu_key("S", "earch"),
-                menu_key("G", "oto #"),
-                menu_key("B", "ack"),
-            ]
-        )
+        nav_keys = [
+            menu_key("N", "ext"),
+            menu_key("P", "rev"),
+            menu_key("S", "earch"),
+            menu_key("G", "oto #"),
+        ]
+        if on_sort is not None:
+            nav_keys.append(menu_key("O", "rder"))
+        nav_keys.append(menu_key("B", "ack"))
+        nav = "  ".join(nav_keys)
         # Folded into this same trailing line, not a line of its own
         # (issue #102's own "document it somewhere discoverable"
         # criterion) -- a permanent extra row here would shift every
@@ -223,6 +241,8 @@ async def pick_item(
         trailer = "or type a 2-digit number to select; Ctrl-L: redraw"
         if refresh is not None:
             trailer += ", Ctrl-R: refresh"
+        if sort_label is not None:
+            trailer += f"; Sort: {sanitize_text(sort_label())}"
         await session.write_line(f"\r\n{nav} — {trailer}")
         await session.write("Choice: ")
         return page_items
@@ -292,6 +312,18 @@ async def pick_item(
                 return matches[0]
             working_set = matches
             page_index = 0
+            page_items = await _render()
+            continue
+
+        if key_lower == "o":
+            if on_sort is None:
+                await session.write(reject_unhandled_key(key))
+                continue
+            new_items = await on_sort()
+            if new_items is not None:
+                items = new_items
+                working_set = new_items
+                page_index = 0
             page_items = await _render()
             continue
 

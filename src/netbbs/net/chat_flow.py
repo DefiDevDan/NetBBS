@@ -133,8 +133,8 @@ from netbbs.chat import (
     unban_user,
     unmute_user,
 )
-from netbbs.chat.categories import Category, list_subcategories, list_top_level_categories
-from netbbs.communities import get_effective_min_age, get_effective_name_requirement
+from netbbs.chat.categories import Category, get_category_by_id, list_subcategories, list_top_level_categories
+from netbbs.communities import get_community, get_effective_min_age, get_effective_name_requirement
 from netbbs.directory import VCard, get_vcard
 from netbbs.link.boards import LinkContext
 from netbbs.link.channels import queue_channel_message_if_linked
@@ -145,6 +145,7 @@ from netbbs.net.char_input import move_cursor as relative_move_cursor
 from netbbs.net.picker import pick_item
 from netbbs.net.session import Session, SessionClosedError
 from netbbs.net.session_registry import ActiveSessionRegistry
+from netbbs.net.sort_ui import prompt_sort_change
 from netbbs.permissions import meets_level
 from netbbs.rendering import (
     ACCENT_COLOR,
@@ -173,6 +174,7 @@ from netbbs.rendering import (
     set_scroll_region,
     truncate,
 )
+from netbbs.sort_preferences import get_effective_sort_mode
 from netbbs.storage.database import Database
 from netbbs.storage.execution import DatabaseLane
 from netbbs.timeutil import format_for_display, resolve_display_preferences, utc_now_iso
@@ -314,7 +316,7 @@ async def browse_channels(
         return  # _Quit
 
 
-def _visible_channels_for(db: Database, user: User) -> list[Channel]:
+def _visible_channels_for(db: Database, user: User, *, order_by: str = "alphabetical") -> list[Channel]:
     """
     Every channel `user` is allowed to *see* — the shared filter behind
     the picker, `/list`, and `/whois`'s channel-membership display
@@ -335,9 +337,16 @@ def _visible_channels_for(db: Database, user: User) -> list[Channel]:
     without access, enforced separately by `_authorize_channel_entry`
     (GitHub issue #28, reopened a third time -- both `/join` and
     picking it directly from this list go through that one check now).
+
+    `order_by` (design doc, dogfood feature request) is `list_channels`'
+    own -- only "alphabetical"/"recent", both real SQL orderings this
+    function can just pass straight through. The picker's `activity`/
+    `volume` modes need `netbbs.chat.hub.ChatHub` state this function
+    has no access to, so `_pick_channel` re-sorts its own result for
+    those instead of asking here.
     """
     visible = []
-    for channel in list_channels(db):
+    for channel in list_channels(db, order_by=order_by):
         if not meets_level(user, channel.min_level) or not meets_age(db, user, get_effective_min_age(db, channel)):
             continue
         if channel.hidden and not (
@@ -380,6 +389,18 @@ def list_visible_channels_for(db: Database, user: User) -> list[Channel]:
     return _visible_channels_for(db, user)
 
 
+# Display labels for the picker's [O]rder nav trailer -- "Volume" reads
+# as "Participants" for channels throughout this module (design doc,
+# dogfood feature request); see prompt_sort_change's own volume_label
+# docstring for why.
+_CHANNEL_SORT_MODE_LABELS = {
+    "activity": "Activity",
+    "alphabetical": "Alphabetical",
+    "recent": "Recently added",
+    "volume": "Participants",
+}
+
+
 async def _pick_channel(
     session: Session,
     lane: DatabaseLane,
@@ -410,25 +431,28 @@ async def _pick_channel(
     `description` field), so, like `netbbs.net.file_flow`'s own category
     picker, nothing about the picker callback itself needed
     eager-pre-fetch restructuring -- only the list construction moved.
+
+    Sort mode (design doc, dogfood feature request): `list_channels`
+    itself only ever offers "alphabetical"/"recent" (real, Link-synced
+    columns every node agrees on) -- "activity"/"volume" additionally
+    need `netbbs.chat.hub.ChatHub` state (in-memory, per-node, reset on
+    restart), which this function re-sorts its own already-fetched,
+    already-filtered result by, since a Linked channel's hub-observed
+    activity genuinely can (and, pre-fix, silently did) differ between
+    nodes -- see `netbbs.sort_preferences`'s own module docstring for
+    why that's an accepted, opt-in property of those two modes rather
+    than something to "fix" further. `get_effective_sort_mode` resolves
+    against this call's own `category_id`/Community scope, exactly the
+    scope the `[O]rder` command's own save-scope prompt offers.
     """
 
-    def _load(db: Database) -> tuple[list[Channel], list[Category]]:
-        all_channels = _visible_channels_for(db, user)
+    effective_community_id = community_id if community_scoped else None
+
+    def _load(db: Database, order_by: str) -> tuple[list[Channel], list[Category], str | None, str | None]:
+        base_order = order_by if order_by in ("alphabetical", "recent") else "alphabetical"
+        all_channels = _visible_channels_for(db, user, order_by=base_order)
         if community_scoped:
             all_channels = [c for c in all_channels if c.community_id == community_id]
-        # Deliberately no activity-based default here, unlike
-        # `netbbs.boards.boards.list_boards`: that function's "activity"
-        # order ranks by real, persisted, Link-synced post timestamps, so
-        # every node agrees on it. A channel's activity only exists as
-        # `netbbs.chat.hub.ChatHub.last_activity` -- in-memory, per-node,
-        # and reset on restart (that class's own docstring) -- so ranking
-        # a Linked channel by it made two nodes silently disagree on the
-        # order of the very same channel list (dogfood report). Relying
-        # instead on `_visible_channels_for`'s own order (`list_channels`'
-        # `pinned DESC, name ASC`, both real synced columns) keeps this
-        # picker's order identical everywhere. A user-selectable sort
-        # mode (activity included, opt-in and clearly node-local) is
-        # separate follow-up work, not done here.
         channels_here = [c for c in all_channels if c.category_id == category_id]
 
         categories_here = (
@@ -444,13 +468,54 @@ async def _pick_channel(
                 ]
             else:
                 categories_here = [c for c in categories_here if c.id in used_category_ids]
-        return channels_here, categories_here
 
-    channels_here, categories_here = await lane.run(_load)
+        category_name = get_category_by_id(db, category_id).name if category_id is not None else None
+        community = get_community(db, effective_community_id)
+        return channels_here, categories_here, category_name, community.name if community is not None else None
+
+    async def _load_sorted(order_by: str) -> tuple[list[Channel], list[Category], str | None, str | None]:
+        channels_here, categories_here, category_name, community_name = await lane.run(_load, order_by)
+        if order_by == "activity":
+            # Same shape the pre-fix default sort used (dogfood item 8) --
+            # now reached only when a user explicitly opted into it.
+            channels_here = sorted(channels_here, key=lambda c: hub.last_activity(c.name) or "", reverse=True)
+            channels_here = sorted(channels_here, key=lambda c: not c.pinned)
+        elif order_by == "volume":
+            # "Volume" means live participant count for channels, not a
+            # stored-content count (see prompt_sort_change's own
+            # volume_label docstring) -- no persisted chat history to
+            # count instead.
+            channels_here = sorted(channels_here, key=lambda c: (not c.pinned, -hub.participant_count(c.name)))
+        return channels_here, categories_here, category_name, community_name
+
+    current_mode = await lane.run(
+        get_effective_sort_mode, user, "channel", community_id=effective_community_id, category_id=category_id
+    )
+    channels_here, categories_here, category_name, community_name = await _load_sorted(current_mode)
+    mode_box = {"mode": current_mode}
+
+    async def _run_sort_prompt() -> str | None:
+        return await prompt_sort_change(
+            session, lane, user, "channel",
+            community_id=effective_community_id, community_name=community_name,
+            category_id=category_id, category_name=category_name,
+            volume_label="Participants",
+        )
+
+    def _sort_label() -> str:
+        return _CHANNEL_SORT_MODE_LABELS[mode_box["mode"]]
 
     title = f"{title_prefix} — chat channels" if title_prefix is not None else "Available channels"
 
     if not categories_here:
+        async def on_sort_flat() -> list[Channel] | None:
+            new_mode = await _run_sort_prompt()
+            if new_mode is None:
+                return None
+            mode_box["mode"] = new_mode
+            new_channels, _, _, _ = await _load_sorted(new_mode)
+            return new_channels
+
         return await pick_item(
             session,
             channels_here,
@@ -459,6 +524,8 @@ async def _pick_channel(
             description_of=lambda c: _channel_description(hub, c),
             title=title,
             empty_message="No chat channels are available to you yet.",
+            on_sort=on_sort_flat,
+            sort_label=_sort_label,
         )
 
     mixed: list[Category | Channel] = [*categories_here, *channels_here]
@@ -474,11 +541,21 @@ async def _pick_channel(
     def stable_id(item: Category | Channel) -> int:
         return item.id if isinstance(item, Channel) else -item.id
 
+    async def on_sort_mixed() -> list[Category | Channel] | None:
+        new_mode = await _run_sort_prompt()
+        if new_mode is None:
+            return None
+        mode_box["mode"] = new_mode
+        new_channels, _, _, _ = await _load_sorted(new_mode)
+        return [*categories_here, *new_channels]
+
     selected = await pick_item(
         session,
         mixed,
         name_of=render_name,
         stable_id_of=stable_id,
+        on_sort=on_sort_mixed,
+        sort_label=_sort_label,
         description_of=render_description,
         title=title,
         empty_message="No chat channels are available to you yet.",

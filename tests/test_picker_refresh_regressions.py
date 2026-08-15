@@ -21,7 +21,11 @@ class FakeSession(Session):
         self.written.append(text)
 
     async def read_line(self, echo: bool = True, history=None, completer=None, **kwargs) -> str:
-        raise NotImplementedError
+        # Same ordered queue read_key() serves from -- no existing test
+        # in this file exercises a read_line-driven sub-prompt (goto,
+        # search), so this was previously left unimplemented; the
+        # on_sort tests below need goto's own "Go to #: " prompt to work.
+        return self._keys.pop(0)
 
     async def read_key(self, echo: bool = True) -> str:
         return self._keys.pop(0)
@@ -110,3 +114,96 @@ def test_unechoed_control_as_second_selection_key_erases_only_first_digit():
         text = _written(session)
         assert "\b \b\a" in text
         assert "\b \b\b \b\a" not in text
+
+
+# -- on_sort / sort_label (design doc, dogfood feature request) -------------
+
+
+def test_order_command_is_absent_without_on_sort():
+    session = FakeSession(["b"])
+    asyncio.run(
+        pick_item(
+            session, ["alpha"], name_of=lambda v: v, stable_id_of=lambda _v: 1,
+            title="Items", empty_message="none",
+        )
+    )
+    assert "rder" not in _written(session)
+
+
+def test_o_is_rejected_like_any_unrecognized_key_without_on_sort():
+    session = FakeSession(["o", "b"])
+    asyncio.run(
+        pick_item(
+            session, ["alpha"], name_of=lambda v: v, stable_id_of=lambda _v: 1,
+            title="Items", empty_message="none",
+        )
+    )
+    assert "\a" in _written(session)
+
+
+def test_on_sort_replaces_items_and_working_set_and_resets_to_page_one():
+    """A re-sort must be reflected by a later goto/search too, not just
+    the immediate redraw -- proven here by paging to page 2 first, then
+    re-sorting, then using goto (which always scans the full `items`,
+    per that command's own docstring) to reach an item only present in
+    the *new* list."""
+    session = FakeSession(["n", "o", "g", "9"])
+    on_sort_calls = 0
+
+    async def on_sort():
+        nonlocal on_sort_calls
+        on_sort_calls += 1
+        return ["zzz"]
+
+    result = asyncio.run(
+        pick_item(
+            session,
+            [f"item{n}" for n in range(1, 200)],
+            name_of=lambda v: v,
+            stable_id_of=lambda v: 9 if v == "zzz" else int(v.removeprefix("item")),
+            title="Items",
+            empty_message="none",
+            on_sort=on_sort,
+        )
+    )
+
+    assert on_sort_calls == 1
+    assert result == "zzz"
+
+
+def test_on_sort_returning_none_leaves_the_current_list_unchanged():
+    session = FakeSession(["o", "0", "1"])
+
+    async def on_sort():
+        return None
+
+    result = asyncio.run(
+        pick_item(
+            session, ["alpha", "beta"], name_of=lambda v: v, stable_id_of=lambda _v: 1,
+            title="Items", empty_message="none", on_sort=on_sort,
+        )
+    )
+    assert result == "alpha"
+
+
+def test_sort_label_is_read_fresh_on_every_render():
+    session = FakeSession(["o", "b"])
+    label_calls = 0
+
+    async def on_sort():
+        return ["alpha"]
+
+    def sort_label():
+        nonlocal label_calls
+        label_calls += 1
+        return "Activity" if label_calls == 1 else "Alphabetical"
+
+    asyncio.run(
+        pick_item(
+            session, ["alpha"], name_of=lambda v: v, stable_id_of=lambda _v: 1,
+            title="Items", empty_message="none", on_sort=on_sort, sort_label=sort_label,
+        )
+    )
+    text = _written(session)
+    assert "Sort: Activity" in text
+    assert "Sort: Alphabetical" in text

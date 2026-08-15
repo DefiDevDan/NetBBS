@@ -12,7 +12,7 @@ import pytest
 from netbbs.auth.users import create_user
 from netbbs.communities import create_community
 from netbbs.sort_preferences import (
-    DEFAULT_SORT_MODE,
+    DEFAULT_SORT_MODE_BY_KIND,
     clear_sort_preference,
     get_effective_sort_mode,
     list_sort_preferences,
@@ -48,8 +48,19 @@ def other_community(db, alice):
     return create_community(db, "Other", creator=alice)
 
 
-def test_default_is_activity_when_nothing_is_ever_set(db, alice):
-    assert get_effective_sort_mode(db, alice, "channel") == DEFAULT_SORT_MODE == "activity"
+def test_default_is_activity_for_boards_and_file_areas_when_nothing_is_ever_set(db, alice):
+    assert get_effective_sort_mode(db, alice, "board") == DEFAULT_SORT_MODE_BY_KIND["board"] == "activity"
+    assert get_effective_sort_mode(db, alice, "file_area") == DEFAULT_SORT_MODE_BY_KIND["file_area"] == "activity"
+
+
+def test_default_is_alphabetical_for_channels_when_nothing_is_ever_set(db, alice):
+    # Deliberately *not* "activity" here, unlike boards/file areas --
+    # see DEFAULT_SORT_MODE_BY_KIND's own comment: a channel's activity
+    # is only ever node-local ChatHub state, so defaulting every user to
+    # it would silently reintroduce the exact cross-node-disagreement
+    # dogfood bug this whole feature exists to let users opt into
+    # knowingly, not be defaulted into silently.
+    assert get_effective_sort_mode(db, alice, "channel") == DEFAULT_SORT_MODE_BY_KIND["channel"] == "alphabetical"
 
 
 def test_global_preference_applies_once_set(db, alice):
@@ -80,7 +91,7 @@ def test_community_override_beats_the_global_default(db, alice, retro):
 
 def test_community_override_does_not_leak_into_a_different_community(db, alice, retro, other_community):
     set_sort_preference(db, alice, "channel", "volume", community_id=retro.id)
-    assert get_effective_sort_mode(db, alice, "channel", community_id=other_community.id) == "activity"
+    assert get_effective_sort_mode(db, alice, "channel", community_id=other_community.id) == "alphabetical"
 
 
 def test_category_override_beats_both_community_and_global(db, alice, retro):
@@ -109,12 +120,12 @@ def test_clearing_a_scope_falls_back_to_the_next_one_up(db, alice, retro):
 
 def test_clearing_a_scope_that_was_never_set_is_a_harmless_no_op(db, alice, retro):
     clear_sort_preference(db, alice, "channel", community_id=retro.id)
-    assert get_effective_sort_mode(db, alice, "channel", community_id=retro.id) == "activity"
+    assert get_effective_sort_mode(db, alice, "channel", community_id=retro.id) == "alphabetical"
 
 
 def test_preferences_are_isolated_per_user(db, alice, bob):
-    set_sort_preference(db, alice, "channel", "alphabetical")
-    assert get_effective_sort_mode(db, bob, "channel") == "activity"
+    set_sort_preference(db, alice, "channel", "recent")
+    assert get_effective_sort_mode(db, bob, "channel") == "alphabetical"
 
 
 def test_set_sort_preference_rejects_both_community_and_category_at_once(db, alice, retro):
