@@ -87,7 +87,19 @@ between NetBBS nodes, opt-in and disabled by default. Currently working:
   interruption-recoverable restore), quotas on every
   remotely-influenced resource (peer count, carried-board count,
   request rate/size), startup integrity checking, and graceful
-  drain of in-flight Link work on shutdown.
+  drain of in-flight Link work on shutdown;
+- Phase 4 local trust/reputation/probation/quarantine enforcement across
+  Link boundaries — signed trust signals, Sybil-resistant domain
+  weighting, manual block/quarantine/recovery, and an operator-facing
+  explanation/history surface — validated against the adversarial
+  scenarios and real multi-node exercise design doc §12.10/12.11 require
+  (still short of a public-readiness claim: sustained dogfood with
+  independently administered nodes, issue #83, hasn't happened yet);
+- real-time linked-channel chat over a persistent, mutually authenticated
+  Noise session (issue #148) — live messages and presence for a channel
+  a node already carries, alongside (not instead of) the existing
+  asynchronous propagation above, with an honest connecting/live/lost
+  status for the caller.
 
 Try it yourself with the [two-node quickstart](#trying-netbbs-link-a-two-node-quickstart)
 below — every step is also exercised automatically by
@@ -95,16 +107,19 @@ below — every step is also exercised automatically by
 so a future change that breaks this flow fails a script instead of
 just rotting this document.
 
-**What Link does not yet do** — no public federation or implemented trust/
-quarantine enforcement (Phase 3 is explicitly a private, invite-your-friends
-federation for now; issue #55's threat model is specified in the design doc,
-but Phase-4 implementation remains);
-no tier-2 Link-message routing or client-side decryption; no real-time
-Link-wide chat (local direct chat is a separate feature); and no linked
-channel/file-area origin succession, delegated Link moderation, or Link
-Communities. Public external interoperability remains unclaimed; issue #71's
-independent implementation is deferred, while sustained multi-node dogfood
-continues independently from active Phase-4 development.
+**What Link does not yet do** — no *public* federation: trust/quarantine
+enforcement is implemented and validated (see above), but Phase 3 remains a
+private, invite-your-friends federation until the dogfood half of public
+readiness (issue #83) actually happens, and issue #55's threat model still
+assumes a small, trusted membership rather than the open internet;
+no tier-2 Link-message routing or client-side decryption; no Link-wide
+*private* real-time chat or multi-hop real-time relay (real-time
+linked-*channel* chat, above, is direct node-to-node only so far); and no
+linked channel/file-area origin succession, delegated Link moderation, or
+Link Communities. Public external interoperability remains unclaimed;
+issue #71's independent implementation is deferred indefinitely, while
+sustained multi-node dogfood (issue #83) continues independently from
+active Phase-4 development.
 
 See [`docs/NetBBS-design-doc.md`](docs/NetBBS-design-doc.md) for the
 full architecture, rationale, and phased roadmap, and
@@ -566,11 +581,15 @@ Both nodes as configured here are full peers advertising a real
 address — fine for a local loopback demo (and needed for it: the mail
 acknowledgement round trip in step 6 requires both sides reachable),
 but each will log a startup warning about it. Prefer `outgoing_only =
-true` (the default) for anything you actually run persistently: Phase 3
-still has no implemented public trust/quarantine enforcement, so an externally
-reachable full peer accepts a hello from any node that dials it. Issue #55's
-threat model is design only until the Phase-4 persistence and enforcement
-slices ship.
+true` (the default) for anything you actually run persistently: local
+trust/quarantine enforcement is implemented and validated (issues
+#126–131), but Phase 3 is still a private, invite-your-friends
+federation, not a public one — a reachable full peer still accepts a
+hello from any node that dials it (by design, so it can be evaluated
+at all), a freshly-seen node starts with only bounded probationary
+access, and there is no shared public reputation network to lean on
+yet. Issue #55's threat model targets that small-trusted-membership
+case specifically, not the open internet.
 
 **2. Create a SysOp on each** (`create_test_user.py <db> <username>
 <password> <level>` — 255 is the SysOp level), then start both from

@@ -26,6 +26,7 @@ from netbbs.link.trust import (
     list_sole_authorities,
     list_trust_domains,
     register_subject,
+    set_trust_override,
 )
 from netbbs.link.remote_attestation import (
     build_remote_attestation,
@@ -244,6 +245,49 @@ def test_sysop_can_apply_reasoned_override_through_real_menu_path(db, lane, syso
     assert state.state == TrustState.BLOCKED
     assert state.explanation["override_reason"] == "resource abuse reviewed"
     assert "Trust override applied and audited." in _written_text(session)
+
+
+def test_sysop_can_clear_a_trust_override_and_view_decision_history_through_real_menu_path(
+    db, lane, sysop
+):
+    """Issue #131's public-readiness gate: the recovery half of the SysOp
+    trust surface (`_clear_trust_override_screen`) and the explanation
+    surface (`_trust_decision_history_screen`) were only ever exercised
+    at the `netbbs.link.trust` function level -- the real Telnet menu
+    path to either was untested. Mirrors `test_sysop_can_apply_
+    reasoned_override_through_real_menu_path` exactly, one screen
+    later: a subject already under an active override, cleared and
+    explained through the real menu, not a synthetic fixture."""
+    subject = TrustSubject.node("remote-node")
+    register_subject(db, subject, first_accepted_at="2026-08-01T00:00:00.000000Z")
+    set_trust_override(
+        db, subject, TrustDimension.RESOURCE_BEHAVIOR, TrustState.BLOCKED,
+        reason="resource abuse reviewed", now_iso="2026-08-01T01:00:00+00:00",
+    )
+    session = FakeSession(
+        [
+            "s", "p", "s", "0", "1",  # Trust policy -> Subjects -> the only subject
+            "c", "0", "1",  # Clear override -> the only active override
+            "h",  # decision history
+            "b", "b", "b", "b", "b",
+        ]
+    )
+    _run(session, lane, sysop)
+
+    state = get_effective_trust_state(db, subject, TrustDimension.RESOURCE_BEHAVIOR)
+    # Cleared, with no other override or earned evidence left -- falls
+    # back to the ordinary default, not a jump straight back to
+    # ESTABLISHED (see docs/NetBBS-worklog.md on set_trust_override's
+    # own "clear -> probationary, re-vouch separately" recovery shape).
+    assert state.state == TrustState.PROBATIONARY
+
+    text = _written_text(session)
+    assert "Override cleared; recovery policy was recomputed." in text
+    assert "Trust decision history:" in text
+    # The audit trail is real, not empty -- both the original override's
+    # own reason and the clear's resulting transition are visible.
+    assert "resource abuse reviewed" in text
+    assert "blocked" in text and "probationary" in text
 
 
 def test_declined_sole_authority_confirmation_leaves_policy_safe(db, lane, sysop):

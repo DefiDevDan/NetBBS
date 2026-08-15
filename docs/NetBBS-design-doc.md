@@ -2665,6 +2665,83 @@ Public readiness additionally requires a SysOp trust/explanation surface,
 manual block/quarantine/recovery workflows, and dogfood with independently
 administered nodes. Unit tests alone are not a public-network claim.
 
+### 12.11 Public-readiness checklist (issue #131)
+
+This section is the honest statement §12.10 itself requires: what is actually
+validated as of this writing, and what still is not. Update it in place as
+coverage changes rather than appending a superseded status below it.
+
+**§12.10's scenario list — validated:**
+
+Sybils in one domain; colluding domains below and above threshold;
+compromised-reporter removal (with preservation, not deletion, of the
+underlying signal); expiry/revocation; replay (both at the signal level and
+the request/nonce level); future-dated signals; oversized signals;
+reproducible and false evidence; invalid-signature attribution; subjective
+content reports never escalating to transport quarantine; restart
+reconstruction; overrides (both application and clearing) as an audited,
+reversible transition; preservation without deletion; user/node subject
+scoping; containment recovery; and real SQLite/transport resource bounds
+(per-subject/category quotas, bounded evidence fetch). All of the above are
+covered by tests exercising the real policy/enforcement code paths, most of
+them (Sybil weighting, replay/staleness, resource bounds) over a real
+loopback transport, not only in-process function calls — see
+`tests/test_link_trust.py`, `tests/test_link_trust_wire.py`, and
+`tests/test_link_transport.py`.
+
+**Known, accepted gaps in that list** (small, not believed to hide a real
+policy hole, but not independently proven either):
+
+- A trust signal that is already past its own declared expiry strictly *at
+  the moment it arrives* has no dedicated test distinguishing it from
+  ordinary expiry-driven exclusion — it is caught by the same general
+  expiry filter every other expired signal is, but that filter's coverage
+  of this exact timing has never been asserted directly.
+- Trust state under a genuine network partition is validated only as two
+  separate proofs, not one combined scenario: `tests/test_link_convergence.py`
+  proves generic Link partition/restart convergence with no trust content
+  involved, and `tests/test_link_trust.py`'s recovery-hold tests prove
+  trust-state recovery timing on a single node with no partition involved.
+  Nothing currently drives a real multi-node partition *of trust-affecting
+  traffic specifically* through to convergence.
+
+**Public-readiness items:**
+
+- **SysOp trust/explanation surface** — built and reachable through the real
+  Telnet menu: subjects, per-dimension state and explanation, override
+  application, override clearing, and decision history are all exercised
+  end to end through `admin_menu` in `tests/test_admin_flow.py`, not only
+  at the `netbbs.link.trust` function level.
+- **Manual block/quarantine/recovery workflows** — same real-menu coverage
+  for both directions: applying a block through the UI and clearing one
+  back to a recomputed state are each tested.
+- **One real multi-node exercise covering configuration, quarantine,
+  explanation, and recovery together** —
+  `tests/test_link_transport.py::test_real_transport_enforces_probation_
+  quarantine_block_explains_and_recovers` drives two real nodes over a real
+  loopback HTTP connection through the full sequence: probation, an
+  established override, escalation to quarantine, escalation to a manual
+  block (with the previously-accepted bytes still present and the
+  quarantined event still absent), reading the exact SysOp explanation
+  surface for that blocked state, clearing both overrides, an explicit
+  re-vouch, and a previously-refused push and hello both succeeding again
+  over that same connection afterward.
+- **Dogfood with independently administered nodes** — **not yet done.**
+  Issue #83 tracks this and is deliberately independent in duration from
+  this gate (its calendar length does not block the rest of #131), but it
+  has not itself happened. This is the one item on this whole checklist
+  that automated tests cannot substitute for.
+
+**What this checklist does and does not claim:** every scenario above having
+a real, passing test means the *implemented* Phase 4 model behaves
+correctly against every adversarial case design doc §12 currently specifies,
+including through real transport, storage, and restart. It does **not**
+mean NetBBS Link is ready for public, stranger-to-stranger federation —
+that additionally requires the independently-administered dogfood above,
+and remains explicitly out of scope until it happens. Treat any future
+claim of public readiness that does not point back to a completed dogfood
+exercise as premature.
+
 ---
 
 ## 13. Runtime, persistence, and operations
