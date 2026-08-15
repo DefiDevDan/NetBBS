@@ -827,6 +827,7 @@ class ChatCommandContext:
     channel: Channel
     user: User
     participant_id: ParticipantId
+    pinned_ui_enabled: bool
     session_registry: ActiveSessionRegistry | None = None
     direct_invites: DirectChatInvites | None = None
 
@@ -1634,6 +1635,30 @@ async def _announce_nick_change(ctx: ChatCommandContext, *, new_nick: str | None
     await ctx.hub.broadcast(ctx.channel.name, notice, exclude={ctx.participant_id})
 
 
+async def _handle_clear(ctx: ChatCommandContext, args: str) -> None:
+    """
+    `/clear` (alias `/cls`, design doc dogfood request): scrubs this
+    session's own visible chat area. Purely local/cosmetic -- no
+    channel or server state changes, nothing broadcast to anyone else.
+
+    Same `clear_screen() + set_scroll_region(...)` pair
+    `_PinnedUIState.sync()` already uses for an in-range resize
+    (`netbbs.rendering`): re-issuing `set_scroll_region` alone re-homes
+    the cursor but leaves old content sitting in the scroll region, so
+    a real `clear_screen()` has to run first. Doesn't repaint the
+    status/input rows itself -- `send_loop`'s own post-dispatch
+    `_repaint_status_line` call and its `finally` block's
+    `_repaint_input_row` call (both run right after every command,
+    `pinned_ui_enabled` or not) already redraw them fresh against the
+    now-blank region, the same as they do for every other command.
+    """
+    height = ctx.session.terminal_height
+    if ctx.pinned_ui_enabled:
+        await ctx.session.write(clear_screen() + set_scroll_region(1, height - 2))
+    else:
+        await ctx.session.write(clear_screen())
+
+
 async def _handle_away(ctx: ChatCommandContext, args: str) -> None:
     """
     `/away [message]` (design doc): sets a node-wide
@@ -2012,6 +2037,7 @@ _COMMAND_INFO: dict[str, tuple[str, str]] = {
     "help": ("/help [command]", "List available commands, or show detail for one."),
     "me": ("/me <action>", 'Send an action message (e.g. "* alice waves").'),
     "nick": ("/nick [name]", "Set your display alias; a bare /nick clears it."),
+    "clear": ("/clear", "Clear your own screen (alias: /cls). Cosmetic only, nothing else changes."),
     "away": ("/away [message]", "Mark yourself away, or clear away status."),
     "timestamps": ("/timestamps [on|off]", "Toggle chat timestamps, or set them on/off explicitly."),
     "mute": ("/mute <user> [duration] [reason]", "Silence a user's messages in this channel."),
@@ -2047,6 +2073,11 @@ _COMMANDS: dict[str, CommandHandler] = {
                          # removal of /query for the contrast)
     "me": _handle_me,
     "nick": _handle_nick,
+    "clear": _handle_clear,
+    "cls": _handle_clear,  # terse alias (design doc dogfood request) --
+                            # same shape as "?" for /help just above: a
+                            # genuinely distinct trigger, not a second
+                            # documented name for the same command.
     "away": _handle_away,
     "timestamps": _handle_timestamps,
     "mute": _handle_mute,
@@ -3237,6 +3268,7 @@ async def _chat_loop(
                                 channel=channel,
                                 user=user,
                                 participant_id=participant_id,
+                                pinned_ui_enabled=pinned_ui_enabled,
                                 session_registry=session_registry,
                                 direct_invites=direct_invites,
                             )
@@ -3278,6 +3310,7 @@ async def _chat_loop(
                                 channel=channel,
                                 user=user,
                                 participant_id=participant_id,
+                                pinned_ui_enabled=pinned_ui_enabled,
                                 session_registry=session_registry,
                                 direct_invites=direct_invites,
                             )

@@ -470,6 +470,48 @@ def test_chat_loop_opens_with_location_and_live_transition(lane, hub, presence, 
     assert "LIVE" in text
 
 
+def test_clear_command_clears_the_screen_and_reestablishes_the_scroll_region(
+    lane, hub, presence, mailbox, channel, alice
+):
+    """Dogfood feature request: /clear (design doc). Entry itself
+    already writes one clear_screen() -- /clear must write a second,
+    paired with the same set_scroll_region() the pinned rows need to
+    survive it (send_loop's own post-dispatch repaint redraws them
+    right after, same as every other command)."""
+    session, _ = asyncio.run(_run(lane, hub, presence, mailbox, channel, alice, ["/clear", "/quit"]))
+    text = _written_text(session)
+    # Entry already writes this exact clear+scroll-region pair once --
+    # a bare "in text"/">= 2 on the plain clear_screen() count alone
+    # would pass even if /clear silently did nothing, since exit's own
+    # teardown (test_chat_loop_clears_the_screen_on_exit) writes a
+    # second bare clear_screen() regardless. Requiring the *paired*
+    # sequence twice is what actually proves /clear fired.
+    assert text.count("\x1b[2J\x1b[H\x1b[1;22r") >= 2
+
+
+def test_cls_is_a_working_alias_for_clear(lane, hub, presence, mailbox, channel, alice):
+    session, _ = asyncio.run(_run(lane, hub, presence, mailbox, channel, alice, ["/cls", "/quit"]))
+    text = _written_text(session)
+    assert "Unknown command" not in text
+    assert text.count("\x1b[2J\x1b[H\x1b[1;22r") >= 2
+
+
+def test_clear_on_a_too_short_terminal_clears_without_touching_any_scroll_region(
+    lane, hub, presence, mailbox, channel, alice
+):
+    session = FakeSession(["/clear", "/quit"])
+    session.terminal_height = 1  # below _PINNED_UI_MIN_HEIGHT -- no pinned UI at all
+    history = InputHistory()
+    asyncio.run(
+        asyncio.wait_for(
+            chat_flow._chat_loop(session, lane, hub, presence, mailbox, history, channel, alice), timeout=2
+        )
+    )
+    text = _written_text(session)
+    assert "\x1b[2J\x1b[H" in text  # /clear's own plain clear_screen()
+    assert "\x1b[r" not in text  # never set a scroll region, so never reset one either
+
+
 def test_chat_loop_resets_the_scroll_region_on_exit(lane, hub, presence, mailbox, channel, alice):
     session, _ = asyncio.run(_run(lane, hub, presence, mailbox, channel, alice, ["/quit"]))
     assert "\x1b[r" in _written_text(session)
