@@ -84,7 +84,7 @@ from netbbs.boards import (
     list_posts_page,
     tombstone_post,
 )
-from netbbs.boards.categories import Category, list_subcategories, list_top_level_categories
+from netbbs.boards.categories import Category, get_category_by_id, list_subcategories, list_top_level_categories
 from netbbs.chat import (
     ChatHub,
     DirectChatInvites,
@@ -96,6 +96,7 @@ from netbbs.chat import (
 from netbbs.chat.channels import Channel
 from netbbs.communities import (
     Community,
+    get_community,
     get_effective_min_age,
     get_effective_min_read_level,
     get_effective_min_write_level,
@@ -149,6 +150,7 @@ from netbbs.net.prose_editor import edit_prose
 from netbbs.net.session import Session, SessionClosedError
 from netbbs.net.session_registry import ActiveSessionRegistry, SessionSummary
 from netbbs.net.shutdown import NodeControls, SequenceScheduler, format_remaining_seconds
+from netbbs.net.sort_ui import SORT_MODE_LABELS, prompt_sort_change
 from netbbs.net.throttle import LoginThrottle
 from netbbs.net.welcome_banner import load_welcome_banner
 from netbbs.permissions import meets_level
@@ -194,6 +196,7 @@ from netbbs.session_history import (
     session_history_name_visible,
     set_session_history_name_visible,
 )
+from netbbs.sort_preferences import get_effective_sort_mode, set_sort_preference
 from netbbs.storage.database import Database
 from netbbs.storage.execution import DatabaseLane
 from netbbs.timeutil import format_for_display, utc_now_iso
@@ -2185,37 +2188,86 @@ async def _browse_boards_in_category(
     currently used by ≥1 resource in this Community") only applies when
     `community_scoped` -- the unfiltered Jump path shows every category
     exactly as it always has.
+
+    Sort mode (design doc, dogfood feature request): unlike
+    `netbbs.net.chat_flow._pick_channel`, `list_boards` already
+    supports every mode (`"activity"`/`"alphabetical"`/`"recent"`/
+    `"volume"`) directly against real, persisted columns -- no
+    in-memory hub state to separately combine in, so a mode switch is
+    just re-calling `_load` with a different `order_by`.
+    `get_effective_sort_mode` resolves against this call's own
+    `category_id`/Community scope, exactly the scope the `[O]rder`
+    command's own save-scope prompt offers. This module has no
+    `DatabaseLane` (unlike chat's long-running loop, board browsing
+    here just calls `Database` directly), so persistence is a plain
+    synchronous `set_sort_preference` call wrapped in an async closure
+    for `netbbs.net.sort_ui.prompt_sort_change`'s own `persist` seam.
     """
     # name_requirement deliberately does not gate reading here -- it's a
     # participation/accountability requirement (design doc §18 point 7:
     # "mutual visible accountability" among people posting), not a
     # content-restriction the way min_age is; see can_post's own check,
     # below, for where it actually applies.
-    all_boards = [
-        b for b in list_boards(db)
-        if meets_level(user, get_effective_min_read_level(db, b)) and meets_age(db, user, get_effective_min_age(db, b))
-    ]
-    if community_scoped:
-        all_boards = [b for b in all_boards if b.community_id == community_id]
-    boards_here = [b for b in all_boards if b.category_id == category_id]
+    effective_community_id = community_id if community_scoped else None
 
-    categories_here = (
-        list_top_level_categories(db) if category_id is None else list_subcategories(db, category_id)
+    def _load(order_by: str) -> tuple[list[Board], list[Category]]:
+        all_boards = [
+            b for b in list_boards(db, order_by=order_by)
+            if meets_level(user, get_effective_min_read_level(db, b))
+            and meets_age(db, user, get_effective_min_age(db, b))
+        ]
+        if community_scoped:
+            all_boards = [b for b in all_boards if b.community_id == community_id]
+        boards_here = [b for b in all_boards if b.category_id == category_id]
+
+        categories_here = (
+            list_top_level_categories(db) if category_id is None else list_subcategories(db, category_id)
+        )
+        if community_scoped:
+            used_category_ids = {b.category_id for b in all_boards if b.category_id is not None}
+            if category_id is None:
+                categories_here = [
+                    c for c in categories_here
+                    if c.id in used_category_ids
+                    or any(sub.id in used_category_ids for sub in list_subcategories(db, c.id))
+                ]
+            else:
+                categories_here = [c for c in categories_here if c.id in used_category_ids]
+        return boards_here, categories_here
+
+    current_mode = get_effective_sort_mode(
+        db, user, "board", community_id=effective_community_id, category_id=category_id
     )
-    if community_scoped:
-        used_category_ids = {b.category_id for b in all_boards if b.category_id is not None}
-        if category_id is None:
-            categories_here = [
-                c for c in categories_here
-                if c.id in used_category_ids
-                or any(sub.id in used_category_ids for sub in list_subcategories(db, c.id))
-            ]
-        else:
-            categories_here = [c for c in categories_here if c.id in used_category_ids]
+    boards_here, categories_here = _load(current_mode)
+    category_name = get_category_by_id(db, category_id).name if category_id is not None else None
+    community = get_community(db, effective_community_id)
+    community_name = community.name if community is not None else None
+    mode_box = {"mode": current_mode}
+
+    async def _persist_sort_choice(mode: str, scope_kwargs: dict) -> None:
+        set_sort_preference(db, user, "board", mode, **scope_kwargs)
+
+    async def _run_sort_prompt() -> str | None:
+        return await prompt_sort_change(
+            session, persist=_persist_sort_choice,
+            community_id=effective_community_id, community_name=community_name,
+            category_id=category_id, category_name=category_name,
+        )
+
+    def _sort_label() -> str:
+        return SORT_MODE_LABELS[mode_box["mode"]]
 
     title = f"{title_prefix} — message boards" if title_prefix is not None else "Available message boards"
 
     if not categories_here:
+        async def on_sort_flat() -> list[Board] | None:
+            new_mode = await _run_sort_prompt()
+            if new_mode is None:
+                return None
+            mode_box["mode"] = new_mode
+            new_boards, _ = _load(new_mode)
+            return new_boards
+
         board = await pick_item(
             session,
             boards_here,
@@ -2224,6 +2276,8 @@ async def _browse_boards_in_category(
             description_of=lambda b: b.description,
             title=title,
             empty_message="No message boards are available to you yet.",
+            on_sort=on_sort_flat,
+            sort_label=_sort_label,
         )
         if board is not None:
             await _show_board(session, db, board, user, link_context=link_context)
@@ -2242,11 +2296,21 @@ async def _browse_boards_in_category(
     def stable_id(item: Category | Board) -> int:
         return item.id if isinstance(item, Board) else -item.id
 
+    async def on_sort_mixed() -> list[Category | Board] | None:
+        new_mode = await _run_sort_prompt()
+        if new_mode is None:
+            return None
+        mode_box["mode"] = new_mode
+        new_boards, _ = _load(new_mode)
+        return [*categories_here, *new_boards]
+
     selected = await pick_item(
         session,
         mixed,
         name_of=render_name,
         stable_id_of=stable_id,
+        on_sort=on_sort_mixed,
+        sort_label=_sort_label,
         description_of=render_description,
         title=title,
         empty_message="No message boards are available to you yet.",

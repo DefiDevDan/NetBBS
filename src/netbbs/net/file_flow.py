@@ -53,6 +53,7 @@ from netbbs.activity import record_file_area_seen
 from netbbs.attestation import format_name_for_resource, meets_age, meets_name_requirement
 from netbbs.auth.users import User, get_user_by_id
 from netbbs.communities import (
+    get_community,
     get_effective_min_age,
     get_effective_min_read_level,
     get_effective_min_write_level,
@@ -70,6 +71,7 @@ from netbbs.files import (
 )
 from netbbs.files.categories import (
     FileAreaCategory,
+    get_category_by_id,
     list_subcategories,
     list_top_level_categories,
 )
@@ -81,6 +83,7 @@ from netbbs.net import zmodem
 from netbbs.net.confirm import prompt_yes_no
 from netbbs.net.picker import pick_item
 from netbbs.net.session import Session
+from netbbs.net.sort_ui import SORT_MODE_LABELS, prompt_sort_change
 from netbbs.permissions import meets_level
 from netbbs.rendering import (
     ACCENT_COLOR,
@@ -96,6 +99,7 @@ from netbbs.rendering import (
     sanitize_text,
     screen_title,
 )
+from netbbs.sort_preferences import get_effective_sort_mode, set_sort_preference
 from netbbs.storage.database import Database
 from netbbs.storage.execution import DatabaseLane
 from netbbs.timeutil import format_for_display, resolve_display_preferences
@@ -182,9 +186,19 @@ async def _browse_areas_in_category(
     `community_id`/`community_scoped`/`title_prefix` Community-filter
     threading (design doc §16). See that function's docstring
     for the full rationale.
+
+    Sort mode (design doc, dogfood feature request): like
+    `netbbs.boards.boards.list_boards`, `list_file_areas` already
+    supports every mode directly against real, persisted columns, so a
+    mode switch is just re-calling `_load` with a different `order_by`
+    -- no in-memory state to separately combine in, unlike
+    `netbbs.net.chat_flow._pick_channel`. `get_effective_sort_mode`
+    resolves against this call's own `category_id`/Community scope.
+    This module is fully `lane`-based (see its own docstring), so
+    persistence goes through `lane.run` like every other write here.
     """
 
-    def _visible_areas(db: Database) -> list[FileArea]:
+    def _load(db: Database, order_by: str) -> tuple[list[FileArea], list[FileAreaCategory], str | None, str | None]:
         # name_requirement deliberately does not gate reading here --
         # same participation-vs-content-restriction split as
         # netbbs.net.login_flow._browse_boards_in_category (design doc
@@ -193,39 +207,64 @@ async def _browse_areas_in_category(
         # lane.run() call does the filtering on the worker thread,
         # rather than fetching the raw list and filtering back on the
         # event loop.
-        return [
-            a for a in list_file_areas(db)
+        all_areas = [
+            a for a in list_file_areas(db, order_by=order_by)
             if meets_level(user, get_effective_min_read_level(db, a))
             and meets_age(db, user, get_effective_min_age(db, a))
         ]
+        if community_scoped:
+            all_areas = [a for a in all_areas if a.community_id == community_id]
+        areas_here = [a for a in all_areas if a.category_id == category_id]
 
-    all_areas = await lane.run(_visible_areas)
-    if community_scoped:
-        all_areas = [a for a in all_areas if a.community_id == community_id]
-    areas_here = [a for a in all_areas if a.category_id == category_id]
-
-    if category_id is None:
-        categories_here = await lane.run(list_top_level_categories)
-    else:
-        categories_here = await lane.run(list_subcategories, category_id)
-    if community_scoped:
-        used_category_ids = {a.category_id for a in all_areas if a.category_id is not None}
-        if category_id is None:
-
-            def _used_top_level(db: Database) -> list[FileAreaCategory]:
-                return [
+        categories_here = (
+            list_top_level_categories(db) if category_id is None else list_subcategories(db, category_id)
+        )
+        if community_scoped:
+            used_category_ids = {a.category_id for a in all_areas if a.category_id is not None}
+            if category_id is None:
+                categories_here = [
                     c for c in categories_here
                     if c.id in used_category_ids
                     or any(sub.id in used_category_ids for sub in list_subcategories(db, c.id))
                 ]
+            else:
+                categories_here = [c for c in categories_here if c.id in used_category_ids]
 
-            categories_here = await lane.run(_used_top_level)
-        else:
-            categories_here = [c for c in categories_here if c.id in used_category_ids]
+        category_name = get_category_by_id(db, category_id).name if category_id is not None else None
+        community = get_community(db, effective_community_id)
+        return areas_here, categories_here, category_name, community.name if community is not None else None
+
+    effective_community_id = community_id if community_scoped else None
+    current_mode = await lane.run(
+        get_effective_sort_mode, user, "file_area", community_id=effective_community_id, category_id=category_id
+    )
+    areas_here, categories_here, category_name, community_name = await lane.run(_load, current_mode)
+    mode_box = {"mode": current_mode}
+
+    async def _persist_sort_choice(mode: str, scope_kwargs: dict) -> None:
+        await lane.run(set_sort_preference, user, "file_area", mode, **scope_kwargs)
+
+    async def _run_sort_prompt() -> str | None:
+        return await prompt_sort_change(
+            session, persist=_persist_sort_choice,
+            community_id=effective_community_id, community_name=community_name,
+            category_id=category_id, category_name=category_name,
+        )
+
+    def _sort_label() -> str:
+        return SORT_MODE_LABELS[mode_box["mode"]]
 
     title = f"{title_prefix} — file areas" if title_prefix is not None else "Available file areas"
 
     if not categories_here:
+        async def on_sort_flat() -> list[FileArea] | None:
+            new_mode = await _run_sort_prompt()
+            if new_mode is None:
+                return None
+            mode_box["mode"] = new_mode
+            new_areas, _, _, _ = await lane.run(_load, new_mode)
+            return new_areas
+
         area = await pick_item(
             session,
             areas_here,
@@ -234,6 +273,8 @@ async def _browse_areas_in_category(
             description_of=lambda a: a.description,
             title=title,
             empty_message="No file areas are available to you yet.",
+            on_sort=on_sort_flat,
+            sort_label=_sort_label,
         )
         if area is not None:
             await _show_area(session, lane, area, user, link_context=link_context)
@@ -252,11 +293,21 @@ async def _browse_areas_in_category(
     def stable_id(item: FileAreaCategory | FileArea) -> int:
         return item.id if isinstance(item, FileArea) else -item.id
 
+    async def on_sort_mixed() -> list[FileAreaCategory | FileArea] | None:
+        new_mode = await _run_sort_prompt()
+        if new_mode is None:
+            return None
+        mode_box["mode"] = new_mode
+        new_areas, _, _, _ = await lane.run(_load, new_mode)
+        return [*categories_here, *new_areas]
+
     selected = await pick_item(
         session,
         mixed,
         name_of=render_name,
         stable_id_of=stable_id,
+        on_sort=on_sort_mixed,
+        sort_label=_sort_label,
         description_of=render_description,
         title=title,
         empty_message="No file areas are available to you yet.",

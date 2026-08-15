@@ -145,7 +145,7 @@ from netbbs.net.char_input import move_cursor as relative_move_cursor
 from netbbs.net.picker import pick_item
 from netbbs.net.session import Session, SessionClosedError
 from netbbs.net.session_registry import ActiveSessionRegistry
-from netbbs.net.sort_ui import prompt_sort_change
+from netbbs.net.sort_ui import SORT_MODE_LABELS, prompt_sort_change
 from netbbs.permissions import meets_level
 from netbbs.rendering import (
     ACCENT_COLOR,
@@ -174,7 +174,7 @@ from netbbs.rendering import (
     set_scroll_region,
     truncate,
 )
-from netbbs.sort_preferences import get_effective_sort_mode
+from netbbs.sort_preferences import get_effective_sort_mode, set_sort_preference
 from netbbs.storage.database import Database
 from netbbs.storage.execution import DatabaseLane
 from netbbs.timeutil import format_for_display, resolve_display_preferences, utc_now_iso
@@ -393,12 +393,7 @@ def list_visible_channels_for(db: Database, user: User) -> list[Channel]:
 # as "Participants" for channels throughout this module (design doc,
 # dogfood feature request); see prompt_sort_change's own volume_label
 # docstring for why.
-_CHANNEL_SORT_MODE_LABELS = {
-    "activity": "Activity",
-    "alphabetical": "Alphabetical",
-    "recent": "Recently added",
-    "volume": "Participants",
-}
+_CHANNEL_SORT_MODE_LABELS = {**SORT_MODE_LABELS, "volume": "Participants"}
 
 
 async def _pick_channel(
@@ -494,9 +489,12 @@ async def _pick_channel(
     channels_here, categories_here, category_name, community_name = await _load_sorted(current_mode)
     mode_box = {"mode": current_mode}
 
+    async def _persist_sort_choice(mode: str, scope_kwargs: dict) -> None:
+        await lane.run(set_sort_preference, user, "channel", mode, **scope_kwargs)
+
     async def _run_sort_prompt() -> str | None:
         return await prompt_sort_change(
-            session, lane, user, "channel",
+            session, persist=_persist_sort_choice,
             community_id=effective_community_id, community_name=community_name,
             category_id=category_id, category_name=category_name,
             volume_label="Participants",

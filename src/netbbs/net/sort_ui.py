@@ -10,27 +10,48 @@ One shared implementation for channels/boards/file areas, the same
 "the underlying problem is the same across all three" reasoning
 `netbbs.net.picker`'s own module docstring already gives for the
 picker itself -- this module knows nothing about any one resource
-kind's own list_*/hub mechanics; the caller supplies `resource_kind`
-plus whatever Community/category context applies and re-fetches its
-own freshly sorted item list afterward.
+kind's own list_*/hub mechanics *or* how its caller reaches the
+database (`netbbs.net.chat_flow` runs on a background `DatabaseLane`;
+`netbbs.net.login_flow`'s board/file-area browsing calls `Database`
+directly, no lane at all -- genuinely two different execution models,
+not one this module should have to pick a side on). `persist` is the
+one seam that differs: the caller supplies a plain async callback that
+saves a mode at a scope however its own execution model requires,
+while this module owns everything about *which* scope to offer and
+when to call it at all.
 """
 
 from __future__ import annotations
 
-from netbbs.auth.users import User
+from typing import Awaitable, Callable
+
 from netbbs.net.char_input import reject_unhandled_key
 from netbbs.net.session import Session
 from netbbs.rendering import menu_key
-from netbbs.sort_preferences import set_sort_preference
-from netbbs.storage.execution import DatabaseLane
+
+# (sort_mode, scope_kwargs) -> None -- scope_kwargs is one of {},
+# {"community_id": int}, {"category_id": int}, matching
+# netbbs.sort_preferences.set_sort_preference's own three-way shape.
+# Never called at all for "Just this time".
+PersistSortChoice = Callable[[str, dict[str, int]], Awaitable[None]]
+
+# Display labels for a picker's [O]rder nav trailer (pick_item's own
+# sort_label callback) -- shared default for boards/file areas, where
+# "volume" means what it says (a stored-content count). Channels build
+# their own copy with "volume" relabeled to "Participants" (see
+# prompt_sort_change's own volume_label docstring for why).
+SORT_MODE_LABELS: dict[str, str] = {
+    "activity": "Activity",
+    "alphabetical": "Alphabetical",
+    "recent": "Recently added",
+    "volume": "Volume",
+}
 
 
 async def prompt_sort_change(
     session: Session,
-    lane: DatabaseLane,
-    user: User,
-    resource_kind: str,
     *,
+    persist: PersistSortChoice,
     community_id: int | None = None,
     community_name: str | None = None,
     category_id: int | None = None,
@@ -39,10 +60,10 @@ async def prompt_sort_change(
 ) -> str | None:
     """
     Prompts for a new sort mode, then (unless the user picks "just this
-    time") which scope to remember it at, persists that via
-    `netbbs.sort_preferences.set_sort_preference`, and returns the
-    newly chosen mode. Returns `None`, with nothing persisted, if the
-    user backs out of the mode prompt itself without choosing one.
+    time") which scope to remember it at, calls `persist(mode,
+    scope_kwargs)` to actually save that, and returns the newly chosen
+    mode. Returns `None`, with `persist` never called, if the user backs
+    out of the mode prompt itself without choosing one.
 
     `community_id`/`category_id` describe *where* the picker being
     customized currently is, so the matching save-scope option can be
@@ -111,6 +132,6 @@ async def prompt_sort_change(
 
     save_kwargs = scope_actions[choice]
     if save_kwargs is not None:
-        await lane.run(set_sort_preference, user, resource_kind, mode, **save_kwargs)
+        await persist(mode, save_kwargs)
 
     return mode

@@ -2,6 +2,12 @@
 Tests for `netbbs.net.sort_ui.prompt_sort_change` -- the shared mode-
 then-scope prompt behind the channel/board/file-area pickers' `[O]rder`
 command (design doc, dogfood feature request).
+
+`persist` is exercised here as a plain synchronous-`db` closure
+(`netbbs.net.login_flow`'s own execution model -- no `DatabaseLane`
+involved at all); `tests/test_chat_flow_picker_sort.py` exercises the
+lane-based closure `netbbs.net.chat_flow` builds instead. This module
+itself has no opinion on which -- see its own module docstring.
 """
 
 from __future__ import annotations
@@ -14,9 +20,8 @@ from netbbs.auth.users import create_user
 from netbbs.communities import create_community
 from netbbs.net.session import Session
 from netbbs.net.sort_ui import prompt_sort_change
-from netbbs.sort_preferences import get_effective_sort_mode
+from netbbs.sort_preferences import get_effective_sort_mode, set_sort_preference
 from netbbs.storage.database import Database
-from netbbs.storage.execution import DatabaseLane
 
 
 class FakeSession(Session):
@@ -63,13 +68,6 @@ def db(tmp_path):
 
 
 @pytest.fixture
-def lane(db):
-    database_lane = DatabaseLane(db.path)
-    yield database_lane
-    database_lane.close()
-
-
-@pytest.fixture
 def alice(db):
     return create_user(db, "alice", password="hunter2", user_level=10)
 
@@ -79,9 +77,21 @@ def retro(db, alice):
     return create_community(db, "Retro Computing", creator=alice)
 
 
-def test_choosing_just_this_time_returns_the_mode_without_persisting(db, lane, alice):
+def _persist_for(db, user, resource_kind):
+    """A `persist` closure in the shape `netbbs.net.login_flow`'s
+    synchronous-`db` board/file-area browsing would actually build --
+    `set_sort_preference` itself is synchronous, just awaited from
+    inside an async callback, no lane involved."""
+
+    async def persist(mode: str, scope_kwargs: dict) -> None:
+        set_sort_preference(db, user, resource_kind, mode, **scope_kwargs)
+
+    return persist
+
+
+def test_choosing_just_this_time_returns_the_mode_without_persisting(db, alice):
     session = FakeSession(["r", "j"])
-    mode = asyncio.run(prompt_sort_change(session, lane, alice, "channel"))
+    mode = asyncio.run(prompt_sort_change(session, persist=_persist_for(db, alice, "channel")))
     assert mode == "recent"
     # "recent" was chosen but never persisted -- still the unset default
     # ("alphabetical" for channels, not "activity" -- see
@@ -90,71 +100,83 @@ def test_choosing_just_this_time_returns_the_mode_without_persisting(db, lane, a
     assert get_effective_sort_mode(db, alice, "channel") == "alphabetical"
 
 
-def test_choosing_global_persists_the_global_default(db, lane, alice):
+def test_choosing_global_persists_the_global_default(db, alice):
     session = FakeSession(["l", "g"])
-    mode = asyncio.run(prompt_sort_change(session, lane, alice, "channel"))
+    mode = asyncio.run(prompt_sort_change(session, persist=_persist_for(db, alice, "channel")))
     assert mode == "alphabetical"
     assert get_effective_sort_mode(db, alice, "channel") == "alphabetical"
 
 
-def test_choosing_community_persists_a_community_scoped_override(db, lane, alice, retro):
+def test_choosing_community_persists_a_community_scoped_override(db, alice, retro):
     session = FakeSession(["r", "w"])
     mode = asyncio.run(
-        prompt_sort_change(session, lane, alice, "board", community_id=retro.id, community_name="Retro Computing")
+        prompt_sort_change(
+            session, persist=_persist_for(db, alice, "board"),
+            community_id=retro.id, community_name="Retro Computing",
+        )
     )
     assert mode == "recent"
     assert get_effective_sort_mode(db, alice, "board", community_id=retro.id) == "recent"
     assert get_effective_sort_mode(db, alice, "board") == "activity"  # global untouched
 
 
-def test_choosing_category_persists_a_category_scoped_override(db, lane, alice):
+def test_choosing_category_persists_a_category_scoped_override(db, alice):
     session = FakeSession(["v", "c"])
     mode = asyncio.run(
-        prompt_sort_change(session, lane, alice, "board", category_id=5, category_name="Amiga")
+        prompt_sort_change(
+            session, persist=_persist_for(db, alice, "board"), category_id=5, category_name="Amiga"
+        )
     )
     assert mode == "volume"
     assert get_effective_sort_mode(db, alice, "board", category_id=5) == "volume"
 
 
-def test_backing_out_of_the_mode_prompt_returns_none_and_never_asks_for_a_scope(db, lane, alice):
+def test_backing_out_of_the_mode_prompt_returns_none_and_never_calls_persist(db, alice):
     session = FakeSession(["b"])
-    mode = asyncio.run(prompt_sort_change(session, lane, alice, "channel"))
+    persist_calls = []
+
+    async def persist(mode, scope_kwargs):
+        persist_calls.append((mode, scope_kwargs))
+
+    mode = asyncio.run(prompt_sort_change(session, persist=persist))
     assert mode is None
-    assert get_effective_sort_mode(db, alice, "channel") == "alphabetical"
+    assert persist_calls == []
     assert "Remember this as" not in _written_text(session)
 
 
-def test_an_unrecognized_mode_key_is_rejected_and_reprompted(db, lane, alice):
+def test_an_unrecognized_mode_key_is_rejected_and_reprompted(db, alice):
     session = FakeSession(["z", "a", "j"])
-    mode = asyncio.run(prompt_sort_change(session, lane, alice, "channel"))
+    mode = asyncio.run(prompt_sort_change(session, persist=_persist_for(db, alice, "channel")))
     assert mode == "activity"
 
 
-def test_an_unrecognized_scope_key_is_rejected_and_reprompted(db, lane, alice):
+def test_an_unrecognized_scope_key_is_rejected_and_reprompted(db, alice):
     session = FakeSession(["a", "z", "g"])
-    mode = asyncio.run(prompt_sort_change(session, lane, alice, "channel"))
+    mode = asyncio.run(prompt_sort_change(session, persist=_persist_for(db, alice, "channel")))
     assert mode == "activity"
     assert get_effective_sort_mode(db, alice, "channel") == "activity"
 
 
-def test_category_scope_key_is_rejected_when_no_category_id_was_passed(db, lane, alice):
+def test_category_scope_key_is_rejected_when_no_category_id_was_passed(db, alice):
     """"c" must not be accepted as a valid scope choice unless the
     caller actually passed category_id -- otherwise it would silently
-    fall through to set_sort_preference with category_id=None, saving a
-    *global* default while the user thought they picked "category"."""
+    fall through to persisting a *global* default while the user
+    thought they picked "category"."""
     session = FakeSession(["a", "c", "j"])
-    mode = asyncio.run(prompt_sort_change(session, lane, alice, "channel"))
+    mode = asyncio.run(prompt_sort_change(session, persist=_persist_for(db, alice, "channel")))
     assert mode == "activity"
     assert get_effective_sort_mode(db, alice, "channel") == "alphabetical"  # "j" -- never persisted
 
 
-def test_volume_label_changes_both_the_displayed_word_and_its_hotkey(db, lane, alice):
+def test_volume_label_changes_both_the_displayed_word_and_its_hotkey(db, alice):
     """Channels pass "Participants" in place of "Volume" -- the hotkey
     follows the displayed word's own first letter, so it stays
     predictable from what's actually on screen."""
     session = FakeSession(["p", "j"])
     mode = asyncio.run(
-        prompt_sort_change(session, lane, alice, "channel", volume_label="Participants")
+        prompt_sort_change(
+            session, persist=_persist_for(db, alice, "channel"), volume_label="Participants"
+        )
     )
     assert mode == "volume"
     # menu_key colors just the bracketed hotkey letter, so "Participants"
@@ -167,9 +189,11 @@ def test_volume_label_changes_both_the_displayed_word_and_its_hotkey(db, lane, a
     assert "olume" not in text
 
 
-def test_volume_hotkey_v_is_rejected_when_the_label_was_customized(db, lane, alice):
+def test_volume_hotkey_v_is_rejected_when_the_label_was_customized(db, alice):
     session = FakeSession(["v", "p", "j"])
     mode = asyncio.run(
-        prompt_sort_change(session, lane, alice, "channel", volume_label="Participants")
+        prompt_sort_change(
+            session, persist=_persist_for(db, alice, "channel"), volume_label="Participants"
+        )
     )
     assert mode == "volume"
