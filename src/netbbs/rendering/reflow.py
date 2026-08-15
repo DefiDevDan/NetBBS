@@ -17,6 +17,7 @@ import textwrap
 from typing import Sequence
 
 from netbbs.rendering.ansi import colored
+from netbbs.rendering.width import cut_to_width, display_width, truncate_to_width
 
 DEFAULT_WIDTH = 80
 
@@ -44,20 +45,19 @@ def reflow(text: str, width: int = DEFAULT_WIDTH) -> str:
 
 def truncate(text: str, width: int, *, ellipsis: str = "...") -> str:
     """
-    Truncate `text` to fit within `width` columns, appending `ellipsis`
-    if truncation actually occurred.
+    Truncate `text` to fit within `width` display columns, appending
+    `ellipsis` if truncation actually occurred.
 
     Unlike `reflow`, this always produces a single line, never wrapping
     — for contexts like a one-line list entry (e.g. `netbbs.net.picker`)
     where multi-line wrapping would break the list's visual structure.
+
+    Delegates to `netbbs.rendering.width.truncate_to_width` (design
+    doc, dogfood feature request) -- `width` is display columns, not
+    characters, so any East Asian Wide/Fullwidth character counts as
+    2, not 1.
     """
-    if width < 1:
-        raise ValueError(f"width must be >= 1, got {width}")
-    if len(text) <= width:
-        return text
-    if width <= len(ellipsis):
-        return ellipsis[:width]
-    return text[: width - len(ellipsis)] + ellipsis
+    return truncate_to_width(text, width, ellipsis=ellipsis)
 
 
 def colored_truncate(
@@ -75,24 +75,33 @@ def colored_truncate(
     cut mid-sequence leaves an unterminated code that bleeds its color
     into everything printed afterward (see `colored()`'s own docstring
     on exactly that failure mode).
+
+    `width` is display columns, not characters (design doc, dogfood
+    feature request) -- each segment's own share of the budget is
+    measured/cut with `netbbs.rendering.width`'s `display_width`/
+    `cut_to_width`, the same primitives `truncate` itself now delegates
+    to, so a multi-field row (e.g. `netbbs.net.picker`'s numbered list
+    rows) truncates each colored field at a real column boundary
+    instead of a character count.
     """
     if width < 1:
         raise ValueError(f"width must be >= 1, got {width}")
 
     plain = "".join(text for text, _ in segments)
-    if len(plain) <= width:
+    if display_width(plain) <= width:
         return "".join(colored(text, fg_color=color) for text, color in segments if text)
-    if width <= len(ellipsis):
-        return ellipsis[:width]
+    ellipsis_width = display_width(ellipsis)
+    if width <= ellipsis_width:
+        return cut_to_width(ellipsis, width)
 
-    budget = width - len(ellipsis)
+    budget = width - ellipsis_width
     rendered: list[str] = []
     for text, color in segments:
         if budget <= 0:
             break
-        piece = text[:budget]
+        piece = cut_to_width(text, budget)
         if piece:
             rendered.append(colored(piece, fg_color=color))
-        budget -= len(piece)
+        budget -= display_width(piece)
     rendered.append(ellipsis)
     return "".join(rendered)

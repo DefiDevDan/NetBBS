@@ -18,14 +18,19 @@ from netbbs.rendering.theme import (
     SUCCESS_COLOR,
     WARNING_COLOR,
 )
+from netbbs.rendering.width import cut_to_width, display_width
 
 _SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
 _WIDE_MENU_MIN_WIDTH = 72
 
 
 def visible_width(text: str) -> int:
-    """Return the displayed width of text containing NetBBS SGR styling."""
-    return len(_SGR_RE.sub("", text))
+    """Return the displayed width of text containing NetBBS SGR
+    styling -- strips SGR escapes, then measures the remainder in
+    display columns via `netbbs.rendering.width.display_width` (design
+    doc, dogfood feature request), not `len()`: any East Asian Wide/
+    Fullwidth character counts as 2 columns, not 1."""
+    return display_width(_SGR_RE.sub("", text))
 
 
 def badge(text: str, *, tone: str = "neutral") -> str:
@@ -52,9 +57,9 @@ def empty_state(
     """Render an intentional, compact state for a screen with no content."""
     if width < 1:
         raise ValueError("width must be >= 1")
-    lines = [colored(title[:width], fg_color=HEADER_COLOR, bold=True)]
+    lines = [colored(cut_to_width(title, width), fg_color=HEADER_COLOR, bold=True)]
     if detail:
-        lines.append(colored(detail[:width], fg_color=METADATA_COLOR))
+        lines.append(colored(cut_to_width(detail, width), fg_color=METADATA_COLOR))
     return "\r\n".join(lines)
 
 
@@ -91,10 +96,10 @@ def screen_title(
     if width < 1:
         raise ValueError("width must be >= 1")
     location = " / ".join((*breadcrumb, title)) if breadcrumb else title
-    lines = [colored(location[:width], fg_color=HEADER_COLOR, bold=True)]
+    lines = [colored(cut_to_width(location, width), fg_color=HEADER_COLOR, bold=True)]
     if subtitle:
-        lines.append(colored(subtitle[:width], fg_color=METADATA_COLOR))
-    lines.append(colored("-" * min(width, max(12, len(location))), fg_color=METADATA_COLOR))
+        lines.append(colored(cut_to_width(subtitle, width), fg_color=METADATA_COLOR))
+    lines.append(colored("-" * min(width, max(12, display_width(location))), fg_color=METADATA_COLOR))
     return "\r\n".join(lines)
 
 

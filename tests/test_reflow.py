@@ -115,6 +115,18 @@ def test_colored_truncate_exactly_at_width_is_unchanged():
     assert result == colored("abcde", fg_color=51)
 
 
+def test_colored_truncate_cuts_cjk_segments_at_a_display_column_boundary():
+    """Dogfood report: international users found non-ASCII handling
+    poor. Each CJK character in a segment is 2 display columns, not 1
+    -- a picker row's own colored name field (netbbs.net.picker) must
+    truncate at a real column boundary, not a character count."""
+    # "你好" (2 chars, 4 columns) + "世界" (2 chars, 4 columns) = 8
+    # columns total. width=7 forces truncation; budget 4 after "..."
+    # fits exactly "你好" from the first segment, none of the second.
+    result = colored_truncate([("你好", 51), ("世界", 220)], width=7)
+    assert _visible(result) == "你好..."
+
+
 def test_colored_truncate_width_at_or_below_ellipsis_length():
     assert colored_truncate([("hello", 51)], width=3) == "..."
     assert colored_truncate([("hello", 51)], width=2) == ".."

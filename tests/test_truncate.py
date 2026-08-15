@@ -43,3 +43,13 @@ def test_rejects_non_positive_width():
 
 def test_empty_string():
     assert truncate("", width=10) == ""
+
+
+def test_cjk_text_truncates_at_a_display_column_boundary_not_a_character_count():
+    """Dogfood report: international users found non-ASCII handling
+    poor. `truncate` delegates to `netbbs.rendering.width.
+    truncate_to_width` -- each CJK character is 2 display columns, not
+    1, so budget math must account for that, not just `len()`."""
+    text = "你好世界"  # 4 characters, 8 display columns
+    result = truncate(text, width=7)  # budget 4 after "..." fits 2 chars
+    assert result == "你好..."

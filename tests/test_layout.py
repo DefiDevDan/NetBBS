@@ -29,6 +29,20 @@ def test_screen_title_truncates_every_visible_line_to_terminal_width():
     assert all(visible_width(line) <= 12 for line in result.split("\r\n"))
 
 
+def test_screen_title_cuts_cjk_text_at_a_display_column_boundary():
+    """Dogfood report: international users found non-ASCII handling
+    poor. A naive character slice (the old `location[:width]`) can
+    leave a CJK line *wider* than the terminal, since each character
+    is 2 display columns, not 1 -- 8 CJK characters (16 columns) all
+    fit inside a character-count budget of 10, overflowing a real
+    10-column terminal by 6 columns."""
+    text = "你好世界你好世界"  # 8 characters, 16 display columns
+    result = screen_title(text, breadcrumb=(), width=10)
+    title_line = visible(result).split("\r\n")[0]
+    assert visible_width(title_line) <= 10
+    assert title_line == text[:5]  # 5 CJK chars = exactly 10 columns
+
+
 def test_menu_grid_uses_two_columns_at_classic_width():
     result = visible(menu_grid([
         ("Explore", [menu_key("C", "ommunities"), menu_key("F", "ind")]),
@@ -61,6 +75,13 @@ def test_empty_state_and_badge_use_compact_ascii_safe_copy():
         "No posts yet\r\nStart the conversation."
     )
     assert visible(badge("edited")) == "[edited]"
+
+
+def test_empty_state_cuts_cjk_title_at_a_display_column_boundary():
+    text = "你好世界你好世界"  # 8 characters, 16 display columns
+    result = visible(empty_state(text, width=10))
+    assert visible_width(result) <= 10
+    assert result == text[:5]  # 5 CJK chars = exactly 10 columns
 
 
 def test_badge_rejects_unknown_tone():
