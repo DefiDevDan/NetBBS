@@ -290,6 +290,22 @@ def test_link_realtime_port_colliding_with_port_fails_validation():
         config.validate()
 
 
+def test_link_realtime_port_defaults_avoid_the_two_node_quickstarts_own_ports():
+    """Neither a fixed constant nor `port + 1` is safe here -- both
+    collide with this exact deployment pattern (the README's own
+    two-node quickstart: sequential HTTP ports 7862/7863) the moment an
+    operator upgrades without ever hearing about the new setting."""
+    from netbbs.net.nodeconfig import effective_realtime_port
+
+    node_a = LinkConfig(enabled=True, host="127.0.0.1", port=7862)
+    node_b = LinkConfig(enabled=True, host="127.0.0.1", port=7863)
+    realtime_a = effective_realtime_port(node_a)
+    realtime_b = effective_realtime_port(node_b)
+    assert len({node_a.port, node_b.port, realtime_a, realtime_b}) == 4  # all four ports distinct
+    NodeConfig(link=node_a).validate()  # must not raise
+    NodeConfig(link=node_b).validate()  # must not raise
+
+
 def test_link_full_peer_with_invalid_realtime_advertised_port_fails_validation():
     config = NodeConfig(
         link=LinkConfig(

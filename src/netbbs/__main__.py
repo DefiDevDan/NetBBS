@@ -35,7 +35,7 @@ from netbbs.link.trust import maintain_trust_state
 from netbbs.net.daybreak import run_daybreak_announcer
 from netbbs.net.login_flow import handle_session, handle_ssh_session
 from netbbs.net.maintenance import MaintenanceMode
-from netbbs.net.nodeconfig import ConfigError, LinkConfig, NodeConfig, load_config
+from netbbs.net.nodeconfig import ConfigError, LinkConfig, NodeConfig, effective_realtime_port, load_config
 from netbbs.net.session_registry import ActiveSessionRegistry
 from netbbs.net.shutdown import SequenceScheduler, run_shutdown_sequence
 from netbbs.net.throttle import LinkRequestThrottle, LoginThrottle
@@ -146,7 +146,7 @@ def _build_own_hello_provider(link_node: LinkNode, link_config: LinkConfig):
             )
             realtime_advertised_port = (
                 link_config.realtime_advertised_port
-                if link_config.realtime_advertised_port is not None else link_config.realtime_port
+                if link_config.realtime_advertised_port is not None else effective_realtime_port(link_config)
             )
             addresses = [
                 {"protocol": "http", "address": link_config.advertised_host, "port": advertised_port},
@@ -339,11 +339,12 @@ async def _start_servers(
             from netbbs.link.transport import LinkRealtimeServer
 
             assert link_realtime_registry is not None and link_realtime_bridge is not None
+            realtime_port = effective_realtime_port(config.link)
             await _start_one(
                 "link-realtime",
                 LinkRealtimeServer(
                     host=config.link.host,
-                    port=config.link.realtime_port,
+                    port=realtime_port,
                     identity=link_node.identity,
                     registry=link_realtime_registry,
                     on_frame=link_realtime_bridge.on_frame,
@@ -351,9 +352,7 @@ async def _start_servers(
                     enforce_trust_policy=True,
                 ),
             )
-            _logger.info(
-                "NetBBS Link real-time listening on %s:%d", config.link.host, config.link.realtime_port
-            )
+            _logger.info("NetBBS Link real-time listening on %s:%d", config.link.host, realtime_port)
 
     if not any_interactive_started:
         # A non-interactive listener (Link) may have started successfully

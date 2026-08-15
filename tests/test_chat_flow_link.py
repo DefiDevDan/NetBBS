@@ -348,6 +348,7 @@ def test_chat_loop_announces_the_real_time_link_coming_up_and_going_down(
     )
 
     written = "\n".join(session.written)
+    assert "Connecting to this channel's real-time origin" in written
     assert "Real-time link to this channel's origin is up" in written
 
 

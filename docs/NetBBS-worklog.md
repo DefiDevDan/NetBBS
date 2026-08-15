@@ -2525,3 +2525,22 @@ requirement is a *live status*, not a one-time check. Because that task is
 therefore essentially never `done()` with a return value by the time a
 caller leaves, the obtained session (if any) is tracked in a small mutable
 holder the task writes into, not read back from the task's own result.
+
+**`LinkConfig.realtime_port` must never default to a fixed constant, or even
+to `port + 1`.** Caught by actually running the README's own two-node
+loopback quickstart after adding the field: a fixed default collides
+whenever an operator's `link.port` happens to equal it (silent until
+upgrade, since existing configs never set the new field at all); `port + 1`
+is *still* unsafe for the specific multi-node-per-host pattern the
+quickstart itself documents (sequential HTTP ports 7862/7863) -- node A's
+`port + 1` (7863) then equals node B's own `port`, a real OS-level bind
+collision at startup instead of a config-time error. `effective_realtime_
+port` (`netbbs.net.nodeconfig`) resolves to `port + 1000` instead, the one
+place this fallback is computed; every reader (`validate()`, the listener's
+own bind, the hello provider's advertised address) calls it rather than
+re-deriving the default inline, so it can never drift between them. General
+lesson: a new port field's default must be checked against every documented
+multi-node-per-host deployment pattern, not just validated in isolation --
+`config.validate()` passing proves internal consistency, not the absence of
+a cross-node collision when two instances of the same defaults run
+together.

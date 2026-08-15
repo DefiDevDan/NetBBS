@@ -3381,6 +3381,13 @@ async def _chat_loop(
         ):
 
             async def _subscribe_live() -> None:
+                # Design doc §8.10.2: "the caller sees connecting" --
+                # shown immediately, before the dial/subscribe attempt
+                # (which can take real network time), not only once it
+                # resolves one way or the other.
+                await deliver(
+                    colored("(Connecting to this channel's real-time origin...)", fg_color=MUTED_COLOR)
+                )
                 # Lazy: `netbbs.link.realtime_channels` requires
                 # `aiohttp` (via `netbbs.link.transport`), which this
                 # module must not require merely to import itself --

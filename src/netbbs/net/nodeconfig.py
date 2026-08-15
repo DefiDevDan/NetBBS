@@ -168,6 +168,23 @@ class LinkConfig:
     running so a peer *it* dials can reply over the same connection, the
     same reasoning `LinkServer`'s own `host`/`port` already apply to the
     HTTP listener.
+
+    `realtime_port` defaults to `None` -- resolved to `port + 1000` by
+    `effective_realtime_port` below, never a fixed constant and never
+    merely `port + 1`. A fixed constant collides in exactly the
+    deployment pattern this project's own README two-node quickstart
+    documents: two loopback nodes told apart only by sequential HTTP
+    ports (7862/7863) -- a fixed realtime default would silently equal
+    node B's own `port`. `port + 1` is not safe either, for the same
+    reason one level removed: node A's `port + 1` (7863) would then
+    equal node B's own `port` (7863), a real OS-level bind collision
+    the moment both run on one host, just moved from a clear config
+    error to a confusing "address already in use" at startup. `+1000`
+    keeps every single-node deployment (including every existing config
+    predating this field) working unchanged, and gives sequential-port
+    multi-node-per-host setups enough headroom that neither a node's own
+    `port`/`realtime_port` pair nor two different nodes' pairs can
+    collide from small, natural port increments alone.
     """
 
     enabled: bool = False
@@ -176,7 +193,7 @@ class LinkConfig:
     outgoing_only: bool = True
     advertised_host: str | None = None
     advertised_port: int | None = None
-    realtime_port: int = 7863
+    realtime_port: int | None = None
     realtime_advertised_port: int | None = None
     seeds: list[str] = field(default_factory=list)
     sync_interval_seconds: float = 300.0
@@ -201,6 +218,16 @@ class LinkConfig:
     request_rate_max_tracked_sources: int = 10_000
     diagnostic_log_max_age_days: int = 30
     diagnostic_log_max_rows: int = 5_000
+
+
+def effective_realtime_port(link_config: LinkConfig) -> int:
+    """`link_config.realtime_port` if the operator set one, else `port +
+    1000` -- the one place this default is computed; every reader
+    (`validate()`, the real-time listener's own bind, the hello
+    provider's advertised address) calls this rather than re-deriving
+    it, so the fallback can never drift between them. See `LinkConfig`'s
+    own docstring for why `+1000`, not a fixed constant or `+1`."""
+    return link_config.realtime_port if link_config.realtime_port is not None else link_config.port + 1000
 
 
 @dataclass(frozen=True)
@@ -281,11 +308,12 @@ class NodeConfig:
                 raise ConfigError(f"link.port must be between 1 and 65535, got {self.link.port}")
             if not self.link.host.strip():
                 raise ConfigError("link.host must not be empty")
-            if not (1 <= self.link.realtime_port <= 65535):
+            realtime_port = effective_realtime_port(self.link)
+            if not (1 <= realtime_port <= 65535):
                 raise ConfigError(
-                    f"link.realtime_port must be between 1 and 65535, got {self.link.realtime_port}"
+                    f"link.realtime_port must be between 1 and 65535, got {realtime_port}"
                 )
-            if self.link.realtime_port == self.link.port:
+            if realtime_port == self.link.port:
                 raise ConfigError(
                     "link.realtime_port must differ from link.port -- they are two independent "
                     "listeners (HTTP+JSON gossip vs. persistent Noise real-time chat)"
@@ -305,7 +333,7 @@ class NodeConfig:
                     )
                 realtime_advertised_port = (
                     self.link.realtime_advertised_port
-                    if self.link.realtime_advertised_port is not None else self.link.realtime_port
+                    if self.link.realtime_advertised_port is not None else realtime_port
                 )
                 if not (1 <= realtime_advertised_port <= 65535):
                     raise ConfigError(
@@ -599,7 +627,7 @@ def _link_from_toml(data: dict, current: LinkConfig) -> LinkConfig:
         outgoing_only=bool(table.get("outgoing_only", current.outgoing_only)),
         advertised_host=table.get("advertised_host", current.advertised_host),
         advertised_port=table.get("advertised_port", current.advertised_port),
-        realtime_port=int(table.get("realtime_port", current.realtime_port)),
+        realtime_port=table.get("realtime_port", current.realtime_port),
         realtime_advertised_port=table.get("realtime_advertised_port", current.realtime_advertised_port),
         seeds=list(seeds),
         sync_interval_seconds=float(table.get("sync_interval_seconds", current.sync_interval_seconds)),
