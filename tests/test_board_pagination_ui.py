@@ -242,15 +242,51 @@ def test_back_choice_exits_without_navigating(tmp_path, monkeypatch):
     db.close()
 
 
-def test_empty_board_never_enters_the_navigation_loop(tmp_path):
+def test_empty_board_offers_a_post_or_back_choice_instead_of_forcing_compose(tmp_path):
+    """Dogfood report: entering an empty board used to walk straight
+    into composing the first post whenever the caller could write, no
+    choice offered first -- the same "walked into it" problem issue
+    #39/#40 already fixed for the non-empty case. [B]ack must now exit
+    cleanly without ever reaching a compose prompt."""
     db = Database(tmp_path / "node.db")
     user = create_user(db, "alice", password="hunter2", user_level=10)
     board = create_board(db, "general", creator=user)
-    session = FakeSession()  # no keys queued at all -- read_key must never be called
+    session = FakeSession(keys=["b"])
 
     asyncio.run(_show_board(session, db, board, user))
 
     assert "has no posts yet" in session.output
+    assert "Subject (or press Enter to cancel)" not in session.output
+
+
+def test_empty_board_composing_falls_through_to_the_ordinary_board_view(tmp_path):
+    """Choosing [P]ost on an empty board, and actually completing it,
+    lands on the same rendered board (with the new post) the non-empty
+    [P]ost option's own post-then-refresh behavior already produces --
+    not a bare return to the caller."""
+    db = Database(tmp_path / "node.db")
+    user = create_user(db, "alice", password="hunter2", user_level=10)
+    board = create_board(db, "general", creator=user)
+    session = FakeSession(keys=["p", "p", "b"], lines=["Hello", "World", ""])
+
+    asyncio.run(_show_board(session, db, board, user))
+
+    assert "Posted" in session.output
+    assert "Hello" in session.output
+
+
+def test_empty_board_cancelling_the_compose_reprompts_post_or_back(tmp_path):
+    """A blank subject cancels _compose_new_post() -- the empty-board
+    choice must reprompt afterward rather than silently exiting or
+    crashing on a stale, now-still-empty page."""
+    db = Database(tmp_path / "node.db")
+    user = create_user(db, "alice", password="hunter2", user_level=10)
+    board = create_board(db, "general", creator=user)
+    session = FakeSession(keys=["p", "b"], lines=[""])  # blank subject cancels
+
+    asyncio.run(_show_board(session, db, board, user))
+
+    assert "Post cancelled." in session.output
 
 
 def test_composing_a_post_on_a_linked_board_queues_a_board_post(tmp_path):
@@ -268,7 +304,11 @@ def test_composing_a_post_on_a_linked_board_queues_a_board_post(tmp_path):
     node_identity = bootstrap_node_identity("roanoke")
     link_context = LinkContext(node_identity=node_identity, link_node=LinkNode(identity=node_identity))
     link_board(db, board, node_identity=node_identity)
-    session = FakeSession(keys=["p"], lines=["Hello", "World", ""])
+    # First "p" answers the empty-board [P]ost/[B]ack choice (dogfood
+    # fix); second "p" is review_composition's own commit confirm; a
+    # successful post now falls through into the ordinary board view,
+    # so a trailing "b" exits that navigation loop.
+    session = FakeSession(keys=["p", "p", "b"], lines=["Hello", "World", ""])
 
     asyncio.run(_show_board(session, db, board, user, link_context=link_context))
 
@@ -333,7 +373,11 @@ def test_composing_a_post_without_link_context_never_queues_one(tmp_path):
     db = Database(tmp_path / "node.db")
     user = create_user(db, "alice", password="hunter2", user_level=10)
     board = create_board(db, "general", creator=user)
-    session = FakeSession(keys=["p"], lines=["Hello", "World", ""])
+    # First "p" answers the empty-board [P]ost/[B]ack choice (dogfood
+    # fix); second "p" is review_composition's own commit confirm; a
+    # successful post now falls through into the ordinary board view,
+    # so a trailing "b" exits that navigation loop.
+    session = FakeSession(keys=["p", "p", "b"], lines=["Hello", "World", ""])
 
     asyncio.run(_show_board(session, db, board, user))
 

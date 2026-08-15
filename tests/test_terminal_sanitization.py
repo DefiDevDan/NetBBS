@@ -165,7 +165,11 @@ def test_board_name_is_sanitized_in_empty_board_message(tmp_path):
     db = Database(tmp_path / "node.db")
     user = create_user(db, "alice", password="hunter2", user_level=10)
     board = create_board(db, HOSTILE, creator=user)
-    session = FakeSession()
+    # An empty board now offers an explicit [P]ost/[B]ack choice before
+    # composing (dogfood fix) -- "b" exits it. Without this, read_key()
+    # falling back to "" forever (this fake's own documented hazard for
+    # any choice loop) would spin retrying an unrecognized empty key.
+    session = FakeSession(keys=["b"])
 
     asyncio.run(_show_board(session, db, board, user))
 

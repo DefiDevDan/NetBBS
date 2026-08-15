@@ -2524,22 +2524,41 @@ async def _show_board(
         page_anchor = None
         page = list_posts_page(db, board, user)
     if not page.posts:
-        # Deliberately still skips the navigation loop entirely --
-        # nothing to browse, so there's nothing for [O]lder/[N]ewer/
-        # [E]dit/[B]ack to do here anyway (see
-        # test_empty_board_never_enters_the_navigation_loop). Goes
-        # straight to composing the first post when the user's allowed
-        # to; unrelated to issues #39/#40, which were about the
-        # non-empty case's [B]ack silently triggering a post prompt.
+        # Dogfood report: this used to skip straight to composing the
+        # first post whenever the caller could write, with no [P]ost/
+        # [B]ack choice first -- the exact same "walked into it" problem
+        # issue #39/#40 already fixed for the non-empty case, just never
+        # extended to this one. Still skips the full Older/Newer/Edit
+        # navigation loop (nothing to browse either way), but offers the
+        # same explicit choice before composing anything.
         await session.write_line(
             f"\r\n{screen_title(board_name, breadcrumb=('NetBBS', 'Boards'), width=session.terminal_width)}"
         )
         await session.write_line(
             f"\r\n{empty_state('This board has no posts yet', detail='It is ready for its first conversation.', width=session.terminal_width)}"
         )
-        if can_post:
-            await _compose_new_post()
-        return
+        if not can_post:
+            return
+        while True:
+            options = [menu_key("P", "ost"), menu_key("B", "ack")]
+            await session.write_line("\r\n" + action_bar(options, width=session.terminal_width))
+            await session.write("Choice: ")
+            choice = (await session.read_key()).lower()
+            if choice == "b":
+                await session.write_line("")
+                return
+            if choice == "p":
+                await session.write_line("")
+                await _compose_new_post()
+                page = list_posts_page(db, board, user)
+                if page.posts:
+                    # A post was actually created (not cancelled) --
+                    # fall through to the ordinary render+navigation
+                    # loop below, same post-then-refresh behavior the
+                    # non-empty case's own [P]ost option already has.
+                    break
+                continue
+            await session.write(reject_unhandled_key(choice))
 
     await _render_and_advance_cursor(page)
     while True:
