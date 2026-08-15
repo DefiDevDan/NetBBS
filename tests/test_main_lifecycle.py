@@ -32,7 +32,7 @@ from netbbs.net.shutdown import SequenceScheduler
 from netbbs.auth.users import SYSOP_LEVEL, create_user
 from netbbs.link.node_identity import bootstrap_node_identity
 from netbbs.link.protocol import LinkNode
-from netbbs.link.transport import dial_hello
+from netbbs.link.transport import dial_hello, establish_noise_xx_initiator
 from netbbs.net.maintenance import MaintenanceMode
 from netbbs.net.nodeconfig import LinkConfig, NodeConfig, ShutdownConfig, TransportConfig
 from netbbs.net.session_registry import ActiveSessionRegistry
@@ -270,6 +270,46 @@ def test_configured_link_listener_completes_a_real_hello(tmp_path):
                 config.identity_dir, label=config.node_name
             )
             assert record.fingerprint == real_identity.fingerprint
+        finally:
+            shutdown_event.set()
+            await task
+
+    asyncio.run(scenario())
+
+
+def test_configured_link_realtime_listener_accepts_a_real_noise_session(tmp_path):
+    """The real-time (Noise) listener design doc §8.10/issue #148 adds
+    alongside the HTTP one actually starts as part of a real running
+    node and completes a genuine XX handshake -- the same "not just
+    something is listening" bar `test_configured_link_listener_
+    completes_a_real_hello` above already sets for the HTTP listener."""
+    async def scenario():
+        config = _config(
+            tmp_path,
+            telnet=TransportConfig(True, "127.0.0.1", 12403),
+            link=LinkConfig(
+                enabled=True, host="127.0.0.1", port=12404, realtime_port=12405,
+            ),
+        )
+        shutdown_event = asyncio.Event()
+        task = asyncio.create_task(run(config, shutdown_event=shutdown_event))
+        try:
+            await _open_connection_when_ready("127.0.0.1", 12403)  # node fully up
+
+            from netbbs.link.node_identity import load_or_bootstrap_node_identity
+
+            real_identity = load_or_bootstrap_node_identity(config.identity_dir, label=config.node_name)
+            dialer_identity = bootstrap_node_identity("realtime-dialer")
+
+            reader, writer = await asyncio.open_connection("127.0.0.1", 12405)
+            try:
+                remote, ciphers = await establish_noise_xx_initiator(reader, writer, dialer_identity)
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+            assert remote.root_fingerprint == real_identity.fingerprint
+            assert ciphers.handshake_hash
         finally:
             shutdown_event.set()
             await task

@@ -127,17 +127,33 @@ def _build_own_hello_provider(link_node: LinkNode, link_config: LinkConfig):
     itself). `addresses` is only populated for a full peer
     (`not outgoing_only`) -- `config.validate()` already guarantees
     `advertised_host` is set whenever that's the case, so this can build
-    the descriptor unconditionally rather than re-checking here.
+    the descriptor unconditionally rather than re-checking here. The
+    real-time (Noise) address (design doc §8.10) is added as a second
+    `addresses` entry alongside the HTTP one -- imported lazily, here in
+    the closure rather than at module top level, since by the time this
+    is ever actually called Link (and therefore `aiohttp`) is already
+    confirmed running; see `_start_servers`'s own matching lazy import
+    for why this module must not import `netbbs.link.transport` eagerly.
     """
 
     def _provide() -> HelloMessage:
         addresses = None
         if not link_config.outgoing_only:
+            from netbbs.link.transport import LINK_REALTIME_PROTOCOL_TAG
+
             advertised_port = (
                 link_config.advertised_port if link_config.advertised_port is not None else link_config.port
             )
+            realtime_advertised_port = (
+                link_config.realtime_advertised_port
+                if link_config.realtime_advertised_port is not None else link_config.realtime_port
+            )
             addresses = [
-                {"protocol": "http", "address": link_config.advertised_host, "port": advertised_port}
+                {"protocol": "http", "address": link_config.advertised_host, "port": advertised_port},
+                {
+                    "protocol": LINK_REALTIME_PROTOCOL_TAG, "address": link_config.advertised_host,
+                    "port": realtime_advertised_port,
+                },
             ]
         return link_node.build_hello(
             addresses=addresses, outgoing_only=link_config.outgoing_only, created_at=utc_now_iso()
@@ -154,6 +170,8 @@ async def _start_servers(
     throttle: LoginThrottle,
     link_node: LinkNode | None,
     link_lane: DatabaseLane,
+    link_realtime_registry=None,
+    link_realtime_bridge=None,
 ) -> list:
     """
     Start every enabled, available listener. On any failure partway
@@ -162,6 +180,15 @@ async def _start_servers(
     already-started components" — an operator should never end up with
     an unintended subset of listeners silently running because the
     third one failed to bind).
+
+    `link_realtime_registry`/`link_realtime_bridge` (design doc §8.10.2,
+    issue #148), non-`None` exactly when `link_node` is and `aiohttp` is
+    importable: `run()` constructs both once, under its own `aiohttp`
+    availability check, alongside `link_node` -- session_handler/ssh_
+    session_handler's own `LinkContext` needs the identical instances
+    before this function ever runs, so they cannot be built fresh here.
+    This function's job is only to start the real-time *listener*
+    sharing them, mirroring `LinkServer`'s own construction below.
 
     `throttle` is the *same* `LoginThrottle` instance `run()` hands to
     `session_handler` for Telnet/web — SSH's `validate_password` (see
@@ -294,6 +321,38 @@ async def _start_servers(
                 "NetBBS Link listening on %s:%d (fingerprint %s, %s)",
                 config.link.host, config.link.port, link_node.identity.fingerprint,
                 "outgoing-only" if config.link.outgoing_only else "full peer",
+            )
+
+            # Design doc §8.10, issue #148: the persistent Noise real-
+            # time listener, a second port on the same host, started
+            # right alongside the HTTP one -- same aiohttp-availability
+            # guard (LinkServer's own import above already proved it),
+            # same registry/bridge instances LinkContext hands to every
+            # interactive session (run()'s own construction, passed down
+            # as this function's own parameters). `link_realtime_
+            # registry`/`link_realtime_bridge` are only ever `None` here
+            # if `run()` itself couldn't import aiohttp either, in which
+            # case the HTTP `LinkServer` import two lines above would
+            # already have raised `ImportError` and this branch would
+            # never be reached -- the assert documents that invariant
+            # rather than silently skipping a listener a SysOp expects.
+            from netbbs.link.transport import LinkRealtimeServer
+
+            assert link_realtime_registry is not None and link_realtime_bridge is not None
+            await _start_one(
+                "link-realtime",
+                LinkRealtimeServer(
+                    host=config.link.host,
+                    port=config.link.realtime_port,
+                    identity=link_node.identity,
+                    registry=link_realtime_registry,
+                    on_frame=link_realtime_bridge.on_frame,
+                    lane=link_lane,
+                    enforce_trust_policy=True,
+                ),
+            )
+            _logger.info(
+                "NetBBS Link real-time listening on %s:%d", config.link.host, config.link.realtime_port
             )
 
     if not any_interactive_started:
@@ -531,7 +590,8 @@ async def run(
             # directly rather than re-checking config.link.enabled here.
             link_context=(
                 LinkContext(
-                    node_identity=node_identity, link_node=link_node, link_config=link_config_snapshot
+                    node_identity=node_identity, link_node=link_node, link_config=link_config_snapshot,
+                    realtime_registry=link_realtime_registry, realtime_bridge=link_realtime_bridge,
                 ) if link_node is not None else None
             ),
             direct_invites=direct_invites,
@@ -569,6 +629,13 @@ async def run(
     link_sync_stop_event = asyncio.Event()
     seed_refresh_task: asyncio.Task | None = None
     link_diagnostic_log_handler: LinkDiagnosticLogHandler | None = None
+    # Design doc §8.10.2, issue #148: pre-initialized here, like every
+    # other name the `finally` block below reads directly, so an
+    # exception raised before this function's own later construction of
+    # these (e.g. write_pid_file/node identity load failing) still hits
+    # a defined name rather than NameError inside that `finally`.
+    link_realtime_registry = None
+    link_realtime_bridge = None
     try:
         # Design doc §13.10, issue #75: this node's own PID, so a later
         # `netbbs.backup restore` can reliably refuse against an idle-
@@ -611,6 +678,33 @@ async def run(
         # same reasoning node_identity/count_sysops(db) already read
         # synchronously at this point in startup.
         link_node = load_link_node(db, node_identity) if config.link.enabled else None
+
+        # Design doc §8.10.2, issue #148: this node's one shared real-
+        # time session registry/live-channel bridge, constructed once
+        # here (same reasoning as link_node just above -- session_
+        # handler/ssh_session_handler's own LinkContext, defined earlier
+        # in this function, close over these as free variables resolved
+        # at call time) and threaded down to `_start_servers` so the
+        # real-time *listener* shares the identical instances. Lazily
+        # imported -- `netbbs.link.transport`/`netbbs.link.realtime_
+        # channels` both require aiohttp, which this module must not
+        # require merely to import itself (see `_start_servers`'s own
+        # matching `LinkServer` import for the established pattern).
+        # `None` under the exact same "aiohttp missing" condition
+        # `_start_servers`'s own Link listener already degrades to a
+        # warning for, rather than a hard startup failure -- a node
+        # without aiohttp still runs Link's asynchronous half fine.
+        link_realtime_registry = None
+        link_realtime_bridge = None
+        if link_node is not None:
+            try:
+                from netbbs.link.realtime_channels import LiveChannelBridge
+                from netbbs.link.transport import LinkRealtimeSessionRegistry
+            except ImportError:
+                pass
+            else:
+                link_realtime_registry = LinkRealtimeSessionRegistry(own_fingerprint=node_identity.fingerprint)
+                link_realtime_bridge = LiveChannelBridge(hub=hub, lane=background_lane)
 
         # Design doc §13.11, issue #60: attached once, here, only when
         # Link is actually enabled -- a disabled node has no netbbs.link
@@ -656,7 +750,8 @@ async def run(
                 "never be administered once it's running"
             )
         servers = await _start_servers(
-            config, db, session_handler, ssh_session_handler, throttle, link_node, background_lane
+            config, db, session_handler, ssh_session_handler, throttle, link_node, background_lane,
+            link_realtime_registry, link_realtime_bridge,
         )
 
         # Design doc: the piece that makes this node
@@ -821,6 +916,17 @@ async def run(
                 pass
         for server in reversed(servers):
             await server.stop()
+        # Design doc §8.10.1, issue #148: every live Noise session this
+        # node holds (inbound or outbound) is owned by the registry, not
+        # by any one server above -- closed here, after every listener
+        # has stopped accepting new ones, so no new session can be
+        # admitted mid-drain. `close()` also gathers `link_realtime_
+        # bridge`'s own per-session watcher tasks (issue #148's "own
+        # async tasks" rule).
+        if link_realtime_registry is not None:
+            await link_realtime_registry.close_all(reason="node_shutdown")
+        if link_realtime_bridge is not None:
+            await link_realtime_bridge.close()
         foreground_lane.close()
         background_lane.close()
         db.close()

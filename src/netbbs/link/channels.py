@@ -128,6 +128,31 @@ def _channel_from_row(row) -> Channel:
     )
 
 
+def get_channel_by_channel_id(db: Database, channel_id: str) -> Channel | None:
+    """The local `Channel` carrying Link's content-addressed
+    `channel_id`, if this node carries one -- the read counterpart to
+    `materialize_carried_channel`'s own lookup, exposed publicly for
+    Phase 5's real-time subscribe path (design doc §8.10.2), which only
+    ever has the wire-level `channel_id` string to look up from, never
+    a local integer row id."""
+    row = db.connection.execute("SELECT * FROM channels WHERE channel_id = ?", (channel_id,)).fetchone()
+    return None if row is None else _channel_from_row(row)
+
+
+def channel_origin_fingerprint(db: Database, channel: Channel) -> str | None:
+    """`channel`'s `channel_genesis.payload["origin_fingerprint"]`, or
+    `None` if `channel` isn't Linked at all -- Phase 5's real-time
+    subscribe path (design doc §8.10.2) dials/subscribes to a linked
+    channel's origin node specifically, the same node async catch-up
+    already treats as authoritative for it."""
+    row = db.connection.execute(
+        "SELECT link_genesis_json FROM channels WHERE id = ?", (channel.id,)
+    ).fetchone()
+    if row is None or row["link_genesis_json"] is None:
+        return None
+    return json.loads(row["link_genesis_json"])["envelope"]["payload"]["origin_fingerprint"]
+
+
 def carried_channel_count(db: Database, own_fingerprint: str) -> int:
     """How many channels this node currently carries -- mirrors
     `netbbs.link.boards.carried_board_count` exactly."""

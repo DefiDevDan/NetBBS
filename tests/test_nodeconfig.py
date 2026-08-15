@@ -277,6 +277,30 @@ def test_link_invalid_port_fails_validation(port):
         config.validate()
 
 
+@pytest.mark.parametrize("port", [0, -1, 65536, 100000])
+def test_link_invalid_realtime_port_fails_validation(port):
+    config = NodeConfig(link=LinkConfig(enabled=True, host="127.0.0.1", port=7862, realtime_port=port))
+    with pytest.raises(ConfigError, match="link.realtime_port"):
+        config.validate()
+
+
+def test_link_realtime_port_colliding_with_port_fails_validation():
+    config = NodeConfig(link=LinkConfig(enabled=True, host="127.0.0.1", port=7862, realtime_port=7862))
+    with pytest.raises(ConfigError, match="realtime_port must differ from link.port"):
+        config.validate()
+
+
+def test_link_full_peer_with_invalid_realtime_advertised_port_fails_validation():
+    config = NodeConfig(
+        link=LinkConfig(
+            enabled=True, host="0.0.0.0", port=7862, outgoing_only=False,
+            advertised_host="203.0.113.5", realtime_advertised_port=99999,
+        )
+    )
+    with pytest.raises(ConfigError, match="realtime_advertised_port"):
+        config.validate()
+
+
 def test_link_empty_host_fails_validation():
     config = NodeConfig(link=LinkConfig(enabled=True, host="", port=7862))
     with pytest.raises(ConfigError, match="link.host"):
@@ -355,6 +379,17 @@ def test_cli_can_enable_link_and_set_host_port():
     assert config.link.enabled is True
     assert config.link.host == "0.0.0.0"
     assert config.link.port == 7000
+
+
+def test_cli_can_set_link_realtime_ports():
+    config = load_config(
+        [
+            "--enable-telnet", "--enable-link", "--link-realtime-port", "7900",
+            "--link-realtime-advertised-port", "7901",
+        ]
+    )
+    assert config.link.realtime_port == 7900
+    assert config.link.realtime_advertised_port == 7901
 
 
 def test_cli_link_full_peer_flag_and_advertised_address():

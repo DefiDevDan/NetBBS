@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from netbbs.auth.users import User
 from netbbs.boards.boards import Board
@@ -64,6 +65,15 @@ from netbbs.link.protocol import LinkNode, PeerRecord
 from netbbs.search import reindex_post
 from netbbs.storage.database import Database
 from netbbs.timeutil import utc_now_iso
+
+if TYPE_CHECKING:
+    # Deferred to type-checking only -- `netbbs.link.transport` imports
+    # *this* module (for board materialization), so an eager import here
+    # would be circular. Safe as a `LinkContext` field annotation because
+    # `from __future__ import annotations` above (PEP 563) means the
+    # annotation itself is never evaluated at runtime.
+    from netbbs.link.realtime_channels import LiveChannelBridge
+    from netbbs.link.transport import LinkRealtimeSessionRegistry
 
 
 @dataclass(frozen=True)
@@ -109,11 +119,23 @@ class LinkContext:
     `link_config` (issue #60) is `None` under the exact same conditions
     as everything else here -- it additionally stays `None` for callers
     (tests, mainly) that build a `LinkContext` without needing config-
-    derived display, since it's optional and additive."""
+    derived display, since it's optional and additive.
+
+    `realtime_registry`/`realtime_bridge` (design doc §8.10.2, issue
+    #148) are this node's one shared `LinkRealtimeSessionRegistry`/
+    `LiveChannelBridge` singletons -- same lifetime and construction
+    shape as `hub`/`presence`/`mailbox`, just threaded through here
+    instead of as `handle_session`'s own separate parameters, since
+    both only ever matter together with `link_node`/`node_identity`
+    (`ensure_live_subscription` needs all four at once). `None` under
+    the exact same conditions as `link_node` -- a node with Link
+    disabled constructs neither."""
 
     node_identity: NodeIdentity
     link_node: LinkNode
     link_config: LinkConfigSnapshot | None = None
+    realtime_registry: LinkRealtimeSessionRegistry | None = None
+    realtime_bridge: LiveChannelBridge | None = None
 
 
 class LinkBoardsError(Exception):

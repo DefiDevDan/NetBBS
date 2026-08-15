@@ -151,6 +151,23 @@ class LinkConfig:
     `link_diagnostic_log` table -- whichever limit is stricter in
     practice actually governs, both are enforced independently on every
     write.
+
+    `realtime_port`/`realtime_advertised_port` (design doc §8.10, issue
+    #148): the persistent Noise-protected TCP listener for real-time
+    Link chat, deliberately a second port rather than multiplexed onto
+    `port` -- it is a different traffic family (raw length-prefixed
+    Noise records, never HTTP+JSON) advertised as a separate `addresses`
+    entry in this node's own `endpoint_descriptor` (see `netbbs.link.
+    transport.LINK_REALTIME_PROTOCOL_TAG`). Shares `host`/`advertised_
+    host` with the HTTP listener above -- same NIC/interface, just a
+    different port -- so there is no separate `realtime_host` to keep in
+    sync. `realtime_advertised_port` defaults to `realtime_port` when
+    unset, mirroring `advertised_port`'s own default exactly. The
+    real-time listener always starts whenever `enabled` is true,
+    regardless of `outgoing_only` -- an outgoing-only node still needs it
+    running so a peer *it* dials can reply over the same connection, the
+    same reasoning `LinkServer`'s own `host`/`port` already apply to the
+    HTTP listener.
     """
 
     enabled: bool = False
@@ -159,6 +176,8 @@ class LinkConfig:
     outgoing_only: bool = True
     advertised_host: str | None = None
     advertised_port: int | None = None
+    realtime_port: int = 7863
+    realtime_advertised_port: int | None = None
     seeds: list[str] = field(default_factory=list)
     sync_interval_seconds: float = 300.0
     relay_serving_enabled: bool = True
@@ -262,6 +281,15 @@ class NodeConfig:
                 raise ConfigError(f"link.port must be between 1 and 65535, got {self.link.port}")
             if not self.link.host.strip():
                 raise ConfigError("link.host must not be empty")
+            if not (1 <= self.link.realtime_port <= 65535):
+                raise ConfigError(
+                    f"link.realtime_port must be between 1 and 65535, got {self.link.realtime_port}"
+                )
+            if self.link.realtime_port == self.link.port:
+                raise ConfigError(
+                    "link.realtime_port must differ from link.port -- they are two independent "
+                    "listeners (HTTP+JSON gossip vs. persistent Noise real-time chat)"
+                )
             if not self.link.outgoing_only:
                 if not self.link.advertised_host or not self.link.advertised_host.strip():
                     raise ConfigError(
@@ -274,6 +302,15 @@ class NodeConfig:
                 if not (1 <= advertised_port <= 65535):
                     raise ConfigError(
                         f"link.advertised_port must be between 1 and 65535, got {advertised_port}"
+                    )
+                realtime_advertised_port = (
+                    self.link.realtime_advertised_port
+                    if self.link.realtime_advertised_port is not None else self.link.realtime_port
+                )
+                if not (1 <= realtime_advertised_port <= 65535):
+                    raise ConfigError(
+                        "link.realtime_advertised_port must be between 1 and 65535, got "
+                        f"{realtime_advertised_port}"
                     )
             if self.link.sync_interval_seconds <= 0:
                 raise ConfigError(
@@ -418,6 +455,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     link_group.add_argument("--disable-link", dest="link_enabled", action="store_false", default=None)
     parser.add_argument("--link-host", dest="link_host", default=None)
     parser.add_argument("--link-port", dest="link_port", type=int, default=None)
+    parser.add_argument("--link-realtime-port", dest="link_realtime_port", type=int, default=None)
+    parser.add_argument(
+        "--link-realtime-advertised-port", dest="link_realtime_advertised_port", type=int, default=None
+    )
     outgoing_group = parser.add_mutually_exclusive_group()
     outgoing_group.add_argument(
         "--link-outgoing-only", dest="link_outgoing_only", action="store_true", default=None
@@ -558,6 +599,8 @@ def _link_from_toml(data: dict, current: LinkConfig) -> LinkConfig:
         outgoing_only=bool(table.get("outgoing_only", current.outgoing_only)),
         advertised_host=table.get("advertised_host", current.advertised_host),
         advertised_port=table.get("advertised_port", current.advertised_port),
+        realtime_port=int(table.get("realtime_port", current.realtime_port)),
+        realtime_advertised_port=table.get("realtime_advertised_port", current.realtime_advertised_port),
         seeds=list(seeds),
         sync_interval_seconds=float(table.get("sync_interval_seconds", current.sync_interval_seconds)),
         relay_serving_enabled=bool(table.get("relay_serving_enabled", current.relay_serving_enabled)),
@@ -644,6 +687,8 @@ def _apply_cli_overrides(config: NodeConfig, args: argparse.Namespace) -> NodeCo
         args.link_enabled,
         args.link_host,
         args.link_port,
+        args.link_realtime_port,
+        args.link_realtime_advertised_port,
         args.link_outgoing_only,
         args.link_advertised_host,
         args.link_advertised_port,
@@ -670,6 +715,14 @@ def _apply_cli_overrides(config: NodeConfig, args: argparse.Namespace) -> NodeCo
                 enabled=link.enabled if args.link_enabled is None else args.link_enabled,
                 host=link.host if args.link_host is None else args.link_host,
                 port=link.port if args.link_port is None else args.link_port,
+                realtime_port=(
+                    link.realtime_port if args.link_realtime_port is None else args.link_realtime_port
+                ),
+                realtime_advertised_port=(
+                    link.realtime_advertised_port
+                    if args.link_realtime_advertised_port is None
+                    else args.link_realtime_advertised_port
+                ),
                 outgoing_only=(
                     link.outgoing_only if args.link_outgoing_only is None else args.link_outgoing_only
                 ),

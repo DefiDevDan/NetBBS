@@ -59,6 +59,8 @@ from __future__ import annotations
 
 import base64
 import json
+import secrets
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from string import hexdigits
@@ -167,6 +169,22 @@ REALTIME_FRAME_TYPES = frozenset(
 )
 _REALTIME_MAX_MESSAGE_ID_BYTES = 64
 _JSON_SAFE_INTEGER = (1 << 53) - 1
+
+# Per-field bounds for the first-vertical frame payloads (design doc
+# §8.10.2). These are well inside REALTIME_MAX_PLAINTEXT_BYTES already --
+# the point is a caller-facing malformed/oversized-field rejection with a
+# specific reason, not merely relying on the frame-wide ceiling.
+_REALTIME_MAX_ID_BYTES = 128
+_REALTIME_MAX_DISPLAY_LABEL_BYTES = 256
+_REALTIME_MAX_CHANNEL_MESSAGE_BODY_BYTES = 4000
+_REALTIME_MAX_ERROR_DETAIL_BYTES = 500
+_REALTIME_MAX_CLOSE_REASON_BYTES = 200
+_REALTIME_MAX_PRESENCE_ENTRIES = 500
+_REALTIME_PRESENCE_CHANGES = frozenset({"join", "leave"})
+
+# design doc §8.10.1: "IDs are bounded strings and deduplicated within a
+# bounded per-session replay window."
+_REALTIME_REPLAY_WINDOW_SIZE = 512
 
 
 def _parse_aware_timestamp(value: str, *, field_name: str) -> datetime:
@@ -431,6 +449,231 @@ class RealtimeIdentityPayload:
         if expected_static != presented_static_key:
             raise LinkProtocolError("Noise static key is not derived from the authorized transport key")
         return root_key
+
+
+def _validate_bounded_id(value: object, *, path: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise LinkProtocolError(f"{path} must be a non-empty string")
+    if len(value.encode("utf-8")) > _REALTIME_MAX_ID_BYTES:
+        raise LinkProtocolError(f"{path} exceeds {_REALTIME_MAX_ID_BYTES} bytes")
+
+
+def _validate_bounded_text(value: object, *, path: str, max_bytes: int) -> None:
+    if not isinstance(value, str):
+        raise LinkProtocolError(f"{path} must be a string")
+    if len(value.encode("utf-8")) > max_bytes:
+        raise LinkProtocolError(f"{path} exceeds {max_bytes} bytes")
+
+
+def _validate_channel_id_only_payload(payload: dict, *, path: str) -> None:
+    if set(payload) != {"channel_id"}:
+        raise LinkProtocolError(f"{path} must contain exactly channel_id")
+    _validate_bounded_id(payload["channel_id"], path=f"{path}.channel_id")
+
+
+def _validate_presence_entry(entry: object, *, path: str) -> None:
+    if not isinstance(entry, dict) or set(entry) != {"user_id", "display_label"}:
+        raise LinkProtocolError(f"{path} must contain exactly user_id and display_label")
+    _validate_bounded_id(entry["user_id"], path=f"{path}.user_id")
+    _validate_bounded_text(
+        entry["display_label"], path=f"{path}.display_label", max_bytes=_REALTIME_MAX_DISPLAY_LABEL_BYTES
+    )
+
+
+def _validate_presence_snapshot_payload(payload: dict, *, path: str) -> None:
+    if set(payload) != {"channel_id", "entries"}:
+        raise LinkProtocolError(f"{path} must contain exactly channel_id and entries")
+    _validate_bounded_id(payload["channel_id"], path=f"{path}.channel_id")
+    entries = payload["entries"]
+    if not isinstance(entries, list):
+        raise LinkProtocolError(f"{path}.entries must be a list")
+    if len(entries) > _REALTIME_MAX_PRESENCE_ENTRIES:
+        raise LinkProtocolError(f"{path}.entries exceeds {_REALTIME_MAX_PRESENCE_ENTRIES} entries")
+    for index, entry in enumerate(entries):
+        _validate_presence_entry(entry, path=f"{path}.entries[{index}]")
+
+
+def _validate_presence_delta_payload(payload: dict, *, path: str) -> None:
+    if set(payload) != {"channel_id", "change", "user_id", "display_label"}:
+        raise LinkProtocolError(f"{path} must contain exactly channel_id, change, user_id, and display_label")
+    _validate_bounded_id(payload["channel_id"], path=f"{path}.channel_id")
+    if payload["change"] not in _REALTIME_PRESENCE_CHANGES:
+        raise LinkProtocolError(f"{path}.change must be 'join' or 'leave'")
+    _validate_bounded_id(payload["user_id"], path=f"{path}.user_id")
+    _validate_bounded_text(
+        payload["display_label"], path=f"{path}.display_label", max_bytes=_REALTIME_MAX_DISPLAY_LABEL_BYTES
+    )
+
+
+def _validate_channel_message_payload(payload: dict, *, path: str) -> None:
+    if set(payload) != {"channel_id", "user_id", "display_label", "body", "created_at"}:
+        raise LinkProtocolError(
+            f"{path} must contain exactly channel_id, user_id, display_label, body, and created_at"
+        )
+    _validate_bounded_id(payload["channel_id"], path=f"{path}.channel_id")
+    _validate_bounded_id(payload["user_id"], path=f"{path}.user_id")
+    _validate_bounded_text(
+        payload["display_label"], path=f"{path}.display_label", max_bytes=_REALTIME_MAX_DISPLAY_LABEL_BYTES
+    )
+    if not isinstance(payload["body"], str) or not payload["body"]:
+        raise LinkProtocolError(f"{path}.body must be a non-empty string")
+    _validate_bounded_text(payload["body"], path=f"{path}.body", max_bytes=_REALTIME_MAX_CHANNEL_MESSAGE_BODY_BYTES)
+    if not isinstance(payload["created_at"], str):
+        raise LinkProtocolError(f"{path}.created_at must be a string")
+    _parse_aware_timestamp(payload["created_at"], field_name=f"{path}.created_at")
+
+
+def _validate_empty_payload(payload: dict, *, path: str) -> None:
+    if payload != {}:
+        raise LinkProtocolError(f"{path} must be an empty object")
+
+
+def _validate_error_payload(payload: dict, *, path: str) -> None:
+    if set(payload) != {"code", "detail"}:
+        raise LinkProtocolError(f"{path} must contain exactly code and detail")
+    _validate_bounded_id(payload["code"], path=f"{path}.code")
+    _validate_bounded_text(payload["detail"], path=f"{path}.detail", max_bytes=_REALTIME_MAX_ERROR_DETAIL_BYTES)
+
+
+def _validate_close_payload(payload: dict, *, path: str) -> None:
+    if set(payload) != {"reason"}:
+        raise LinkProtocolError(f"{path} must contain exactly reason")
+    _validate_bounded_text(payload["reason"], path=f"{path}.reason", max_bytes=_REALTIME_MAX_CLOSE_REASON_BYTES)
+
+
+_REALTIME_PAYLOAD_VALIDATORS = {
+    "subscribe": _validate_channel_id_only_payload,
+    "unsubscribe": _validate_channel_id_only_payload,
+    "presence_snapshot": _validate_presence_snapshot_payload,
+    "presence_delta": _validate_presence_delta_payload,
+    "channel_message": _validate_channel_message_payload,
+    "ping": _validate_empty_payload,
+    "pong": _validate_empty_payload,
+    "error": _validate_error_payload,
+    "close": _validate_close_payload,
+}
+assert set(_REALTIME_PAYLOAD_VALIDATORS) == REALTIME_FRAME_TYPES
+
+
+def validate_realtime_frame_payload(frame: RealtimeFrame) -> None:
+    """Enforce the per-type required-field payload schema (design doc
+    §8.10.1) beyond what `RealtimeFrame.__post_init__` already checks
+    generically (type membership, JSON-portability, size). `frame.type`
+    is already guaranteed to be a key of `_REALTIME_PAYLOAD_VALIDATORS`
+    by that same generic check."""
+    _REALTIME_PAYLOAD_VALIDATORS[frame.type](frame.payload, path=f"{frame.type} payload")
+
+
+def new_realtime_message_id() -> str:
+    return secrets.token_hex(16)
+
+
+def build_subscribe_frame(channel_id: str, *, message_id: str | None = None) -> RealtimeFrame:
+    frame = RealtimeFrame(
+        type="subscribe", message_id=message_id or new_realtime_message_id(), payload={"channel_id": channel_id}
+    )
+    validate_realtime_frame_payload(frame)
+    return frame
+
+
+def build_unsubscribe_frame(channel_id: str, *, message_id: str | None = None) -> RealtimeFrame:
+    frame = RealtimeFrame(
+        type="unsubscribe", message_id=message_id or new_realtime_message_id(), payload={"channel_id": channel_id}
+    )
+    validate_realtime_frame_payload(frame)
+    return frame
+
+
+def build_presence_snapshot_frame(
+    channel_id: str, entries: list[dict], *, message_id: str | None = None
+) -> RealtimeFrame:
+    frame = RealtimeFrame(
+        type="presence_snapshot",
+        message_id=message_id or new_realtime_message_id(),
+        payload={"channel_id": channel_id, "entries": list(entries)},
+    )
+    validate_realtime_frame_payload(frame)
+    return frame
+
+
+def build_presence_delta_frame(
+    channel_id: str, change: str, user_id: str, display_label: str, *, message_id: str | None = None
+) -> RealtimeFrame:
+    frame = RealtimeFrame(
+        type="presence_delta",
+        message_id=message_id or new_realtime_message_id(),
+        payload={"channel_id": channel_id, "change": change, "user_id": user_id, "display_label": display_label},
+    )
+    validate_realtime_frame_payload(frame)
+    return frame
+
+
+def build_channel_message_frame(
+    channel_id: str, user_id: str, display_label: str, body: str, created_at: str,
+    *, message_id: str | None = None,
+) -> RealtimeFrame:
+    frame = RealtimeFrame(
+        type="channel_message",
+        message_id=message_id or new_realtime_message_id(),
+        payload={
+            "channel_id": channel_id, "user_id": user_id, "display_label": display_label,
+            "body": body, "created_at": created_at,
+        },
+    )
+    validate_realtime_frame_payload(frame)
+    return frame
+
+
+def build_ping_frame(*, message_id: str | None = None) -> RealtimeFrame:
+    frame = RealtimeFrame(type="ping", message_id=message_id or new_realtime_message_id(), payload={})
+    validate_realtime_frame_payload(frame)
+    return frame
+
+
+def build_pong_frame(*, message_id: str | None = None) -> RealtimeFrame:
+    frame = RealtimeFrame(type="pong", message_id=message_id or new_realtime_message_id(), payload={})
+    validate_realtime_frame_payload(frame)
+    return frame
+
+
+def build_error_frame(code: str, detail: str, *, message_id: str | None = None) -> RealtimeFrame:
+    frame = RealtimeFrame(
+        type="error", message_id=message_id or new_realtime_message_id(), payload={"code": code, "detail": detail}
+    )
+    validate_realtime_frame_payload(frame)
+    return frame
+
+
+def build_close_frame(reason: str, *, message_id: str | None = None) -> RealtimeFrame:
+    frame = RealtimeFrame(
+        type="close", message_id=message_id or new_realtime_message_id(), payload={"reason": reason}
+    )
+    validate_realtime_frame_payload(frame)
+    return frame
+
+
+class RealtimeReplayWindow:
+    """Bounded per-session `message_id` de-dup window (design doc
+    §8.10.1). FIFO eviction keeps memory bounded regardless of how many
+    frames the peer sends -- a duplicate outside the window is simply
+    treated as new again, which only matters for a peer that is already
+    far outside sane heartbeat/traffic bounds elsewhere."""
+
+    def __init__(self, *, max_entries: int = _REALTIME_REPLAY_WINDOW_SIZE) -> None:
+        self._max_entries = max_entries
+        self._seen: set[str] = set()
+        self._order: deque[str] = deque()
+
+    def seen_before(self, message_id: str) -> bool:
+        """Record `message_id` as seen; return whether it was already present."""
+        if message_id in self._seen:
+            return True
+        self._seen.add(message_id)
+        self._order.append(message_id)
+        if len(self._order) > self._max_entries:
+            oldest = self._order.popleft()
+            self._seen.discard(oldest)
+        return False
 
 
 def _signing_transitions(transitions: tuple[KeyTransition, ...], fingerprint: str) -> tuple[KeyTransition, ...]:

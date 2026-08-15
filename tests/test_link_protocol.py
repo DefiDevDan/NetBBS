@@ -41,6 +41,17 @@ from netbbs.link.protocol import (
     PeerListMessage,
     RealtimeFrame,
     RealtimeIdentityPayload,
+    RealtimeReplayWindow,
+    build_channel_message_frame,
+    build_close_frame,
+    build_error_frame,
+    build_ping_frame,
+    build_pong_frame,
+    build_presence_delta_frame,
+    build_presence_snapshot_frame,
+    build_subscribe_frame,
+    build_unsubscribe_frame,
+    validate_realtime_frame_payload,
 )
 from tests.link_harness import FakeClock, ScriptedTransport, spawn_node
 
@@ -105,6 +116,82 @@ def test_realtime_identity_payload_rejects_broken_root_transport_binding(tamper)
 
     with pytest.raises(LinkProtocolError):
         RealtimeIdentityPayload.from_dict(payload).verify_noise_static(presented)
+
+
+def test_build_frame_helpers_produce_payloads_that_pass_their_own_validator():
+    frames = [
+        build_subscribe_frame("channel-1"),
+        build_unsubscribe_frame("channel-1"),
+        build_presence_snapshot_frame("channel-1", [{"user_id": "u1", "display_label": "Alice"}]),
+        build_presence_delta_frame("channel-1", "join", "u1", "Alice"),
+        build_channel_message_frame("channel-1", "u1", "Alice", "hello", "2026-01-01T00:00:00+00:00"),
+        build_ping_frame(),
+        build_pong_frame(),
+        build_error_frame("bad_thing", "detail"),
+        build_close_frame("shutting down"),
+    ]
+
+    assert {frame.type for frame in frames} == REALTIME_FRAME_TYPES
+    for frame in frames:
+        validate_realtime_frame_payload(frame)  # must not raise
+        assert RealtimeFrame.from_json_bytes(frame.to_json_bytes()) == frame
+
+
+@pytest.mark.parametrize(
+    "frame_type, payload",
+    [
+        ("subscribe", {}),
+        ("subscribe", {"channel_id": "c1", "extra": True}),
+        ("subscribe", {"channel_id": ""}),
+        ("subscribe", {"channel_id": "x" * 129}),
+        ("unsubscribe", {"channel_id": 7}),
+        ("presence_snapshot", {"channel_id": "c1"}),
+        ("presence_snapshot", {"channel_id": "c1", "entries": "not-a-list"}),
+        ("presence_snapshot", {"channel_id": "c1", "entries": [{"user_id": "u1"}]}),
+        (
+            "presence_snapshot",
+            {"channel_id": "c1", "entries": [{"user_id": "u1", "display_label": "A", "extra": 1}]},
+        ),
+        ("presence_delta", {"channel_id": "c1", "change": "sideways", "user_id": "u1", "display_label": "A"}),
+        ("presence_delta", {"channel_id": "c1", "change": "join", "user_id": "u1"}),
+        ("channel_message", {"channel_id": "c1", "user_id": "u1", "display_label": "A", "body": ""}),
+        (
+            "channel_message",
+            {
+                "channel_id": "c1", "user_id": "u1", "display_label": "A",
+                "body": "hi", "created_at": "not-a-timestamp",
+            },
+        ),
+        (
+            "channel_message",
+            {
+                "channel_id": "c1", "user_id": "u1", "display_label": "A",
+                "body": "x" * 4001, "created_at": "2026-01-01T00:00:00+00:00",
+            },
+        ),
+        ("ping", {"unexpected": True}),
+        ("pong", {"unexpected": True}),
+        ("error", {"code": "bad"}),
+        ("error", {"code": "bad", "detail": "x" * 501}),
+        ("close", {}),
+    ],
+)
+def test_realtime_frame_payload_validator_rejects_malformed_typed_payloads(frame_type, payload):
+    frame = RealtimeFrame(type=frame_type, message_id="m1", payload=payload)
+
+    with pytest.raises(LinkProtocolError):
+        validate_realtime_frame_payload(frame)
+
+
+def test_realtime_replay_window_detects_duplicates_and_evicts_oldest_once_full():
+    window = RealtimeReplayWindow(max_entries=3)
+
+    assert window.seen_before("a") is False
+    assert window.seen_before("a") is True
+    assert window.seen_before("b") is False
+    assert window.seen_before("c") is False
+    assert window.seen_before("d") is False  # evicts "a"
+    assert window.seen_before("a") is False  # "a" forgotten, treated as new again
 
 
 @pytest.fixture

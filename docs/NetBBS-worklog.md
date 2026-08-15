@@ -2465,3 +2465,63 @@ verify root fingerprint -> root-signed transport transition chain -> current
 Ed25519 transport key -> presented X25519 static key before a caller may apply
 trust policy or accept application frames. Keep cryptographic verification,
 trust admission, and session supervision as distinct gates.
+
+**`asyncio.Server.wait_closed()` can block on an already-admitted connection
+under Windows' Proactor event loop even after `close()` has already stopped
+new accepts.** `LinkRealtimeServer.stop()` (real-time Link, design doc §8.10)
+learned this the hard way: calling `stop()` while a `LinkRealtimeSession`
+accepted through that listener was still open hung indefinitely, because
+`close()` alone does not close already-admitted client sockets -- session
+lifecycle is owned independently by `LinkRealtimeSession`/`LinkRealtimeSession
+Registry`, never by the listener. `wait_closed()` is therefore called with a
+short bounded `asyncio.wait_for` timeout and the `TimeoutError` is swallowed --
+it is a defensive ceiling on releasing the listening socket's own resources,
+not a normal-path wait for every connection it ever accepted to finish. Any
+other `asyncio.start_server`-based listener in this codebase needs the same
+bounded-wait treatment if its `stop()` can ever run while a still-open
+connection exists.
+
+**Real-time Link session authorization is two independent, direction-specific
+checks, not one.** `LiveChannelBridge`'s subscribe/message/presence handlers
+re-run `decide_node_action(..., LinkPolicyAction.REALTIME)` against the
+*local* db for the *remote* peer's fingerprint on every frame -- this proves
+only that "the peer I received this from is currently trusted by me." A node
+serving live traffic to subscribers must separately re-check, before every
+outbound push, that each subscriber is still trusted (`LiveChannelBridge.
+_live_subscribers` does this and drops a now-untrusted subscriber outright)
+-- otherwise a peer quarantined mid-session keeps receiving pushes until it
+disconnects on its own. Tests exercising the authorized path must establish
+trust in *both* directions (each side's db, for the other side's
+fingerprint) since a freshly-seen node subject defaults to `PROBATIONARY`,
+which `LinkPolicyAction.REALTIME` never allows.
+
+**`netbbs.link.transport` (and anything importing it, e.g. `netbbs.link.
+realtime_channels`) requires `aiohttp` at module import time, not just at
+call time.** `netbbs.__main__` and `netbbs.net.chat_flow` are both imported
+unconditionally regardless of which optional extras are installed, so
+neither may import either module at top level -- every reference is a lazy,
+function-local `import`, guarded by the exact same `try/except ImportError`
+(or, once already proven available earlier in the same call path, an
+unguarded local import) that `LinkServer`'s own construction already
+established this pattern for. `netbbs.link.boards.LinkContext`'s
+`realtime_registry`/`realtime_bridge` fields exist for exactly this reason:
+`netbbs.link.boards` is imported by `netbbs.link.transport` (board
+materialization), so `boards.py` cannot import `transport.py` back without a
+cycle -- the field types are declared under `TYPE_CHECKING` only, relying on
+`from __future__ import annotations` to keep the annotation itself
+unevaluated at runtime. Verify this contract holds (a real regression is
+otherwise silent until someone runs without the `web`/`link` extras
+installed) by blocking `aiohttp` from `sys.meta_path` and importing both
+modules -- no test currently automates this check.
+
+**A live real-time subscribe attempt from an interactive session must be a
+background task, never awaited inline, and must keep running for the
+channel view's whole lifetime, not just until connected.** `_chat_loop`'s
+`_subscribe_live` (issue #148) dials/subscribes, announces "is up" via
+`deliver`, then keeps awaiting the session's own `closed` event so it can
+also announce "was lost" if the peer disconnects while the caller is still
+in the channel -- the design doc's connecting/live/degraded-offline
+requirement is a *live status*, not a one-time check. Because that task is
+therefore essentially never `done()` with a return value by the time a
+caller leaves, the obtained session (if any) is tracked in a small mutable
+holder the task writes into, not read back from the task's own result.

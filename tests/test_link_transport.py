@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import random
 
 import aiohttp
 import nacl.public
@@ -35,6 +36,7 @@ from netbbs.auth.users import create_user
 from netbbs.boards.boards import create_board
 from netbbs.boards.posts import create_post
 from netbbs.link.boards import link_board, queue_board_post_if_linked
+from netbbs.link.enforcement import ensure_node_subject
 from netbbs.link.events import (
     KeyTransition, build_board_genesis, build_board_post,
     build_endpoint_descriptor, build_link_message,
@@ -43,14 +45,19 @@ from netbbs.link.node_identity import bootstrap_node_identity, rotate_operationa
 from netbbs.identity.encryption import derive_encryption_private_key
 from netbbs.link.protocol import (
     FileChunkRequest, HelloMessage, LinkNode, LinkProtocolError, RealtimeFrame,
-    RealtimeIdentityPayload,
+    RealtimeIdentityPayload, build_channel_message_frame, build_subscribe_frame,
 )
 from netbbs.link.store import build_inventory_request, load_link_node
 from netbbs.link.transport import (
     LINK_PATH_PREFIX,
+    LinkRealtimeConnector,
+    LinkRealtimeServer,
+    LinkRealtimeSession,
+    LinkRealtimeSessionRegistry,
     LinkServer,
     LinkTransportError,
     NoiseXXHandshake,
+    dial_realtime_session,
     encode_realtime_record,
     establish_noise_xx_initiator,
     establish_noise_xx_responder,
@@ -283,6 +290,362 @@ def test_noise_xx_identity_handshake_and_frame_cross_a_real_loopback_socket():
     assert server_fingerprint == alice.fingerprint
     assert received.type == "ping"
     assert pong.type == "pong" and pong.payload == {"for": "ping_1"}
+
+
+async def _default_on_frame(session, frame) -> None:
+    return None
+
+
+async def _open_realtime_session_pair(
+    *,
+    on_frame_a=None,
+    on_frame_b=None,
+    session_kwargs_a: dict | None = None,
+    session_kwargs_b: dict | None = None,
+):
+    """Real loopback-socket harness for `LinkRealtimeSession` tests: a
+    genuine Noise XX handshake between two independent identities, each
+    end wrapped in a started `LinkRealtimeSession`. Returns `(session_a,
+    session_b, server, alice, bob)`; the caller closes both sessions and
+    the server."""
+    alice = bootstrap_node_identity("alice")
+    bob = bootstrap_node_identity("bob")
+    session_b_future: asyncio.Future = asyncio.get_running_loop().create_future()
+
+    async def handle(reader, writer):
+        remote, ciphers = await establish_noise_xx_responder(reader, writer, bob)
+        session = LinkRealtimeSession(
+            remote_fingerprint=remote.root_fingerprint, reader=reader, writer=writer,
+            ciphers=ciphers, is_initiator=False,
+            on_frame=on_frame_b or _default_on_frame,
+            **(session_kwargs_b or {}),
+        )
+        session.start()
+        session_b_future.set_result(session)
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    remote, ciphers = await establish_noise_xx_initiator(reader, writer, alice)
+    session_a = LinkRealtimeSession(
+        remote_fingerprint=remote.root_fingerprint, reader=reader, writer=writer,
+        ciphers=ciphers, is_initiator=True,
+        on_frame=on_frame_a or _default_on_frame,
+        **(session_kwargs_a or {}),
+    )
+    session_a.start()
+    session_b = await session_b_future
+    return session_a, session_b, server, alice, bob
+
+
+def test_realtime_session_delivers_frames_once_and_hides_ping_pong_from_on_frame():
+    received_by_b: list[RealtimeFrame] = []
+
+    async def on_frame_b(session, frame):
+        received_by_b.append(frame)
+
+    async def scenario():
+        session_a, session_b, server, alice, bob = await _open_realtime_session_pair(on_frame_b=on_frame_b)
+        try:
+            frame = build_subscribe_frame("channel-1")
+            await session_a.send(frame)
+            await asyncio.sleep(0.05)
+            await session_a.send(frame)  # duplicate message_id: must not be delivered twice
+            await asyncio.sleep(0.05)
+        finally:
+            await session_a.close(reason="test_done")
+            await session_b.close(reason="test_done")
+            server.close()
+            await server.wait_closed()
+        return frame
+
+    frame = asyncio.run(scenario())
+
+    assert [f.type for f in received_by_b] == ["subscribe"]
+    assert received_by_b[0].message_id == frame.message_id
+
+
+def test_realtime_session_send_closes_on_full_outbound_queue():
+    async def scenario():
+        session_a, session_b, server, alice, bob = await _open_realtime_session_pair(
+            session_kwargs_a={"outbound_queue_size": 1},
+        )
+        try:
+            session_a._outbound.put_nowait(build_subscribe_frame("channel-1"))
+            with pytest.raises(LinkTransportError, match="slow consumer"):
+                await session_a.send(build_subscribe_frame("channel-2"))
+            await session_a.closed.wait()
+            reason = session_a.close_reason
+            assert all(task.done() for task in session_a._tasks)
+        finally:
+            await session_b.close(reason="test_done")
+            server.close()
+            await server.wait_closed()
+        return reason
+
+    assert asyncio.run(scenario()) == "slow_consumer"
+
+
+def test_realtime_session_closes_when_frame_rate_exceeded():
+    async def scenario():
+        session_a, session_b, server, alice, bob = await _open_realtime_session_pair(
+            session_kwargs_b={"max_frames_per_window": 3, "frame_window_seconds": 5.0},
+        )
+        try:
+            for _ in range(5):
+                await session_a.send(build_subscribe_frame("channel-1"))
+            await asyncio.wait_for(session_b.closed.wait(), timeout=2.0)
+            reason = session_b.close_reason
+        finally:
+            await session_a.close(reason="test_done")
+            server.close()
+            await server.wait_closed()
+        return reason
+
+    assert asyncio.run(scenario()) == "frame_rate_exceeded"
+
+
+def test_realtime_session_records_protocol_strikes_and_closes_after_the_limit():
+    received_by_a: list[RealtimeFrame] = []
+
+    async def on_frame_a(session, frame):
+        received_by_a.append(frame)
+
+    async def rejecting_on_frame_b(session, frame):
+        raise LinkProtocolError("not authorized")
+
+    async def scenario():
+        session_a, session_b, server, alice, bob = await _open_realtime_session_pair(
+            on_frame_a=on_frame_a, on_frame_b=rejecting_on_frame_b,
+            session_kwargs_b={"max_protocol_strikes": 2},
+        )
+        try:
+            for _ in range(2):  # matches max_protocol_strikes=2: the 2nd violation closes session_b
+                await session_a.send(build_subscribe_frame("channel-1"))
+                await asyncio.sleep(0.05)
+            await asyncio.wait_for(session_b.closed.wait(), timeout=2.0)
+            reason = session_b.close_reason
+        finally:
+            await session_a.close(reason="test_done")
+            server.close()
+            await server.wait_closed()
+        return reason
+
+    reason = asyncio.run(scenario())
+
+    assert reason == "too_many_protocol_strikes"
+    assert [f.type for f in received_by_a] == ["error"]
+
+
+def test_realtime_session_closes_after_heartbeat_lease_expires_when_peer_goes_silent():
+    async def scenario():
+        session_a, session_b, server, alice, bob = await _open_realtime_session_pair(
+            session_kwargs_a={"heartbeat_interval_seconds": 0.05, "heartbeat_lease_seconds": 0.1},
+        )
+        try:
+            # Stop session_b from draining/replying at all, simulating a
+            # genuinely silent peer rather than merely a slow one.
+            for task in session_b._tasks:
+                task.cancel()
+            await asyncio.gather(*session_b._tasks, return_exceptions=True)
+            await asyncio.wait_for(session_a.closed.wait(), timeout=2.0)
+            reason = session_a.close_reason
+        finally:
+            session_b._writer.close()
+            server.close()
+            await server.wait_closed()
+        return reason
+
+    assert asyncio.run(scenario()) == "heartbeat_lease_expired"
+
+
+def test_realtime_session_graceful_close_sends_a_close_frame_the_peer_surfaces():
+    async def scenario():
+        session_a, session_b, server, alice, bob = await _open_realtime_session_pair()
+        try:
+            await session_a.close(reason="local_shutdown", send_close_frame=True)
+            await asyncio.wait_for(session_b.closed.wait(), timeout=2.0)
+            reason = session_b.close_reason
+            assert all(task.done() for task in session_a._tasks)
+            assert all(task.done() for task in session_b._tasks)
+        finally:
+            server.close()
+            await server.wait_closed()
+        return reason
+
+    assert asyncio.run(scenario()) == "peer_closed: local_shutdown"
+
+
+async def _wait_until(predicate, *, timeout: float = 2.0, interval: float = 0.02) -> bool:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(interval)
+    return predicate()
+
+
+def test_dial_realtime_session_completes_a_handshake_and_registers_both_sides():
+    received_by_b: list[RealtimeFrame] = []
+
+    async def on_frame_b(session, frame):
+        received_by_b.append(frame)
+
+    async def scenario():
+        alice = bootstrap_node_identity("alice-dial")
+        bob = bootstrap_node_identity("bob-dial")
+        registry_a = LinkRealtimeSessionRegistry(own_fingerprint=alice.fingerprint)
+        registry_b = LinkRealtimeSessionRegistry(own_fingerprint=bob.fingerprint)
+        server = LinkRealtimeServer(
+            host="127.0.0.1", port=0, identity=bob, registry=registry_b, on_frame=on_frame_b,
+        )
+        await server.start()
+        try:
+            session_a = await dial_realtime_session(
+                "127.0.0.1", server.port, alice, on_frame=_default_on_frame, registry=registry_a,
+            )
+            try:
+                await session_a.send(build_subscribe_frame("channel-1"))
+                await asyncio.sleep(0.05)
+                assert registry_a.get(bob.fingerprint) is session_a
+                assert registry_b.get(alice.fingerprint) is not None
+                assert session_a.remote_fingerprint == bob.fingerprint
+            finally:
+                await session_a.close(reason="test_done")
+        finally:
+            await registry_b.close_all(reason="test_done")
+            await server.stop()
+        return received_by_b
+
+    received = asyncio.run(scenario())
+    assert [frame.type for frame in received] == ["subscribe"]
+
+
+def test_realtime_session_registry_converges_on_the_deterministic_winner_for_simultaneous_connections():
+    async def scenario():
+        alice = bootstrap_node_identity("alice-dedup")
+        bob = bootstrap_node_identity("bob-dedup")
+        registry_a = LinkRealtimeSessionRegistry(own_fingerprint=alice.fingerprint)
+        registry_b = LinkRealtimeSessionRegistry(own_fingerprint=bob.fingerprint)
+        server_a = LinkRealtimeServer(
+            host="127.0.0.1", port=0, identity=alice, registry=registry_a, on_frame=_default_on_frame,
+        )
+        server_b = LinkRealtimeServer(
+            host="127.0.0.1", port=0, identity=bob, registry=registry_b, on_frame=_default_on_frame,
+        )
+        await server_a.start()
+        await server_b.start()
+        try:
+            # Both nodes dial each other "simultaneously" -- the exact
+            # collision design doc §8.10.1 describes. Either leg may or may
+            # not itself raise depending on real accept/handshake timing;
+            # what matters is where both registries settle afterward.
+            await asyncio.gather(
+                dial_realtime_session(
+                    "127.0.0.1", server_b.port, alice, on_frame=_default_on_frame, registry=registry_a,
+                ),
+                dial_realtime_session(
+                    "127.0.0.1", server_a.port, bob, on_frame=_default_on_frame, registry=registry_b,
+                ),
+                return_exceptions=True,
+            )
+
+            def settled() -> bool:
+                # Each side's *own* dial registers locally almost
+                # immediately; the actual collision isn't resolved until
+                # the *other* side's inbound accept also completes its
+                # handshake and reaches admit() -- which lands later, on
+                # both sides, at which point the two sessions necessarily
+                # disagree on is_initiator (the whole point of the rule).
+                a = registry_a.get(bob.fingerprint)
+                b = registry_b.get(alice.fingerprint)
+                return a is not None and b is not None and a.is_initiator != b.is_initiator
+
+            assert await _wait_until(settled)
+
+            alice_keeps_outbound = alice.fingerprint < bob.fingerprint
+            session_on_alice = registry_a.get(bob.fingerprint)
+            session_on_bob = registry_b.get(alice.fingerprint)
+            assert session_on_alice.is_initiator is alice_keeps_outbound
+            assert session_on_bob.is_initiator is not alice_keeps_outbound
+        finally:
+            await registry_a.close_all(reason="test_done")
+            await registry_b.close_all(reason="test_done")
+            await server_a.stop()
+            await server_b.stop()
+
+    asyncio.run(scenario())
+
+
+def test_realtime_admission_rejects_a_quarantined_peer(tmp_path):
+    alice = bootstrap_node_identity("alice-rt-quarantine")
+    bob = bootstrap_node_identity("bob-rt-quarantine")
+    bob_db = _NodeDb(tmp_path, "bob-rt-quarantine")
+
+    async def scenario():
+        registry_a = LinkRealtimeSessionRegistry(own_fingerprint=alice.fingerprint)
+        registry_b = LinkRealtimeSessionRegistry(own_fingerprint=bob.fingerprint)
+        server = LinkRealtimeServer(
+            host="127.0.0.1", port=0, identity=bob, registry=registry_b, on_frame=_default_on_frame,
+            lane=bob_db.lane, enforce_trust_policy=True,
+        )
+        await server.start()
+        try:
+            ensure_node_subject(bob_db.db, alice.fingerprint)
+            subject = TrustSubject.node(alice.fingerprint)
+            set_trust_override(
+                bob_db.db, subject, TrustDimension.RESOURCE_BEHAVIOR, TrustState.QUARANTINED,
+                reason="pre-blocked for test", now_iso="2026-08-14T12:00:00+00:00",
+            )
+            with pytest.raises(LinkTransportError, match="refused by local trust policy"):
+                await dial_realtime_session(
+                    "127.0.0.1", server.port, alice, on_frame=_default_on_frame, registry=registry_a,
+                    lane=bob_db.lane, enforce_trust_policy=True,
+                )
+            assert registry_a.get(bob.fingerprint) is None
+            assert registry_b.get(alice.fingerprint) is None
+        finally:
+            await server.stop()
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        bob_db.close()
+
+
+def test_link_realtime_connector_reconnects_with_bounded_backoff_after_a_session_closes():
+    async def scenario():
+        alice = bootstrap_node_identity("alice-connector")
+        bob = bootstrap_node_identity("bob-connector")
+        registry_a = LinkRealtimeSessionRegistry(own_fingerprint=alice.fingerprint)
+        registry_b = LinkRealtimeSessionRegistry(own_fingerprint=bob.fingerprint)
+        server = LinkRealtimeServer(
+            host="127.0.0.1", port=0, identity=bob, registry=registry_b, on_frame=_default_on_frame,
+        )
+        await server.start()
+        connector = LinkRealtimeConnector(
+            host="127.0.0.1", port=server.port, identity=alice, on_frame=_default_on_frame,
+            registry=registry_a, min_backoff_seconds=0.02, max_backoff_seconds=0.05,
+            stable_after_seconds=1000.0, rng=random.Random(0),
+        )
+        try:
+            connector.start()
+            assert await _wait_until(lambda: registry_a.get(bob.fingerprint) is not None)
+            first_session = registry_a.get(bob.fingerprint)
+            await first_session.close(reason="test_forced_drop")
+
+            assert await _wait_until(
+                lambda: (session := registry_a.get(bob.fingerprint)) is not None and session is not first_session
+            )
+            second_session = registry_a.get(bob.fingerprint)
+            assert second_session.closed.is_set() is False
+        finally:
+            await connector.stop()
+            await registry_b.close_all(reason="test_done")
+            await server.stop()
+
+    asyncio.run(scenario())
 
 
 async def _run_server(

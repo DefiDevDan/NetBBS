@@ -45,8 +45,9 @@ import hashlib
 import hmac
 import json
 import logging
+import random
 from dataclasses import dataclass
-from typing import Callable
+from typing import Awaitable, Callable
 from urllib.parse import urljoin, urlparse
 
 import nacl.bindings
@@ -145,7 +146,14 @@ from netbbs.link.protocol import (
     LinkProtocolError,
     PeerListMessage,
     PeerRecord,
+    RealtimeFrame,
     RealtimeIdentityPayload,
+    RealtimeReplayWindow,
+    build_close_frame,
+    build_error_frame,
+    build_ping_frame,
+    build_pong_frame,
+    validate_realtime_frame_payload,
 )
 from netbbs.link.relay_mailbox import (
     RelayableEnvelope,
@@ -739,6 +747,537 @@ async def establish_noise_xx_responder(
     if ciphers is None:
         raise LinkTransportError("Noise XX responder did not produce transport keys")
     return remote, ciphers
+
+
+REALTIME_DEFAULT_OUTBOUND_QUEUE_SIZE = 64
+REALTIME_DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 15.0
+REALTIME_DEFAULT_HEARTBEAT_LEASE_SECONDS = 45.0
+REALTIME_DEFAULT_MAX_FRAMES_PER_WINDOW = 100
+REALTIME_DEFAULT_FRAME_WINDOW_SECONDS = 10.0
+REALTIME_DEFAULT_MAX_PROTOCOL_STRIKES = 5
+
+
+class LinkRealtimeSession:
+    """
+    Owns one live Noise-authenticated Link session end to end (design doc
+    §8.10.1): the encrypted reader/writer loop, a bounded outbound queue
+    so one slow peer can never block another session, and the ping/pong
+    heartbeat lease that detects a silently dead peer. This class knows
+    nothing about channel subscriptions, presence, or trust policy --
+    `on_frame` is the single seam a caller (`LinkServer`'s inbound
+    accept path / an outbound dialer, plus the channel-authorization
+    layer above both) uses to react to every frame this session
+    receives except the ones this object already owns end to end
+    (`ping`/`pong`/`close`).
+
+    Construction alone starts nothing -- call `start()` once whatever
+    admission a caller wants to run first (trust policy, duplicate-
+    session resolution) has already happened. `start()` spawns exactly
+    the reader, writer, and heartbeat tasks this object owns; `close()`
+    cancels and gathers all three on every exit path -- normal close,
+    protocol failure, rate/strike limits, or external cancellation --
+    without letting a cleanup failure mask the original reason it
+    closed. `closed` is set exactly once, after that teardown completes,
+    so a caller (e.g. a session registry) can await it to learn when
+    this session is genuinely done.
+
+    A frame that `on_frame` rejects by raising `LinkProtocolError` does
+    not end the session by itself -- an `error` frame goes back to the
+    peer and a strike is recorded; only repeated rejection past
+    `max_protocol_strikes` closes the connection. This lets one
+    unauthorized subscribe attempt fail cleanly without nuking an
+    otherwise-good session, while still bounding how much of that a
+    single peer gets for free.
+    """
+
+    def __init__(
+        self,
+        *,
+        remote_fingerprint: str,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        ciphers: NoiseTransportCiphers,
+        is_initiator: bool,
+        on_frame: Callable[["LinkRealtimeSession", RealtimeFrame], Awaitable[None]],
+        outbound_queue_size: int = REALTIME_DEFAULT_OUTBOUND_QUEUE_SIZE,
+        heartbeat_interval_seconds: float = REALTIME_DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+        heartbeat_lease_seconds: float = REALTIME_DEFAULT_HEARTBEAT_LEASE_SECONDS,
+        max_frames_per_window: int = REALTIME_DEFAULT_MAX_FRAMES_PER_WINDOW,
+        frame_window_seconds: float = REALTIME_DEFAULT_FRAME_WINDOW_SECONDS,
+        max_protocol_strikes: int = REALTIME_DEFAULT_MAX_PROTOCOL_STRIKES,
+    ) -> None:
+        self.remote_fingerprint = remote_fingerprint
+        self.is_initiator = is_initiator
+        self._reader = reader
+        self._writer = writer
+        self._send_cipher = ciphers.sending
+        self._recv_cipher = ciphers.receiving
+        self._on_frame = on_frame
+        self._outbound: asyncio.Queue[RealtimeFrame] = asyncio.Queue(maxsize=outbound_queue_size)
+        self._heartbeat_interval = heartbeat_interval_seconds
+        self._heartbeat_lease = heartbeat_lease_seconds
+        self._max_frames_per_window = max_frames_per_window
+        self._frame_window_seconds = frame_window_seconds
+        self._max_protocol_strikes = max_protocol_strikes
+        self._replay_window = RealtimeReplayWindow()
+        self._last_activity: float | None = None
+        self._frame_window_start: float | None = None
+        self._frame_window_count = 0
+        self._protocol_strikes = 0
+        self._tasks: list[asyncio.Task] = []
+        self._closing = asyncio.Event()
+        self.closed = asyncio.Event()
+        self.close_reason: str | None = None
+
+    def start(self) -> None:
+        loop = asyncio.get_running_loop()
+        self._last_activity = loop.time()
+        self._tasks = [
+            loop.create_task(self._reader_loop(), name=f"link-realtime-reader-{self.remote_fingerprint}"),
+            loop.create_task(self._writer_loop(), name=f"link-realtime-writer-{self.remote_fingerprint}"),
+            loop.create_task(self._heartbeat_loop(), name=f"link-realtime-heartbeat-{self.remote_fingerprint}"),
+        ]
+
+    async def send(self, frame: RealtimeFrame) -> None:
+        """Enqueue `frame` for the writer task. Raises `LinkTransportError`
+        if the session is already closed, or if the outbound queue is
+        already full -- in the full case this also closes the session
+        with an explicit slow-consumer reason (design doc §8.10.1: "A
+        full queue drops the session ... rather than silently losing a
+        state transition") rather than blocking or silently dropping."""
+        if self._closing.is_set():
+            raise LinkTransportError(f"real-time session to {self.remote_fingerprint} is already closed")
+        try:
+            self._outbound.put_nowait(frame)
+        except asyncio.QueueFull:
+            await self.close(reason="slow_consumer")
+            raise LinkTransportError(f"real-time session to {self.remote_fingerprint} dropped: slow consumer")
+
+    async def close(self, *, reason: str, send_close_frame: bool = False) -> None:
+        if self._closing.is_set():
+            await self.closed.wait()
+            return
+        self._closing.set()
+        self.close_reason = reason
+        if send_close_frame:
+            try:
+                ciphertext = self._send_cipher.encrypt_with_ad(b"", build_close_frame(reason).to_json_bytes())
+                await asyncio.wait_for(write_realtime_record(self._writer, ciphertext), timeout=2.0)
+            except Exception:
+                pass  # best-effort courtesy notice; teardown proceeds regardless
+        current = asyncio.current_task()
+        tasks = [task for task in self._tasks if task is not current]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._writer.close()
+        try:
+            await self._writer.wait_closed()
+        except Exception:
+            pass
+        self.closed.set()
+
+    def _register_frame_arrival(self, *, now: float) -> bool:
+        if self._frame_window_start is None or now - self._frame_window_start > self._frame_window_seconds:
+            self._frame_window_start = now
+            self._frame_window_count = 0
+        self._frame_window_count += 1
+        return self._frame_window_count <= self._max_frames_per_window
+
+    def _register_protocol_strike(self) -> bool:
+        self._protocol_strikes += 1
+        return self._protocol_strikes >= self._max_protocol_strikes
+
+    async def _reader_loop(self) -> None:
+        try:
+            while True:
+                ciphertext = await read_realtime_record(self._reader)
+                plaintext = self._recv_cipher.decrypt_with_ad(b"", ciphertext)
+                frame = RealtimeFrame.from_json_bytes(plaintext)
+                loop = asyncio.get_running_loop()
+                self._last_activity = loop.time()
+                if not self._register_frame_arrival(now=self._last_activity):
+                    await self.close(reason="frame_rate_exceeded")
+                    return
+                if self._replay_window.seen_before(frame.message_id):
+                    continue
+                if frame.type == "ping":
+                    await self.send(build_pong_frame())
+                    continue
+                if frame.type == "pong":
+                    continue
+                if frame.type == "close":
+                    await self.close(reason=f"peer_closed: {frame.payload.get('reason', '')}")
+                    return
+                try:
+                    validate_realtime_frame_payload(frame)
+                    await self._on_frame(self, frame)
+                except LinkProtocolError as exc:
+                    if self._register_protocol_strike():
+                        await self.close(reason="too_many_protocol_strikes")
+                        return
+                    await self.send(build_error_frame("rejected", str(exc)[:200]))
+        except asyncio.CancelledError:
+            raise
+        except (LinkTransportError, LinkProtocolError) as exc:
+            await self.close(reason=f"protocol_error: {exc}")
+        except Exception as exc:
+            await self.close(reason=f"reader_error: {exc}")
+
+    async def _writer_loop(self) -> None:
+        try:
+            while True:
+                frame = await self._outbound.get()
+                ciphertext = self._send_cipher.encrypt_with_ad(b"", frame.to_json_bytes())
+                await write_realtime_record(self._writer, ciphertext)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await self.close(reason=f"writer_error: {exc}")
+
+    async def _heartbeat_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(self._heartbeat_interval)
+                loop = asyncio.get_running_loop()
+                assert self._last_activity is not None
+                if loop.time() - self._last_activity > self._heartbeat_lease:
+                    await self.close(reason="heartbeat_lease_expired")
+                    return
+                await self.send(build_ping_frame())
+        except asyncio.CancelledError:
+            raise
+        except LinkTransportError:
+            return  # send() already closed the session (queue full or already closed)
+
+
+def _decide_realtime_admission(db, fingerprint: str) -> bool:
+    """Phase 4 transport trust gate for real-time sessions (design doc
+    §8.10: "applies the local Phase-4 node transport decision before
+    accepting any application frame"). Runs after the Noise handshake
+    has already authenticated `fingerprint`, before either side of a
+    new `LinkRealtimeSession` is admitted to the registry."""
+    ensure_node_subject(db, fingerprint)
+    return decide_node_action(db, fingerprint, LinkPolicyAction.REALTIME).allowed
+
+
+async def _reject_before_session(writer: asyncio.StreamWriter) -> None:
+    writer.close()
+    try:
+        await writer.wait_closed()
+    except Exception:
+        pass
+
+
+class LinkRealtimeSessionRegistry:
+    """
+    Tracks at most one live `LinkRealtimeSession` per remote fingerprint
+    for one node, resolving the "simultaneous inbound and outbound"
+    collision with the deterministic rule design doc §8.10.1 specifies:
+    the lower fingerprint keeps its outbound connection, the higher
+    fingerprint keeps its inbound connection, applied only while both
+    candidates genuinely exist so a sole usable connection is never
+    discarded. Because every node applies the identical rule using the
+    identical two fingerprints, both ends converge on the same single
+    connection without any coordination round-trip.
+
+    Also owns exactly one small watcher task per admitted session (to
+    deregister it once it closes) -- bounded by construction, since
+    there is at most one such task per registry entry, and gathered by
+    `close_all()` on node shutdown.
+    """
+
+    def __init__(self, *, own_fingerprint: str) -> None:
+        self._own_fingerprint = own_fingerprint
+        self._sessions: dict[str, LinkRealtimeSession] = {}
+        self._watchers: set[asyncio.Task] = set()
+
+    def get(self, fingerprint: str) -> LinkRealtimeSession | None:
+        return self._sessions.get(fingerprint)
+
+    def all_sessions(self) -> list[LinkRealtimeSession]:
+        return list(self._sessions.values())
+
+    async def admit(self, session: LinkRealtimeSession) -> bool:
+        """Register `session` as the live session for its remote
+        fingerprint. Returns whether it survived -- if not, `session`
+        has already been closed with reason `"duplicate_session"` and
+        the caller must not use it further."""
+        fingerprint = session.remote_fingerprint
+        existing = self._sessions.get(fingerprint)
+        if existing is None or existing is session:
+            self._register(session)
+            return True
+        if existing.is_initiator == session.is_initiator:
+            # Not actually a simultaneous in/out collision -- e.g. a
+            # stale entry whose own watcher hasn't run yet. Prefer the
+            # newer one rather than leaving two sessions unreachable.
+            await existing.close(reason="duplicate_session", send_close_frame=True)
+            self._register(session)
+            return True
+        own_keeps_outbound = self._own_fingerprint < fingerprint
+        new_wins = session.is_initiator == own_keeps_outbound
+        if new_wins:
+            await existing.close(reason="duplicate_session", send_close_frame=True)
+            self._register(session)
+            return True
+        await session.close(reason="duplicate_session", send_close_frame=True)
+        return False
+
+    def _register(self, session: LinkRealtimeSession) -> None:
+        self._sessions[session.remote_fingerprint] = session
+        watcher = asyncio.get_running_loop().create_task(self._watch(session))
+        self._watchers.add(watcher)
+        watcher.add_done_callback(self._watchers.discard)
+
+    async def _watch(self, session: LinkRealtimeSession) -> None:
+        await session.closed.wait()
+        if self._sessions.get(session.remote_fingerprint) is session:
+            del self._sessions[session.remote_fingerprint]
+
+    async def close_all(self, *, reason: str) -> None:
+        for session in list(self._sessions.values()):
+            await session.close(reason=reason, send_close_frame=True)
+        if self._watchers:
+            await asyncio.gather(*self._watchers, return_exceptions=True)
+
+
+class LinkRealtimeServer:
+    """
+    Accepts real inbound Noise-authenticated Link real-time sessions
+    (design doc §8.10) on a persistent TCP listener, deliberately
+    separate from `LinkServer`'s own `aiohttp` HTTP+JSON port -- a live
+    chat frame is a different traffic family, never gossiped, never
+    stored as a canonical event.
+
+    Applies the Phase 4 transport trust decision (`_decide_realtime_
+    admission`, `LinkPolicyAction.REALTIME`) after the handshake has
+    authenticated the peer's identity but strictly before any
+    application frame is processed, same "verify, then decide, then
+    admit" order `LinkServer` already uses for its own HTTP routes.
+    """
+
+    def __init__(
+        self,
+        *,
+        host: str,
+        port: int,
+        identity: NodeIdentity,
+        registry: LinkRealtimeSessionRegistry,
+        on_frame: Callable[[LinkRealtimeSession, RealtimeFrame], Awaitable[None]],
+        lane: DatabaseLane | None = None,
+        enforce_trust_policy: bool = False,
+    ) -> None:
+        if enforce_trust_policy and lane is None:
+            raise ValueError("enforce_trust_policy requires a lane")
+        self._host = host
+        self._port = port
+        self._identity = identity
+        self._registry = registry
+        self._on_frame = on_frame
+        self._lane = lane
+        self._enforce_trust_policy = enforce_trust_policy
+        self._server: asyncio.base_events.Server | None = None
+        self._accepting: set[asyncio.Task] = set()
+
+    @property
+    def port(self) -> int:
+        if self._server is None or not self._server.sockets:
+            raise LinkTransportError("real-time server has not been started")
+        return self._server.sockets[0].getsockname()[1]
+
+    async def start(self) -> None:
+        self._server = await asyncio.start_server(self._handle, self._host, self._port)
+
+    async def stop(self) -> None:
+        if self._server is not None:
+            self._server.close()
+            try:
+                # Bounded, not awaited unconditionally: this server's job
+                # is to stop *accepting new* connections -- already-
+                # admitted sessions are independently owned by
+                # `LinkRealtimeSession`/the registry, not by this object,
+                # so nothing here should need to wait for them to close
+                # too. `wait_closed()` has been observed to block on an
+                # already-admitted connection's socket under Windows'
+                # Proactor event loop even though `close()` itself already
+                # stopped new accepts, so this is a defensive ceiling, not
+                # a normal-path wait.
+                await asyncio.wait_for(self._server.wait_closed(), timeout=2.0)
+            except TimeoutError:
+                pass
+        if self._accepting:
+            for task in self._accepting:
+                task.cancel()
+            await asyncio.gather(*self._accepting, return_exceptions=True)
+
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        self._accepting.add(task)
+        try:
+            await self._admit_inbound(reader, writer)
+        finally:
+            self._accepting.discard(task)
+
+    async def _admit_inbound(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            remote, ciphers = await establish_noise_xx_responder(reader, writer, self._identity)
+        except (LinkTransportError, LinkProtocolError):
+            await _reject_before_session(writer)
+            return
+        fingerprint = remote.root_fingerprint
+        if self._enforce_trust_policy:
+            assert self._lane is not None
+            allowed = await self._lane.run(_decide_realtime_admission, fingerprint)
+            if not allowed:
+                await _reject_before_session(writer)
+                return
+        session = LinkRealtimeSession(
+            remote_fingerprint=fingerprint, reader=reader, writer=writer, ciphers=ciphers,
+            is_initiator=False, on_frame=self._on_frame,
+        )
+        session.start()
+        await self._registry.admit(session)
+
+
+async def dial_realtime_session(
+    host: str,
+    port: int,
+    identity: NodeIdentity,
+    *,
+    on_frame: Callable[[LinkRealtimeSession, RealtimeFrame], Awaitable[None]],
+    registry: LinkRealtimeSessionRegistry,
+    lane: DatabaseLane | None = None,
+    enforce_trust_policy: bool = False,
+) -> LinkRealtimeSession:
+    """Dial `host`/`port`, complete the Noise XX handshake as initiator,
+    apply the same Phase 4 trust gate `LinkRealtimeServer` applies to an
+    inbound connection, and hand the resulting session to `registry`.
+    Raises `LinkTransportError`/`LinkProtocolError` for a connection,
+    handshake, or trust-policy failure; raises `LinkTransportError` if
+    this session loses the duplicate-session tiebreak (design doc
+    §8.10.1) -- the caller should not treat that as a dial failure to
+    retry so much as "a session to this peer already exists"."""
+    if enforce_trust_policy and lane is None:
+        raise ValueError("enforce_trust_policy requires a lane")
+    reader, writer = await asyncio.open_connection(host, port)
+    try:
+        remote, ciphers = await establish_noise_xx_initiator(reader, writer, identity)
+    except (LinkTransportError, LinkProtocolError):
+        await _reject_before_session(writer)
+        raise
+    fingerprint = remote.root_fingerprint
+    if enforce_trust_policy:
+        assert lane is not None
+        allowed = await lane.run(_decide_realtime_admission, fingerprint)
+        if not allowed:
+            await _reject_before_session(writer)
+            raise LinkTransportError(f"real-time session to {fingerprint} refused by local trust policy")
+    session = LinkRealtimeSession(
+        remote_fingerprint=fingerprint, reader=reader, writer=writer, ciphers=ciphers,
+        is_initiator=True, on_frame=on_frame,
+    )
+    session.start()
+    survived = await registry.admit(session)
+    if not survived:
+        raise LinkTransportError(f"real-time session to {fingerprint} lost the duplicate-session tiebreak")
+    return session
+
+
+REALTIME_RECONNECT_MIN_BACKOFF_SECONDS = 1.0
+REALTIME_RECONNECT_MAX_BACKOFF_SECONDS = 60.0
+REALTIME_RECONNECT_STABLE_AFTER_SECONDS = 30.0
+
+
+class LinkRealtimeConnector:
+    """
+    Owns the reconnect loop for one outbound real-time destination
+    (design doc §8.10.1: "reconnect uses bounded exponential backoff
+    with jitter and resets only after a stable authenticated session").
+    Dials, runs until the resulting session closes for any reason, then
+    waits a random `[0, backoff)` jittered delay before retrying,
+    doubling `backoff` up to `max_backoff_seconds` each time -- reset
+    back to `min_backoff_seconds` only once a session has stayed up for
+    at least `stable_after_seconds`.
+
+    One task, owned end to end: `start()` spawns it, `stop()` cancels
+    and gathers it. A session that loses the duplicate-session tiebreak
+    (`dial_realtime_session` raising because a session to this peer
+    already exists) is treated the same as any other dial failure here
+    -- back off and retry -- since the winning session may itself close
+    later and leave this destination genuinely unconnected again.
+    """
+
+    def __init__(
+        self,
+        *,
+        host: str,
+        port: int,
+        identity: NodeIdentity,
+        on_frame: Callable[[LinkRealtimeSession, RealtimeFrame], Awaitable[None]],
+        registry: LinkRealtimeSessionRegistry,
+        lane: DatabaseLane | None = None,
+        enforce_trust_policy: bool = False,
+        min_backoff_seconds: float = REALTIME_RECONNECT_MIN_BACKOFF_SECONDS,
+        max_backoff_seconds: float = REALTIME_RECONNECT_MAX_BACKOFF_SECONDS,
+        stable_after_seconds: float = REALTIME_RECONNECT_STABLE_AFTER_SECONDS,
+        rng: random.Random | None = None,
+    ) -> None:
+        self._host = host
+        self._port = port
+        self._identity = identity
+        self._on_frame = on_frame
+        self._registry = registry
+        self._lane = lane
+        self._enforce_trust_policy = enforce_trust_policy
+        self._min_backoff = min_backoff_seconds
+        self._max_backoff = max_backoff_seconds
+        self._stable_after = stable_after_seconds
+        self._rng = rng or random.Random()
+        self._task: asyncio.Task | None = None
+        self._current_session: LinkRealtimeSession | None = None
+        self._stopping = False
+
+    def start(self) -> None:
+        self._stopping = False
+        self._task = asyncio.get_running_loop().create_task(self._run())
+
+    async def stop(self) -> None:
+        self._stopping = True
+        if self._task is not None:
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
+            self._task = None
+        if self._current_session is not None:
+            await self._current_session.close(reason="local_shutdown", send_close_frame=True)
+            self._current_session = None
+
+    async def _run(self) -> None:
+        backoff = self._min_backoff
+        loop = asyncio.get_running_loop()
+        while not self._stopping:
+            try:
+                connected_at = loop.time()
+                session = await dial_realtime_session(
+                    self._host, self._port, self._identity, on_frame=self._on_frame,
+                    registry=self._registry, lane=self._lane,
+                    enforce_trust_policy=self._enforce_trust_policy,
+                )
+                self._current_session = session
+                await session.closed.wait()
+                self._current_session = None
+                if loop.time() - connected_at >= self._stable_after:
+                    backoff = self._min_backoff
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass  # dial/handshake/trust-policy/tiebreak failure: fall through to backoff
+            if self._stopping:
+                return
+            await asyncio.sleep(self._rng.uniform(0, backoff))
+            backoff = min(backoff * 2, self._max_backoff)
 
 
 class LinkServer:
@@ -1690,6 +2229,14 @@ def dialable_base_urls_for_peer(node: LinkNode, fingerprint: str) -> list[str]:
     Empty if `fingerprint` has no completed hello on file at all -- the
     same "no relay from a stranger" precondition `fetch_next_file_chunk`
     itself independently enforces.
+
+    Filtered to the HTTP-family `protocol` tags only -- an
+    `endpoint_descriptor`'s `addresses` list can also carry a
+    `LINK_REALTIME_PROTOCOL_TAG` entry (design doc §8.10: "advertises
+    real-time TCP addresses separately from HTTP addresses"), which is
+    not a dialable base URL and would otherwise silently corrupt this
+    list for an HTTP-only caller like `netbbs.net.file_flow`. See
+    `dialable_realtime_addresses_for_peer` for that entry's own reader.
     """
     peer = node.peers.get(fingerprint)
     if peer is None:
@@ -1697,7 +2244,31 @@ def dialable_base_urls_for_peer(node: LinkNode, fingerprint: str) -> list[str]:
     addresses = peer.descriptor.payload.get("addresses")
     if not addresses:
         return []
-    return [f"{a['protocol']}://{a['address']}:{a['port']}" for a in addresses]
+    return [
+        f"{a['protocol']}://{a['address']}:{a['port']}"
+        for a in addresses
+        if a["protocol"] in ("http", "https")
+    ]
+
+
+# design doc §8.10: "The endpoint descriptor advertises real-time TCP
+# addresses separately from HTTP addresses." One more `addresses` entry
+# `protocol` tag, distinguished from "http"/"https" the same way those
+# two are distinguished from each other -- no new descriptor field.
+LINK_REALTIME_PROTOCOL_TAG = "link-realtime-tcp"
+
+
+def dialable_realtime_addresses_for_peer(node: LinkNode, fingerprint: str) -> list[tuple[str, int]]:
+    """Every advertised real-time (Noise/TCP) address on file for
+    `fingerprint`, as `(host, port)` pairs, in descriptor order --
+    the real-time counterpart to `dialable_base_urls_for_peer`."""
+    peer = node.peers.get(fingerprint)
+    if peer is None:
+        return []
+    addresses = peer.descriptor.payload.get("addresses")
+    if not addresses:
+        return []
+    return [(a["address"], a["port"]) for a in addresses if a["protocol"] == LINK_REALTIME_PROTOCOL_TAG]
 
 
 async def request_peer_list(

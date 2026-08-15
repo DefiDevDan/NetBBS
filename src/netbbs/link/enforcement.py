@@ -34,6 +34,7 @@ class LinkPolicyAction(StrEnum):
     PEER_LIST = "peer_list"
     TRUST = "trust"
     OUTBOUND_SYNC = "outbound_sync"
+    REALTIME = "realtime"
 
 
 REASON_MANUAL_BLOCK = "link_policy_manual_block"

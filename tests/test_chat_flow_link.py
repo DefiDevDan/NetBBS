@@ -23,10 +23,14 @@ from netbbs.chat.hub import ChatHub
 from netbbs.chat.mailbox import MessageMailbox
 from netbbs.chat.scrollback import get_scrollback
 from netbbs.link.boards import LinkContext
-from netbbs.link.channels import link_channel
+from netbbs.link.channels import link_channel, materialize_carried_channel
+from netbbs.link.enforcement import ensure_node_subject
 from netbbs.link.events import ChannelMessage
 from netbbs.link.node_identity import bootstrap_node_identity
-from netbbs.link.protocol import LinkNode
+from netbbs.link.protocol import LinkNode, RealtimeFrame
+from netbbs.link.realtime_channels import LiveChannelBridge
+from netbbs.link.transport import LinkRealtimeServer, LinkRealtimeSessionRegistry, dial_realtime_session
+from netbbs.link.trust import TrustDimension, TrustState, TrustSubject, set_trust_override
 from netbbs.chat.presence import PresenceRegistry
 from netbbs.net import chat_flow
 from netbbs.net.char_input import InputHistory
@@ -79,8 +83,21 @@ def node_identity():
     return bootstrap_node_identity("thisnode")
 
 
-def _link_context_for(node_identity) -> LinkContext:
-    return LinkContext(node_identity=node_identity, link_node=LinkNode(identity=node_identity))
+def _link_context_for(node_identity, *, registry=None, bridge=None) -> LinkContext:
+    return LinkContext(
+        node_identity=node_identity, link_node=LinkNode(identity=node_identity),
+        realtime_registry=registry, realtime_bridge=bridge,
+    )
+
+
+def _establish_trust(db: Database, fingerprint: str) -> None:
+    ensure_node_subject(db, fingerprint)
+    subject = TrustSubject.node(fingerprint)
+    for dimension in (TrustDimension.IDENTITY_INTEGRITY, TrustDimension.RESOURCE_BEHAVIOR):
+        set_trust_override(
+            db, subject, dimension, TrustState.ESTABLISHED,
+            reason="pre-established for test", now_iso="2026-08-14T12:00:00+00:00",
+        )
 
 
 async def _run(lane, hub, presence, channel, user, lines, *, link_context=None):
@@ -160,3 +177,238 @@ def test_repeated_send_in_a_linked_channel_is_idempotent_per_message(
     assert all(row["link_event_json"] is not None for row in rows)
     bodies = [ChannelMessage.from_dict(json.loads(row["link_event_json"])).payload["body"] for row in rows]
     assert bodies == ["first message", "second message"]
+
+
+def test_message_join_and_leave_in_a_linked_channel_are_pushed_live_to_a_real_subscriber(
+    db, lane, hub, presence, channel, alice, node_identity, tmp_path
+):
+    """Design doc §8.10.2, issue #148: the *outbound* half of the live
+    wiring -- `_chat_loop`'s own join/send/leave call sites pushing to
+    `LiveChannelBridge`, proven against a real dialed `LinkRealtimeSession`
+    subscriber, not just the bridge's own unit tests."""
+    async def scenario():
+        link_channel(db, channel, node_identity=node_identity)
+        origin_registry = LinkRealtimeSessionRegistry(own_fingerprint=node_identity.fingerprint)
+        origin_bridge = LiveChannelBridge(hub=hub, lane=lane)
+        server = LinkRealtimeServer(
+            host="127.0.0.1", port=0, identity=node_identity, registry=origin_registry,
+            on_frame=origin_bridge.on_frame, lane=lane, enforce_trust_policy=True,
+        )
+        await server.start()
+        subscriber_db = Database(tmp_path / "subscriber.db")
+        subscriber_lane = DatabaseLane(subscriber_db.path)
+        try:
+            subscriber_identity = bootstrap_node_identity("live-subscriber")
+            _establish_trust(db, subscriber_identity.fingerprint)
+            _establish_trust(subscriber_db, node_identity.fingerprint)
+
+            received: list[RealtimeFrame] = []
+
+            async def on_frame(session, frame):
+                received.append(frame)
+
+            subscriber_registry = LinkRealtimeSessionRegistry(own_fingerprint=subscriber_identity.fingerprint)
+            subscriber_session = await dial_realtime_session(
+                "127.0.0.1", server.port, subscriber_identity, on_frame=on_frame, registry=subscriber_registry,
+            )
+            try:
+                from netbbs.link.protocol import build_subscribe_frame
+
+                await subscriber_session.send(build_subscribe_frame(channel.channel_id))
+
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + 2.0
+                while loop.time() < deadline and channel.channel_id not in origin_bridge._subscribers:
+                    await asyncio.sleep(0.02)
+                assert channel.channel_id in origin_bridge._subscribers
+
+                link_context = _link_context_for(node_identity, registry=origin_registry, bridge=origin_bridge)
+                await _run(
+                    lane, hub, presence, channel, alice, ["hello subscribers", "/quit"],
+                    link_context=link_context,
+                )
+
+                deadline = loop.time() + 2.0
+                while loop.time() < deadline and len(received) < 4:
+                    await asyncio.sleep(0.02)
+            finally:
+                await subscriber_session.close(reason="test_done")
+        finally:
+            await origin_registry.close_all(reason="test_done")
+            await origin_bridge.close()
+            await server.stop()
+            subscriber_lane.close()
+            subscriber_db.close()
+        return received
+
+    received = asyncio.run(scenario())
+
+    assert [frame.type for frame in received] == [
+        "presence_snapshot", "presence_delta", "channel_message", "presence_delta",
+    ]
+    _snapshot, join_delta, message_frame, leave_delta = received
+    assert join_delta.payload == {
+        "channel_id": channel.channel_id, "change": "join", "user_id": "alice", "display_label": "alice",
+    }
+    assert message_frame.payload["channel_id"] == channel.channel_id
+    assert message_frame.payload["user_id"] == "alice"
+    assert message_frame.payload["body"] == "hello subscribers"
+    assert leave_delta.payload == {
+        "channel_id": channel.channel_id, "change": "leave", "user_id": "alice", "display_label": "alice",
+    }
+
+
+def test_chat_loop_subscribes_to_a_linked_channels_origin_and_unsubscribes_on_quit(
+    db, lane, hub, presence, channel, alice, node_identity, monkeypatch
+):
+    """The *inbound*-subscribe half of the wiring: `_chat_loop` calls
+    `ensure_live_subscription` on join and sends `unsubscribe` on the way
+    out. Monkeypatched rather than dialed over a real socket -- the dial/
+    subscribe mechanics themselves are already proven in `tests/test_
+    link_realtime_channels.py`; this test's only job is confirming
+    `_chat_loop` actually invokes that wiring with the right channel and
+    cleans it up on exit, without a real-network race against a
+    background task racing a scripted FakeSession's own near-instant
+    `/quit`."""
+    link_channel(db, channel, node_identity=node_identity)  # this node is the origin
+
+    calls: list[dict] = []
+    sent_frames: list = []
+
+    class _FakeSession:
+        def __init__(self):
+            # A real Event, left unset -- `_subscribe_live` awaits
+            # `closed.wait()` for as long as the session stays up,
+            # exactly like a genuine `LinkRealtimeSession` would.
+            self.closed = asyncio.Event()
+
+        async def send(self, frame):
+            sent_frames.append(frame)
+
+    async def fake_ensure_live_subscription(**kwargs):
+        calls.append(kwargs)
+        return _FakeSession()
+
+    monkeypatch.setattr(
+        "netbbs.link.realtime_channels.ensure_live_subscription", fake_ensure_live_subscription
+    )
+
+    registry = LinkRealtimeSessionRegistry(own_fingerprint=node_identity.fingerprint)
+    bridge = LiveChannelBridge(hub=hub, lane=lane)
+    link_context = _link_context_for(node_identity, registry=registry, bridge=bridge)
+
+    asyncio.run(_run(lane, hub, presence, channel, alice, ["/quit"], link_context=link_context))
+
+    assert len(calls) == 1
+    assert calls[0]["channel"] is channel
+    assert calls[0]["node_identity"] is node_identity
+    assert calls[0]["registry"] is registry
+    assert calls[0]["bridge"] is bridge
+
+    from netbbs.link.protocol import RealtimeFrame as _RealtimeFrame
+
+    assert len(sent_frames) == 1
+    assert isinstance(sent_frames[0], _RealtimeFrame)
+    assert sent_frames[0].type == "unsubscribe"
+    assert sent_frames[0].payload == {"channel_id": channel.channel_id}
+
+
+def test_chat_loop_announces_the_real_time_link_coming_up_and_going_down(
+    db, lane, hub, presence, channel, alice, node_identity, monkeypatch
+):
+    """Design doc §8.10.2: the caller sees connecting/live/offline
+    state, honestly -- monkeypatched (see the sibling test above for
+    why) with a fake session whose `closed` event the test controls
+    directly, so both the "is up" and "was lost" announcements are
+    deterministic rather than racing a real network dial."""
+    link_channel(db, channel, node_identity=node_identity)
+
+    class _FakeSession:
+        def __init__(self):
+            self.closed = asyncio.Event()
+
+        async def send(self, frame):
+            pass
+
+    fake_session = _FakeSession()
+
+    async def fake_ensure_live_subscription(**kwargs):
+        return fake_session
+
+    monkeypatch.setattr(
+        "netbbs.link.realtime_channels.ensure_live_subscription", fake_ensure_live_subscription
+    )
+
+    registry = LinkRealtimeSessionRegistry(own_fingerprint=node_identity.fingerprint)
+    bridge = LiveChannelBridge(hub=hub, lane=lane)
+    link_context = _link_context_for(node_identity, registry=registry, bridge=bridge)
+
+    session, _action = asyncio.run(
+        _run(lane, hub, presence, channel, alice, ["hello", "/quit"], link_context=link_context)
+    )
+
+    written = "\n".join(session.written)
+    assert "Real-time link to this channel's origin is up" in written
+
+
+def test_chat_loop_announces_a_lost_real_time_link_while_still_in_the_channel(
+    db, lane, hub, presence, channel, alice, node_identity, monkeypatch
+):
+    link_channel(db, channel, node_identity=node_identity)
+
+    class _FakeSession:
+        def __init__(self):
+            self.closed = asyncio.Event()
+
+        async def send(self, frame):
+            pass
+
+    fake_session = _FakeSession()
+
+    async def fake_ensure_live_subscription(**kwargs):
+        return fake_session
+
+    monkeypatch.setattr(
+        "netbbs.link.realtime_channels.ensure_live_subscription", fake_ensure_live_subscription
+    )
+
+    registry = LinkRealtimeSessionRegistry(own_fingerprint=node_identity.fingerprint)
+    bridge = LiveChannelBridge(hub=hub, lane=lane)
+    link_context = _link_context_for(node_identity, registry=registry, bridge=bridge)
+
+    async def scenario():
+        session = FakeSession([])  # blocks on read_line forever -- driven manually below
+        mailbox = MessageMailbox()
+        history = InputHistory()
+        task = asyncio.create_task(
+            chat_flow._chat_loop(
+                session, lane, hub, presence, mailbox, history, channel, alice, link_context=link_context
+            )
+        )
+        # Let the announcer task actually run and reach `closed.wait()`.
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while asyncio.get_running_loop().time() < deadline and not any(
+            "is up" in line for line in session.written
+        ):
+            await asyncio.sleep(0.01)
+        assert any("is up" in line for line in session.written)
+
+        fake_session.closed.set()
+
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while asyncio.get_running_loop().time() < deadline and not any(
+            "was lost" in line for line in session.written
+        ):
+            await asyncio.sleep(0.01)
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        return session
+
+    session = asyncio.run(scenario())
+
+    written = "\n".join(session.written)
+    assert "was lost" in written

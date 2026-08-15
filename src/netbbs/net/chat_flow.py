@@ -2948,6 +2948,16 @@ async def _chat_loop(
 
     participant_id = ParticipantId(username=user.username, session_key=id(session))
     queue = hub.join(channel.name, participant_id)
+    # Design doc §8.10.2, issue #148: the live real-time subscribe
+    # attempt (started below, once this channel's join is fully set up)
+    # is a background task, not awaited inline -- same "ancillary task
+    # alongside receive/send" shape `clock_task` already uses, since a
+    # first-ever dial to a linked channel's origin can take real network
+    # time and must never delay entering the channel itself. Declared
+    # here, before the try, so the `finally` block always has a defined
+    # name to check even if something raises before task creation.
+    live_subscribe_task: asyncio.Task | None = None
+    live_session_holder: dict[str, object] = {"session": None}
     # This try starts immediately after hub.join(), not
     # just around the receive/send-task wait below -- scrollback replay
     # and the initial join broadcast/status-line paint between here and
@@ -3018,6 +3028,10 @@ async def _chat_loop(
             record_message, channel, kind="join", author_label=user.username, author_fingerprint=user.fingerprint
         )
         await hub.broadcast(channel.name, recorded_join, exclude={participant_id})
+        if link_context is not None and link_context.realtime_bridge is not None:
+            await link_context.realtime_bridge.broadcast_local_presence_live(
+                channel, change="join", username=user.username
+            )
         if pinned_ui_enabled:
             await _repaint_status_line(session, lane, hub, presence, channel, user)
             # Neither task is running yet (both are created below, after
@@ -3309,6 +3323,16 @@ async def _chat_loop(
                                 queue_channel_message_if_linked,
                                 recorded_message, channel, node_identity=link_context.node_identity,
                             )
+                            # Design doc §8.10.2, issue #148: pushed live
+                            # to any currently-subscribed peer sessions
+                            # too, alongside (not instead of) the queued
+                            # asynchronous event above -- a no-op if
+                            # nobody is currently live-subscribed to this
+                            # channel.
+                            if link_context.realtime_bridge is not None:
+                                await link_context.realtime_bridge.broadcast_local_message_live(
+                                    channel, recorded_message
+                                )
                         rendered_self = await lane.run(
                             _render_channel_message, channel, user, recorded_message, self_message=True
                         )
@@ -3334,6 +3358,67 @@ async def _chat_loop(
                     async with lock:
                         if await pinned_ui.sync(session, lane, hub, presence, channel, user, live_buffer):
                             await _repaint_input_row(session, live_buffer, session.terminal_height)
+
+        # Design doc §8.10.2, issue #148: best-effort live subscribe to
+        # this channel's origin node, if it's Linked and this node isn't
+        # the origin itself. Created here, alongside receive_task/send_
+        # task/clock_task (not right after joining, up above) --
+        # `deliver` (defined just above, for the connecting/live/lost
+        # notices this announces) doesn't exist yet at that earlier
+        # point. `live_session_holder` -- not this task's own return
+        # value -- is how the `finally` block below learns which
+        # session (if any) to unsubscribe: once a session comes up,
+        # this task keeps running for the channel view's entire
+        # remaining lifetime (awaiting its `closed` event, to announce
+        # a later drop honestly), so it is essentially never `done()`
+        # with a plain return value by the time a caller leaves.
+        live_subscribe_task: asyncio.Task | None = None
+        live_session_holder: dict[str, object] = {"session": None}
+        if (
+            link_context is not None
+            and link_context.realtime_registry is not None
+            and link_context.realtime_bridge is not None
+        ):
+
+            async def _subscribe_live() -> None:
+                # Lazy: `netbbs.link.realtime_channels` requires
+                # `aiohttp` (via `netbbs.link.transport`), which this
+                # module must not require merely to import itself --
+                # safe here specifically because `realtime_bridge` is
+                # only ever non-`None` when that import already
+                # succeeded once, at node startup (see `netbbs.
+                # __main__`'s own matching lazy import).
+                from netbbs.link.realtime_channels import ensure_live_subscription
+
+                live = await ensure_live_subscription(
+                    channel=channel, node_identity=link_context.node_identity,
+                    link_node=link_context.link_node, lane=lane,
+                    registry=link_context.realtime_registry, bridge=link_context.realtime_bridge,
+                )
+                live_session_holder["session"] = live
+                if live is None:
+                    await deliver(
+                        colored(
+                            "(No real-time link to this channel's origin right now -- "
+                            "new messages will still arrive after the next sync.)",
+                            fg_color=MUTED_COLOR,
+                        )
+                    )
+                    return
+                await deliver(
+                    f"{badge('LIVE', tone='success')} "
+                    + colored("Real-time link to this channel's origin is up.", fg_color=MUTED_COLOR)
+                )
+                await live.closed.wait()
+                await deliver(
+                    colored(
+                        "(The real-time link to this channel's origin was lost -- "
+                        "you may miss live messages until the next sync.)",
+                        fg_color=MUTED_COLOR,
+                    )
+                )
+
+            live_subscribe_task = asyncio.create_task(_subscribe_live())
 
         receive_task = asyncio.create_task(receive_loop())
         send_task = asyncio.create_task(send_loop())
@@ -3446,11 +3531,43 @@ async def _chat_loop(
                 await session.write(reset_scroll_region() + clear_screen())
             except SessionClosedError:
                 pass
+        # Design doc §8.10.2, issue #148: own this task through to
+        # completion regardless of how the outer try exited (normal
+        # /quit, /leave, a kick, or a dropped connection) -- same
+        # cancel-then-gather shape `clock_task` already uses, just here
+        # in the one finally block that already runs on every exit path
+        # rather than duplicated into the inner CancelledError branch
+        # too, since `live_subscribe_task` was never part of that inner
+        # wait() set in the first place. Reads `live_session_holder`,
+        # not this task's own return value -- `_subscribe_live` keeps
+        # running (announcing a later drop) for as long as a session
+        # stays up, so it is essentially never naturally `done()` with
+        # a return value by the time a caller leaves; cancelling it
+        # here only stops the *announcing*, never the session itself.
+        if live_subscribe_task is not None:
+            live_subscribe_task.cancel()
+            await asyncio.gather(live_subscribe_task, return_exceptions=True)
+        live_session = live_session_holder["session"]
+        if live_session is not None:
+            # Lazy for the same reason as the matching import above --
+            # only ever reached when `live_subscribe_task` was created,
+            # which itself required this same import to already work.
+            from netbbs.link.protocol import build_unsubscribe_frame
+            from netbbs.link.transport import LinkTransportError
+
+            try:
+                await live_session.send(build_unsubscribe_frame(channel.channel_id))
+            except LinkTransportError:
+                pass
         hub.leave(channel.name, participant_id)
         recorded_leave = await lane.run(
             record_message, channel, kind="leave", author_label=user.username, author_fingerprint=user.fingerprint
         )
         await hub.broadcast(channel.name, recorded_leave, exclude={participant_id})
+        if link_context is not None and link_context.realtime_bridge is not None:
+            await link_context.realtime_bridge.broadcast_local_presence_live(
+                channel, change="leave", username=user.username
+            )
 
 
 # -- direct chat: mutual invite/accept 1:1 fullscreen chat (design doc §6.3) --
