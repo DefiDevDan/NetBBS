@@ -74,8 +74,8 @@ from netbbs.link.transport import (
     write_realtime_record,
 )
 from netbbs.link.trust import (
-    TrustDimension, TrustState, TrustSubject, configure_trust_domain,
-    configure_trusted_reporter, get_effective_trust_state, set_trust_override,
+    TrustDimension, TrustState, TrustSubject, clear_trust_override, configure_trust_domain,
+    configure_trusted_reporter, get_effective_trust_state, list_trust_decision_audit, set_trust_override,
 )
 from netbbs.link.trust_wire import (
     SignedTrustObject,
@@ -685,9 +685,20 @@ class _NodeDb:
         self.db.close()
 
 
-def test_real_transport_enforces_probation_quarantine_block_and_preserves_accepted_bytes(
+def test_real_transport_enforces_probation_quarantine_block_explains_and_recovers(
     tmp_path, monkeypatch,
 ):
+    """Issue #131 acceptance criterion: "at least one real multi-node
+    exercise covers configuration, quarantine, explanation, and
+    recovery." Extends the escalation-and-preservation exercise below
+    with the two halves nothing else combines with real transport: a
+    SysOp's own explanation surface (`get_effective_trust_state`/
+    `list_trust_decision_audit`) reading the *exact* state a real peer
+    just got blocked under, and a real recovery -- clearing the
+    overrides and re-vouching -- proving previously-blocked real
+    traffic (the `second` board genesis) actually flows again
+    afterward, not just that local DB state looks recovered.
+    """
     alice_identity = bootstrap_node_identity("policy-alice")
     bob_identity = bootstrap_node_identity("policy-bob")
     alice_node = LinkNode(identity=alice_identity)
@@ -777,19 +788,94 @@ def test_real_transport_enforces_probation_quarantine_block_and_preserves_accept
                     alice_node, session, base_url, bob_identity.fingerprint, alice.lane
                 ) == []
 
-                set_trust_override(
+                quarantine_override_id = set_trust_override(
                     bob.db, subject, TrustDimension.RESOURCE_BEHAVIOR, TrustState.QUARANTINED,
                     reason="resource trigger", now_iso="2026-08-14T12:03:00+00:00",
                 )
                 with pytest.raises(LinkTransportError, match="link_policy_node_quarantined"):
                     await push_events(alice_node, session, base_url, [second])
 
-                set_trust_override(
+                block_override_id = set_trust_override(
                     bob.db, subject, TrustDimension.IDENTITY_INTEGRITY, TrustState.BLOCKED,
                     reason="manual block", now_iso="2026-08-14T12:04:00+00:00",
                 )
                 with pytest.raises(LinkTransportError, match="link_policy_manual_block"):
                     await dial_hello(alice_node, session, base_url, _hello_for(alice_node), alice.lane)
+
+                # -- explain: bob's own trust surface (what admin_flow.py's
+                # trust screens read) for exactly the state alice just got
+                # blocked under over this real connection, not a synthetic
+                # fixture built independently of what actually happened.
+                blocked_state = get_effective_trust_state(
+                    bob.db, subject, TrustDimension.IDENTITY_INTEGRITY
+                )
+                assert blocked_state.state == TrustState.BLOCKED
+                assert blocked_state.reason_code == "manual_block"
+                assert blocked_state.explanation["override_id"] == block_override_id
+                assert blocked_state.explanation["override_reason"] == "manual block"
+
+                quarantined_state = get_effective_trust_state(
+                    bob.db, subject, TrustDimension.RESOURCE_BEHAVIOR
+                )
+                assert quarantined_state.state == TrustState.QUARANTINED
+                assert quarantined_state.explanation["override_reason"] == "resource trigger"
+
+                identity_audit = [
+                    entry for entry in list_trust_decision_audit(bob.db, subject)
+                    if entry.kind == TrustDimension.IDENTITY_INTEGRITY.value
+                ]
+                assert identity_audit[0].action == "manual_block"
+                assert identity_audit[0].details["previous_state"] == "established"
+                assert identity_audit[0].details["new_state"] == "blocked"
+
+                # -- recover: the issue is resolved, both overrides are
+                # cleared, and a SysOp explicitly re-vouches -- the real
+                # recovery path (not merely "no override left"). A real
+                # transport action refused a moment ago over this exact
+                # connection must now genuinely succeed, not just look
+                # recovered in local state.
+                clear_trust_override(bob.db, block_override_id, now_iso="2026-08-14T12:05:00+00:00")
+                clear_trust_override(bob.db, quarantine_override_id, now_iso="2026-08-14T12:05:01+00:00")
+                for dimension in (TrustDimension.IDENTITY_INTEGRITY, TrustDimension.RESOURCE_BEHAVIOR):
+                    set_trust_override(
+                        bob.db, subject, dimension, TrustState.ESTABLISHED,
+                        reason="resolved and re-vouched", now_iso="2026-08-14T12:05:02+00:00",
+                    )
+
+                recovered_state = get_effective_trust_state(
+                    bob.db, subject, TrustDimension.IDENTITY_INTEGRITY
+                )
+                assert recovered_state.state == TrustState.ESTABLISHED
+                assert recovered_state.explanation["override_reason"] == "resolved and re-vouched"
+
+                # Two-step trail, newest first: clearing the block override
+                # alone drops straight to PROBATIONARY (no override, no
+                # earned evidence left -- _ordinary_state's honest default,
+                # not a jump straight back to ESTABLISHED), and only the
+                # explicit re-vouch above actually restores ESTABLISHED.
+                # Recovery is reversible *and* explainable at each step,
+                # not a single opaque "fixed" transition.
+                recovery_audit = [
+                    entry for entry in list_trust_decision_audit(bob.db, subject)
+                    if entry.kind == TrustDimension.IDENTITY_INTEGRITY.value
+                ]
+                assert recovery_audit[0].details["previous_state"] == "probationary"
+                assert recovery_audit[0].details["new_state"] == "established"
+                assert recovery_audit[1].details["previous_state"] == "blocked"
+                assert recovery_audit[1].details["new_state"] == "probationary"
+
+                # Re-dial first, not push straight away: `_handle_hello`
+                # actively evicts a peer it just rejected under policy
+                # (`LinkServer._handle_hello`'s own `self._node.peers.pop`)
+                # -- being BLOCKED doesn't just refuse new actions, it
+                # forgets the peer outright, so recovery genuinely needs a
+                # fresh completed hello before anything else works again,
+                # the same as any other stranger would.
+                record = await dial_hello(
+                    alice_node, session, base_url, _hello_for(alice_node), alice.lane
+                )
+                assert record.fingerprint == bob_identity.fingerprint
+                assert await push_events(alice_node, session, base_url, [second]) == [second.content_id]
         finally:
             await server.stop()
 
@@ -798,9 +884,12 @@ def test_real_transport_enforces_probation_quarantine_block_and_preserves_accept
         assert bob.db.connection.execute(
             "SELECT COUNT(*) FROM link_events WHERE content_id = ?", (first.content_id,)
         ).fetchone()[0] == 1
+        # Recovered mid-test (see scenario() above) -- now present, not
+        # still rejected, proving recovery actually un-blocked real
+        # traffic rather than only updating local trust state.
         assert bob.db.connection.execute(
             "SELECT COUNT(*) FROM link_events WHERE content_id = ?", (second.content_id,)
-        ).fetchone()[0] == 0
+        ).fetchone()[0] == 1
         assert bob.db.connection.execute(
             "SELECT status FROM posts WHERE post_id = ?", (probation_post.content_id,)
         ).fetchone()[0] == "pending"

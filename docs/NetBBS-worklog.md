@@ -2544,3 +2544,20 @@ multi-node-per-host deployment pattern, not just validated in isolation --
 `config.validate()` passing proves internal consistency, not the absence of
 a cross-node collision when two instances of the same defaults run
 together.
+
+**A manual `BLOCKED` trust verdict on `HELLO` doesn't just refuse the
+request -- `LinkServer._handle_hello` actively evicts the peer from
+`self._node.peers` (`self._node.peers.pop(peer.fingerprint, None)`) the
+moment policy rejects it, even though `LinkNode.handle_hello` had just
+protocol-verified and added it a line earlier.** A previously-completed,
+already-known peer that gets manually blocked therefore stops satisfying
+"has completed hello" for every other route (`push_events`, peer-list,
+etc. -- `LinkProtocolError: ... which has no completed hello`) the instant
+the block takes effect, not only for the hello route itself. Recovery
+(clearing the block, restoring trust) must re-dial a fresh hello before
+anything else will work again -- exactly like introducing yourself to a
+stranger, not a resumed session. Caught extending issue #131's real-
+transport quarantine test to also recover: pushing events immediately
+after restoring trust (without a fresh hello first) fails with the
+completed-hello error, not a trust-policy one, which is easy to
+misdiagnose as a bug in the recovery path itself.
