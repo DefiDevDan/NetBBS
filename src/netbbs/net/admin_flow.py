@@ -3544,7 +3544,7 @@ async def _community_menu(session: Session, lane: DatabaseLane, actor: User) -> 
             return
         elif choice == "c":
             await session.write_line("")
-            await _create_community_screen(session, lane, actor)
+            await _community_screen(session, lane, actor)
             await _draw_community_menu(session)
         elif choice == "l":
             await session.write_line("")
@@ -3561,28 +3561,118 @@ async def _draw_community_menu(session: Session) -> None:
     await session.write("Choice: ")
 
 
-async def _create_community_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
-    """Create stays lean, Edit carries the rest (design doc §16) -- same
-    split boards already use. Only name/description are
-    prompted here; `hidden` and every `default_*` field start at their
-    own defaults (visible, no gate) and are set via `_edit_community_screen`
-    afterward if the SysOp wants them."""
-    await session.write_line(colored("\r\nCreate Community", fg_color=HEADER_COLOR, bold=True))
-    await session.write("Name: ")
-    name = (await session.read_line()).strip()
-    if not name:
-        await session.write_line(colored("Cancelled: name cannot be blank.", fg_color=MUTED_COLOR))
-        return
-    await session.write("Description (optional): ")
-    description = (await session.read_line()).strip() or None
+def _community_field_specs() -> list[FieldSpec]:
+    """One shared field list drives both create and edit (design doc,
+    dogfood feature request) -- see `_community_screen`. Unlike board/
+    channel/file-area, a Community has no `community_id`/`category_id`
+    of its own (nothing above it) and no `pinned`/`moderated` -- just
+    name/description/hidden plus its four `default_*` inheritance
+    fields (design doc §16)."""
+    return [
+        FieldSpec(
+            key="name", hotkey="n", menu_text=menu_key("N", "ame"), label="Name",
+            render=lambda d: d.get("name") or "(blank)",
+            prompt=text_field("name", required=True),
+        ),
+        FieldSpec(
+            key="description", hotkey="d", menu_text=menu_key("D", "escription"), label="Description",
+            render=lambda d: d.get("description") or "(none)",
+            prompt=text_field("description"),
+        ),
+        FieldSpec(
+            key="hidden", hotkey="h", menu_text=menu_key("H", "idden"), label="Hidden",
+            render=lambda d: "yes" if d.get("hidden") else "no",
+            prompt=bool_field("hidden", "Hidden?"),
+        ),
+        FieldSpec(
+            key="default_min_read_level", hotkey="r", menu_text=menu_key("R", "ead level"),
+            label="Default read level",
+            render=lambda d: _optional_int_label(d.get("default_min_read_level")),
+            prompt=_optional_int_field("default_min_read_level", "Default minimum read level"),
+        ),
+        FieldSpec(
+            key="default_min_write_level", hotkey="w", menu_text=menu_key("W", "rite level"),
+            label="Default write level",
+            render=lambda d: _optional_int_label(d.get("default_min_write_level")),
+            prompt=_optional_int_field("default_min_write_level", "Default minimum write level"),
+        ),
+        FieldSpec(
+            key="default_min_age", hotkey="g", menu_text=menu_key("G", "e", prefix="Min a"),
+            label="Default min age",
+            render=lambda d: _optional_int_label(d.get("default_min_age")),
+            prompt=_min_age_field("default_min_age"),
+        ),
+        FieldSpec(
+            key="default_name_requirement", hotkey="q", menu_text=menu_key("Q", "uirement", prefix="Name req"),
+            label="Default name requirement",
+            render=lambda d: d.get("default_name_requirement") or "none",
+            prompt=_name_requirement_field("default_name_requirement"),
+        ),
+    ]
 
-    try:
-        community = await lane.run(create_community, name, description=description, creator=actor)
-    except CommunityError as exc:
-        await session.write_line(colored(f"Could not create Community: {exc}", fg_color=MUTED_COLOR))
-        return
-    await session.write_line(f"Created Community {community.name!r}.")
-    await _community_detail_screen(session, lane, actor, community)
+
+async def _community_screen(
+    session: Session, lane: DatabaseLane, actor: User, *, existing: Community | None = None
+) -> Community | None:
+    """Unified create/edit screen -- see `_board_screen`'s own
+    docstring for the general shape and reasoning, identical here.
+
+    Unlike the old separate `_create_community_screen`/
+    `_edit_community_screen` pair, creating no longer needs to stay
+    "lean" (name/description only, with a forced follow-up trip into
+    `_community_detail_screen` to configure the rest) -- every field is
+    available immediately, at its own sensible default, on this one
+    screen, the same as board/channel/file-area creation already
+    works. No longer auto-enters the detail screen after a successful
+    create; the caller's own menu redraw is enough, matching every
+    other resource kind's own create flow.
+    """
+    if existing is not None:
+        draft = {
+            "name": existing.name, "description": existing.description, "hidden": existing.hidden,
+            "default_min_read_level": existing.default_min_read_level,
+            "default_min_write_level": existing.default_min_write_level,
+            "default_min_age": existing.default_min_age,
+            "default_name_requirement": existing.default_name_requirement,
+        }
+    else:
+        draft = {
+            "name": "", "description": None, "hidden": False,
+            "default_min_read_level": None, "default_min_write_level": None,
+            "default_min_age": None, "default_name_requirement": None,
+        }
+
+    async def save(draft: dict) -> Community:
+        if not draft["name"]:
+            raise CommunityError("name cannot be blank")
+        if existing is None:
+            return await lane.run(
+                create_community,
+                draft["name"], description=draft["description"], hidden=draft["hidden"],
+                default_min_read_level=draft["default_min_read_level"],
+                default_min_write_level=draft["default_min_write_level"],
+                default_min_age=draft["default_min_age"],
+                default_name_requirement=draft["default_name_requirement"], creator=actor,
+            )
+        return await lane.run(
+            update_community,
+            existing, name=draft["name"], description=draft["description"], hidden=draft["hidden"],
+            default_min_read_level=draft["default_min_read_level"],
+            default_min_write_level=draft["default_min_write_level"],
+            default_min_age=draft["default_min_age"],
+            default_name_requirement=draft["default_name_requirement"], changed_by=actor,
+        )
+
+    community = await edit_resource_draft(
+        session, lane,
+        title="Edit Community" if existing is not None else "Create Community",
+        fields=_community_field_specs(), draft=draft, save=save, error_type=CommunityError,
+        save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+    )
+    if community is not None:
+        verb = "Updated" if existing is not None else "Created Community"
+        await session.write_line(f"{verb} {community.name!r}.")
+    return community
 
 
 async def _list_communities_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
@@ -3615,7 +3705,7 @@ async def _community_detail_screen(session: Session, lane: DatabaseLane, actor: 
             return
         elif choice == "e":
             await session.write_line("")
-            updated = await _edit_community_screen(session, lane, actor, community)
+            updated = await _community_screen(session, lane, actor, existing=community)
             if updated is not None:
                 community = updated
             await _draw_community_detail(session, community)
@@ -3647,49 +3737,6 @@ async def _draw_community_detail(session: Session, community: Community) -> None
     options = "  ".join([menu_key("E", "dit"), menu_key("D", "elete"), menu_key("B", "ack")])
     await session.write_line(f"\r\n{options}")
     await session.write("Choice: ")
-
-
-async def _edit_community_screen(
-    session: Session, lane: DatabaseLane, actor: User, community: Community
-) -> Community | None:
-    await session.write(f"Name [{community.name}]: ")
-    name = (await session.read_line()).strip() or community.name
-    await session.write(f"Description [{community.description or '(none)'}]: ")
-    description = (await session.read_line()).strip() or community.description
-    hidden = await prompt_yes_no_or_keep(session, "Hidden?", current=community.hidden)
-
-    default_min_read_level, ok = await _prompt_optional_int(
-        session, "Default minimum read level", current=community.default_min_read_level
-    )
-    if not ok:
-        return None
-    default_min_write_level, ok = await _prompt_optional_int(
-        session, "Default minimum write level", current=community.default_min_write_level
-    )
-    if not ok:
-        return None
-    default_min_age, ok = await _prompt_min_age(session, current=community.default_min_age)
-    if not ok:
-        return None
-    default_name_requirement, ok = await _prompt_name_requirement(
-        session, current=community.default_name_requirement
-    )
-    if not ok:
-        return None
-
-    try:
-        updated = await lane.run(
-            update_community,
-            community, name=name, description=description, hidden=hidden,
-            default_min_read_level=default_min_read_level, default_min_write_level=default_min_write_level,
-            default_min_age=default_min_age, default_name_requirement=default_name_requirement,
-            changed_by=actor,
-        )
-    except CommunityError as exc:
-        await session.write_line(colored(f"Could not update Community: {exc}", fg_color=MUTED_COLOR))
-        return None
-    await session.write_line(f"Updated {updated.name!r}.")
-    return updated
 
 
 async def _delete_community_screen(session: Session, lane: DatabaseLane, actor: User, community: Community) -> bool:

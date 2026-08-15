@@ -2499,10 +2499,14 @@ def test_grant_blanket_across_all_channels(db, lane, sysop):
 def test_create_community_flow(db, lane, sysop):
     from netbbs.communities import list_communities
 
-    # content menu -> Communities -> create -> name, description ->
-    # lands on detail screen (create auto-navigates there, unlike board
-    # create) -> back out of detail -> back to community menu -> back x2
-    inputs = ["m", "o", "c", "Vintage Computing", "Old iron", "b", "b", "b", "b"]
+    # content menu -> Communities -> create -> the shared draft editor
+    # (design doc, dogfood feature request): n(ame)/d(escription)
+    # select a field, then [S]ave -- returns to the community menu,
+    # same as every other resource kind's own create flow (no longer
+    # auto-navigates into the detail screen, since creation is no
+    # longer "lean" -- every field is already available on this one
+    # screen). back x3.
+    inputs = ["m", "o", "c", "n", "Vintage Computing", "d", "Old iron", "s", "b", "b", "b"]
     session = FakeSession(inputs)
     _run(session, lane, sysop)
 
@@ -2511,20 +2515,30 @@ def test_create_community_flow(db, lane, sysop):
     assert "Created Community 'Vintage Computing'." in _written_text(session)
 
 
+def test_create_community_can_be_cancelled_without_creating_anything(db, lane, sysop):
+    """Dogfood item 6: [B]ack on the shared draft editor discards the
+    whole draft, even after fields were already filled in."""
+    inputs = ["m", "o", "c", "n", "Abandoned", "b", "b", "b", "b"]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+    from netbbs.communities import list_communities
+
+    assert list_communities(db) == []
+
+
 def test_edit_and_delete_community_flow(db, lane, sysop):
     from netbbs.communities import create_community, list_communities
 
     create_community(db, "Politics", creator=sysop)
 
-    # content menu -> Communities -> list -> pick(01) -> e(dit): keep
-    # name/desc, hidden=y, default read/write level blank(keep=None),
-    # default min age blank(keep=None), default name requirement
-    # blank(keep=None) -> back to detail -> d(elete) -> retype name ->
-    # deletion returns straight up to the community menu (redraws) ->
-    # back x3 (community menu, content menu, admin menu)
+    # content menu -> Communities -> list -> pick(01) -> e(dit): toggle
+    # Hidden via the field menu -> [S]ave -> back to detail -> d(elete)
+    # -> retype name -> deletion returns straight up to the community
+    # menu (redraws) -> back x3 (community menu, content menu, admin
+    # menu). Every other field is left untouched.
     inputs = [
         "m", "o", "l", "0", "1", "e",
-        "", "", "y", "", "", "", "",
+        "h", "y", "s",
         "d", "Politics",
         "b", "b", "b",
     ]
