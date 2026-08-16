@@ -412,6 +412,11 @@ the ordinary post list even renders. Editing an existing post that you
 previously `/exit`ed out of works the same way, just triggered by
 re-opening that specific post rather than by entering the board.
 
+A saved draft that's genuinely abandoned (nobody ever comes back to resume
+or delete it) doesn't accumulate forever: `[O]perations` → `[P]rune
+drafts` (§11) removes any draft file older than 30 days, after a dry-run
+preview.
+
 ---
 
 ## 11. Node operations: sessions, maintenance, drain, shutdown
@@ -437,6 +442,13 @@ see §1):
   triggered by an external signal (SIGTERM/SIGINT) rather than this
   screen is shown as such and may not be cancellable from here, depending
   on how it was triggered.
+
+`[O]perations` → `[P]rune drafts` (always present, not tied to a live
+session or Link) removes stale saved-post/bio draft files (§10) older
+than 30 days. Same dry-run-then-confirm shape as `[G]C storage` (§5):
+shows how many files and how much space would be freed first, asks
+separately before actually deleting. A draft still within the 30-day
+window is never touched, no matter how often you run this.
 
 ---
 

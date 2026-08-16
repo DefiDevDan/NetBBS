@@ -143,7 +143,7 @@ from netbbs.net.chat_flow import (
 )
 from netbbs.net.color_depth_preference import color_depth_override, set_color_depth_override
 from netbbs.net.composition import ReviewAction, edit_line_body, review_composition
-from netbbs.net.draft_storage import delete_draft, load_draft
+from netbbs.net.draft_storage import delete_draft, drafts_directory, load_draft
 from netbbs.net.editor_preference import fullscreen_editor_enabled, set_fullscreen_editor_enabled
 from netbbs.net.file_flow import browse_file_areas, enter_file_area, has_visible_areas
 from netbbs.net.mail_flow import browse_mail
@@ -2847,10 +2847,8 @@ def _post_draft_path(db: Database, *, kind: str, board: Board, user: User, root_
     board entry for `kind="new"`; each editor's own on-entry
     `draft_path.exists()` check otherwise, for `kind="edit"` or for a
     `kind="new"` draft the board-entry prompt didn't consume."""
-    directory = db.path.parent / f"{db.path.name}_drafts"
-    directory.mkdir(parents=True, exist_ok=True)
     suffix = f"_{root_post_id}" if root_post_id else ""
-    return directory / f"{kind}_{board.id}_{user.id}{suffix}.draft"
+    return drafts_directory(db) / f"{kind}_{board.id}_{user.id}{suffix}.draft"
 
 
 async def _compose_body(
@@ -3508,9 +3506,7 @@ async def _edit_bio(session: Session, db: Database, user: User) -> None:
 
 
 def _bio_draft_path(db: Database, user: User) -> Path:
-    directory = db.path.parent / f"{db.path.name}_drafts"
-    directory.mkdir(parents=True, exist_ok=True)
-    return directory / f"bio_{user.id}.draft"
+    return drafts_directory(db) / f"bio_{user.id}.draft"
 
 
 async def _toggle_bio_visibility(

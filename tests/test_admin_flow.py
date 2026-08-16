@@ -2304,6 +2304,72 @@ def test_gc_screen_with_nothing_to_reclaim_skips_the_confirmation_prompt(db, lan
     assert "Would reclaim 0 orphaned blob" in _written_text(session)
 
 
+def test_prune_drafts_screen_deletes_a_stale_draft(db, lane, sysop):
+    """GitHub issue #158: dry-run report, then explicit confirm, then
+    actual deletion -- driven end to end through the admin UI, same
+    shape as _gc_screen's own equivalent test."""
+    import os
+    import time
+
+    from netbbs.net.draft_storage import drafts_directory
+
+    stale = drafts_directory(db) / "bio_1.draft"
+    stale.write_text("an old bio draft", encoding="utf-8")
+    backdated = time.time() - (31 * 24 * 3600)  # past the default 30-day window
+    os.utime(stale, (backdated, backdated))
+
+    inputs = ["o", "p", "y", "b", "b"]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+
+    text = _written_text(session)
+    assert "Would delete 1 stale draft" in text
+    assert "Deleted 1 stale draft" in text
+    assert not stale.exists()
+
+
+def test_prune_drafts_screen_declining_confirmation_does_not_delete(db, lane, sysop):
+    import os
+    import time
+
+    from netbbs.net.draft_storage import drafts_directory
+
+    stale = drafts_directory(db) / "bio_1.draft"
+    stale.write_text("an old bio draft", encoding="utf-8")
+    backdated = time.time() - (31 * 24 * 3600)
+    os.utime(stale, (backdated, backdated))
+
+    inputs = ["o", "p", "n", "b", "b"]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+
+    assert stale.exists()
+
+
+def test_prune_drafts_screen_with_nothing_stale_skips_the_confirmation_prompt(db, lane, sysop):
+    inputs = ["o", "p", "b", "b"]  # no "y"/"n" needed
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+    assert "Would delete 0 stale draft" in _written_text(session)
+
+
+def test_prune_drafts_screen_leaves_a_fresh_draft_alone(db, lane, sysop):
+    """Acceptance criterion: a draft still within the retention window
+    is never pruned, even while the action runs."""
+    from netbbs.net.draft_storage import drafts_directory
+
+    fresh = drafts_directory(db) / "bio_1.draft"
+    fresh.write_text("still working on this", encoding="utf-8")
+
+    inputs = ["o", "p", "b", "b"]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+
+    text = _written_text(session)
+    assert "Would delete 0 stale draft" in text
+    assert fresh.exists()
+
+
 def test_sysop_approves_a_pending_file_with_zero_grants(db, lane, sysop):
     from netbbs.files.areas import create_file_area
     from netbbs.files.entries import get_file, upload_file

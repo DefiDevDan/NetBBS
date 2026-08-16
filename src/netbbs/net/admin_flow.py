@@ -200,6 +200,7 @@ from netbbs.moderation.roles import (
 )
 from netbbs.net.char_input import REDRAW_KEY, REFRESH_KEY, reject_unhandled_key
 from netbbs.net.confirm import prompt_yes_no, prompt_yes_no_or_keep
+from netbbs.net.draft_storage import DraftPruneReport, prune_stale_drafts
 from netbbs.net.picker import pick_item
 from netbbs.net.resource_editor import FieldSpec, bool_field, choice_field, edit_resource_draft, text_field
 from netbbs.net.session import Session
@@ -556,7 +557,7 @@ async def _operations_menu(
                 width=session.terminal_width,
             )
         )
-        options = [menu_key("K", "up status", prefix="Bac")]
+        options = [menu_key("K", "up status", prefix="Bac"), menu_key("P", "rune drafts")]
         if node_controls is not None:
             options.insert(0, menu_key("N", "ode and sessions"))
         if link_context is not None:
@@ -586,6 +587,8 @@ async def _operations_menu(
             await _repair_carried_posts_screen(session, lane)
         elif choice == "k":
             await _backup_status_screen(session, lane, actor)
+        elif choice == "p":
+            await _prune_drafts_screen(session, lane)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -2436,6 +2439,50 @@ async def _repair_carried_posts_screen(session: Session, lane: DatabaseLane) -> 
         )
     else:
         await session.write_line(f"\r\nRepair carried posts: materialized {rebuilt} missing row(s).")
+
+
+async def _prune_drafts_screen(session: Session, lane: DatabaseLane) -> None:
+    """
+    Bounds stale post/bio draft files (GitHub issue #158, split from
+    #149): always shows a dry-run report first, then asks separately
+    before actually deleting anything -- the same "preview, then
+    explicit confirm" shape `_gc_screen` already uses, appropriate here
+    too since this is a one-way filesystem operation the database
+    itself can't undo.
+
+    `new`-kind post drafts are already naturally bounded (one file per
+    (user, board), always overwritten) and never need this; `edit`-kind
+    post drafts and bio drafts are not (one file per abandoned edit/bio
+    session, with nothing else to clean them up) -- see
+    `netbbs.net.draft_storage.prune_stale_drafts`'s own docstring for
+    why every draft is safe to prune the same way once stale, regardless
+    of which caller wrote it.
+    """
+    preview = await lane.run(prune_stale_drafts, dry_run=True)
+    await _write_draft_prune_report(session, preview)
+    if preview.stale_files == 0:
+        return
+    if not await prompt_yes_no(session, "Delete these stale drafts now?", default=False):
+        return
+    result = await lane.run(prune_stale_drafts, dry_run=False)
+    await _write_draft_prune_report(session, result)
+
+
+async def _write_draft_prune_report(session: Session, report: DraftPruneReport) -> None:
+    verb = "Would delete" if report.dry_run else "Deleted"
+    await session.write_line(
+        f"\r\n{verb} {report.stale_files} stale draft(s), {_format_bytes(report.stale_bytes)}."
+    )
+    if report.skipped_recent:
+        await session.write_line(
+            colored(
+                f"{report.skipped_recent} draft(s) still within the retention window skipped "
+                "this pass.",
+                fg_color=MUTED_COLOR,
+            )
+        )
+    for error in report.errors:
+        await session.write_line(colored(f"Error: {error}", fg_color=MUTED_COLOR))
 
 
 async def _revoke_live_sessions(
