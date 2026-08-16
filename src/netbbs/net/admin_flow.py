@@ -282,6 +282,19 @@ from netbbs.timeutil import (
 _logger = logging.getLogger(__name__)
 
 
+def _menu_row(entries: list[MenuEntry], description_level: str, *, width: int, height: int) -> str:
+    """Shared off/on branch for every hotkey-row menu in this module
+    (issue #160's rollout, commit 1b1da33's own established pattern):
+    `menu_grid` always renders one entry per line, even with
+    descriptions off, so it isn't a byte-for-byte substitute for
+    `action_bar`'s packed row at that level -- keep `action_bar` there
+    so no screen's height changes for a caller who hasn't opted into
+    descriptions, and only switch to `menu_grid` once they have."""
+    if description_level == "off":
+        return action_bar([e.label for e in entries], width=width)
+    return menu_grid([("", entries)], width=width, height=height, description_level=description_level)
+
+
 async def admin_menu(
     session: Session,
     lane: DatabaseLane,
@@ -554,7 +567,8 @@ async def _users_menu(
     through to that editor -- it needs it for the live-session-
     revocation guard on disable/delete -- this submenu itself doesn't
     use it directly."""
-    await _draw_users_menu(session)
+    description_level = await lane.run(menu_description_level, actor)
+    await _draw_users_menu(session, description_level)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -564,45 +578,47 @@ async def _users_menu(
         elif choice == "c":
             await session.write_line("")
             await _create_user_screen(session, lane, actor)
-            await _draw_users_menu(session)
+            await _draw_users_menu(session, description_level)
         elif choice == "l":
             await session.write_line("")
             await _pick_and_edit_user(session, lane, actor, node_controls, title="Registered users")
-            await _draw_users_menu(session)
+            await _draw_users_menu(session, description_level)
         elif choice == "r":
             await session.write_line("")
             await _registration_settings_screen(session, lane, actor)
-            await _draw_users_menu(session)
+            await _draw_users_menu(session, description_level)
         elif choice == "p":
             await session.write_line("")
             await _pick_and_edit_user(session, lane, actor, node_controls, title="Promote/demote which user?")
-            await _draw_users_menu(session)
+            await _draw_users_menu(session, description_level)
         elif choice == "e":
             await session.write_line("")
             await _pick_and_edit_user(session, lane, actor, node_controls, title="Enable/disable which user?")
-            await _draw_users_menu(session)
+            await _draw_users_menu(session, description_level)
         elif choice == "d":
             await session.write_line("")
             await _pick_and_edit_user(session, lane, actor, node_controls, title="Delete which user?")
-            await _draw_users_menu(session)
+            await _draw_users_menu(session, description_level)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
-async def _draw_users_menu(session: Session) -> None:
+async def _draw_users_menu(session: Session, description_level: str) -> None:
     await session.write_line("\r\n" + screen_title("Users", width=session.terminal_width))
     await session.write_line(
-        action_bar(
+        _menu_row(
             [
-                menu_key("C", "reate user"),
-                menu_key("L", "ist users"),
-                menu_key("R", "egistration"),
-                menu_key("P", "romote/demote"),
-                menu_key("E", "nable/disable"),
-                menu_key("D", "elete user"),
-                menu_key("B", "ack"),
+                MenuEntry(label=menu_key("C", "reate user"), brief="Add a new user account"),
+                MenuEntry(label=menu_key("L", "ist users"), brief="Browse and edit accounts"),
+                MenuEntry(label=menu_key("R", "egistration"), brief="Signup policy settings"),
+                MenuEntry(label=menu_key("P", "romote/demote"), brief="Change a user's level"),
+                MenuEntry(label=menu_key("E", "nable/disable"), brief="Toggle account access"),
+                MenuEntry(label=menu_key("D", "elete user"), brief="Permanently remove a user"),
+                MenuEntry(label=menu_key("B", "ack"), brief="Return to the SysOp console"),
             ],
+            description_level,
             width=session.terminal_width,
+            height=session.terminal_height,
         )
     )
     await session.write("Choice: ")
@@ -620,6 +636,7 @@ async def _operations_menu(
     link_context: LinkContext | None,
 ) -> None:
     """Operational observation and intervention, separate from durable settings."""
+    description_level = await lane.run(menu_description_level, actor)
     while True:
         await session.write_line(
             "\r\n" + screen_title(
@@ -629,17 +646,25 @@ async def _operations_menu(
                 width=session.terminal_width,
             )
         )
-        options = [menu_key("K", "up status", prefix="Bac"), menu_key("P", "rune drafts"), menu_key("A", "udit log")]
+        options = [
+            MenuEntry(label=menu_key("K", "up status", prefix="Bac"), brief="Last backup status and history"),
+            MenuEntry(label=menu_key("P", "rune drafts"), brief="Clean up old unsaved drafts"),
+            MenuEntry(label=menu_key("A", "udit log"), brief="Moderation action history"),
+        ]
         if node_controls is not None:
-            options.insert(0, menu_key("N", "ode and sessions"))
+            options.insert(0, MenuEntry(label=menu_key("N", "ode and sessions"), brief="Sessions, shutdown, and drain"))
         if link_context is not None:
             options.extend([
-                menu_key("L", "ink status"), menu_key("O", "utbox"),
-                menu_key("D", "iagnostics"), menu_key("F", "ollow log"),
-                menu_key("R", "epair carried posts"),
+                MenuEntry(label=menu_key("L", "ink status"), brief="NetBBS Link peer/network health"),
+                MenuEntry(label=menu_key("O", "utbox"), brief="Pending outgoing Link work items"),
+                MenuEntry(label=menu_key("D", "iagnostics"), brief="Recent Link diagnostic events"),
+                MenuEntry(label=menu_key("F", "ollow log"), brief="Live-tail the diagnostic log"),
+                MenuEntry(label=menu_key("R", "epair carried posts"), brief="Fix inconsistent carried posts"),
             ])
-        options.append(menu_key("B", "ack"))
-        await session.write_line(action_bar(options, width=session.terminal_width))
+        options.append(MenuEntry(label=menu_key("B", "ack"), brief="Return to the SysOp console"))
+        await session.write_line(
+            _menu_row(options, description_level, width=session.terminal_width, height=session.terminal_height)
+        )
         await session.write("Choice: ")
         choice = (await session.read_key()).lower()
         if choice == "b":
@@ -680,7 +705,8 @@ async def _system_menu(
     The old operational keys remain accepted here as non-advertised
     compatibility aliases; the visible home for those actions is now the
     operations console."""
-    await _draw_system_menu(session, node_controls, link_context)
+    description_level = await lane.run(menu_description_level, actor)
+    await _draw_system_menu(session, node_controls, link_context, description_level)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -690,61 +716,68 @@ async def _system_menu(
         elif choice == "w":
             await session.write_line("")
             await _welcome_banner_menu(session, lane, actor)
-            await _draw_system_menu(session, node_controls, link_context)
+            await _draw_system_menu(session, node_controls, link_context, description_level)
         elif choice == "u":
             await session.write_line("")
             await _update_settings_screen(session, lane, actor)
-            await _draw_system_menu(session, node_controls, link_context)
+            await _draw_system_menu(session, node_controls, link_context, description_level)
         elif choice == "n" and node_controls is not None:
             await session.write_line("")
             await _node_menu(session, lane, actor, node_controls)
-            await _draw_system_menu(session, node_controls, link_context)
+            await _draw_system_menu(session, node_controls, link_context, description_level)
         elif choice == "t":
             await session.write_line("")
             await _timestamp_settings_screen(session, lane, actor)
-            await _draw_system_menu(session, node_controls, link_context)
+            await _draw_system_menu(session, node_controls, link_context, description_level)
         elif choice == "p":
             await session.write_line("")
             await _trust_menu(session, lane, actor)
-            await _draw_system_menu(session, node_controls, link_context)
+            await _draw_system_menu(session, node_controls, link_context, description_level)
         elif choice == "l" and link_context is not None:
             await session.write_line("")
             await _link_status_screen(session, lane, actor, link_context=link_context)
-            await _draw_system_menu(session, node_controls, link_context)
+            await _draw_system_menu(session, node_controls, link_context, description_level)
         elif choice == "o" and link_context is not None:
             await session.write_line("")
             await _outbox_screen(session, lane, actor)
-            await _draw_system_menu(session, node_controls, link_context)
+            await _draw_system_menu(session, node_controls, link_context, description_level)
         elif choice == "r" and link_context is not None:
             await session.write_line("")
             await _repair_carried_posts_screen(session, lane)
-            await _draw_system_menu(session, node_controls, link_context)
+            await _draw_system_menu(session, node_controls, link_context, description_level)
         elif choice == "d" and link_context is not None:
             await session.write_line("")
             await _diagnostic_log_screen(session, lane)
-            await _draw_system_menu(session, node_controls, link_context)
+            await _draw_system_menu(session, node_controls, link_context, description_level)
         elif choice == "f" and link_context is not None:
             await session.write_line("")
             await _diagnostic_log_tail_screen(session, lane)
-            await _draw_system_menu(session, node_controls, link_context)
+            await _draw_system_menu(session, node_controls, link_context, description_level)
         elif choice == "k":
             await session.write_line("")
             await _backup_status_screen(session, lane, actor)
-            await _draw_system_menu(session, node_controls, link_context)
+            await _draw_system_menu(session, node_controls, link_context, description_level)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
 async def _draw_system_menu(
-    session: Session, node_controls: NodeControls | None, link_context: LinkContext | None = None
+    session: Session,
+    node_controls: NodeControls | None,
+    link_context: LinkContext | None = None,
+    description_level: str = "off",
 ) -> None:
     await session.write_line("\r\n" + screen_title("Settings", width=session.terminal_width))
     option_list = [
-        menu_key("W", "elcome banner"), menu_key("U", "pdate"), menu_key("T", "imestamp format"),
-        menu_key("P", "olicy trust"),
+        MenuEntry(label=menu_key("W", "elcome banner"), brief="First-login greeting text"),
+        MenuEntry(label=menu_key("U", "pdate"), brief="Software update settings"),
+        MenuEntry(label=menu_key("T", "imestamp format"), brief="Node-wide date/time display"),
+        MenuEntry(label=menu_key("P", "olicy trust"), brief="Federation trust policy"),
     ]
-    option_list.append(menu_key("B", "ack"))
-    await session.write_line(action_bar(option_list, width=session.terminal_width))
+    option_list.append(MenuEntry(label=menu_key("B", "ack"), brief="Return to the SysOp console"))
+    await session.write_line(
+        _menu_row(option_list, description_level, width=session.terminal_width, height=session.terminal_height)
+    )
     await session.write("Choice: ")
 
 
@@ -752,6 +785,7 @@ async def _draw_system_menu(
 
 
 async def _trust_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
+    description_level = await lane.run(menu_description_level, actor)
     while True:
         authorities = await lane.run(list_sole_authorities)
         await session.write_line(
@@ -764,13 +798,18 @@ async def _trust_menu(session: Session, lane: DatabaseLane, actor: User) -> None
             )
         )
         options = [
-            menu_key("S", "ubjects"), menu_key("D", "omains"),
-            menu_key("A", "nchors"), menu_key("R", "eporters"),
-            menu_key("I", "dentity authorities"), menu_key("E", "xceptions"),
-            menu_key("H", "istory"),
-            menu_key("B", "ack"),
+            MenuEntry(label=menu_key("S", "ubjects"), brief="Trusted node/user subjects"),
+            MenuEntry(label=menu_key("D", "omains"), brief="Trusted federation domains"),
+            MenuEntry(label=menu_key("A", "nchors"), brief="Root trust anchor keys"),
+            MenuEntry(label=menu_key("R", "eporters"), brief="Who can report abuse remotely"),
+            MenuEntry(label=menu_key("I", "dentity authorities"), brief="Attestation authority list"),
+            MenuEntry(label=menu_key("E", "xceptions"), brief="Sole-authority deviations"),
+            MenuEntry(label=menu_key("H", "istory"), brief="Trust config change log"),
+            MenuEntry(label=menu_key("B", "ack"), brief="Return to Settings"),
         ]
-        await session.write_line(action_bar(options, width=session.terminal_width))
+        await session.write_line(
+            _menu_row(options, description_level, width=session.terminal_width, height=session.terminal_height)
+        )
         if authorities:
             await session.write_line(
                 badge("SAFETY DEVIATION", tone="error")
@@ -826,6 +865,7 @@ async def _trust_subjects_screen(session: Session, lane: DatabaseLane, actor: Us
     )
     if selected is None:
         return
+    description_level = await lane.run(menu_description_level, actor)
     while True:
         states = [
             await lane.run(get_effective_trust_state, selected, dimension)
@@ -863,11 +903,23 @@ async def _trust_subjects_screen(session: Session, lane: DatabaseLane, actor: Us
                     )
                 )
         await session.write_line(
-            action_bar(
-                [menu_key("O", "verride"), menu_key("C", "lear override"),
-                 *([menu_key("I", "dentity attestation override")] if selected.kind == "user" else []),
-                 menu_key("H", "istory"), menu_key("B", "ack")],
+            _menu_row(
+                [
+                    MenuEntry(label=menu_key("O", "verride"), brief="Force a trust dimension's state"),
+                    MenuEntry(label=menu_key("C", "lear override"), brief="Remove a forced state"),
+                    *(
+                        [MenuEntry(
+                            label=menu_key("I", "dentity attestation override"),
+                            brief="Force age/name attestation state",
+                        )]
+                        if selected.kind == "user" else []
+                    ),
+                    MenuEntry(label=menu_key("H", "istory"), brief="This subject's change log"),
+                    MenuEntry(label=menu_key("B", "ack"), brief="Return to the subject list"),
+                ],
+                description_level,
                 width=session.terminal_width,
+                height=session.terminal_height,
             )
         )
         await session.write("Choice: ")
@@ -1426,6 +1478,27 @@ _USER_VISIBILITY_LABELS = {
 }
 
 
+def _user_picker_nav(session: Session) -> str:
+    # Deliberately NOT run through `_menu_row`/`menu_grid` -- issue
+    # #160's rollout, but a considered exception: this nav has 9 entries
+    # (4 sort/filter toggles plus the usual 5 paging keys), and
+    # `menu_grid` renders one entry per line even at "brief" (the real
+    # default -- see `menu_description_preference`'s own docstring).
+    # That's 18 lines of nav alone on top of this screen's other
+    # reserved lines, which at a standard 24-row terminal leaves room
+    # for exactly 1 user per page -- defeating the point of a screen
+    # whose whole purpose is browsing a list of many users. Every other
+    # converted site in this rollout has at most ~6 entries, where the
+    # same trade-off is still tolerable; this one isn't. Always compact,
+    # regardless of the caller's description-level preference.
+    options = [
+        menu_key("A", "lphabetical"), menu_key("R", "egistration"), menu_key("L", "evel"),
+        menu_key("V", "isibility"), menu_key("N", "ext"), menu_key("P", "rev"),
+        menu_key("S", "earch"), menu_key("G", "oto #"), menu_key("B", "ack"),
+    ]
+    return action_bar(options, width=session.terminal_width)
+
+
 def _user_picker_page_size(session: Session) -> int:
     available = session.terminal_height - _USER_PICKER_RESERVED_LINES
     return max(1, min(_USER_PICKER_MAX_PAGE_SIZE, available))
@@ -1515,20 +1588,7 @@ async def _pick_target_user(session: Session, lane: DatabaseLane, *, title: str)
             line = f"  {position:02d}. (#{user.id}) {sanitize_text(user.username)} - {_user_description(user)}"
             await session.write_line(truncate(line, session.terminal_width))
 
-        nav = action_bar(
-            [
-                menu_key("A", "lphabetical"),
-                menu_key("R", "egistration"),
-                menu_key("L", "evel"),
-                menu_key("V", "isibility"),
-                menu_key("N", "ext"),
-                menu_key("P", "rev"),
-                menu_key("S", "earch"),
-                menu_key("G", "oto #"),
-                menu_key("B", "ack"),
-            ],
-            width=session.terminal_width,
-        )
+        nav = _user_picker_nav(session)
         await session.write_line(f"\r\n{nav} — or type a 2-digit number to select")
         await session.write("Choice: ")
         return page_users
@@ -1686,7 +1746,7 @@ def _user_description(user: User) -> str:
     return f"level {user.user_level}, {_status_label(user)}"
 
 
-async def _draw_user_detail(session: Session, lane: DatabaseLane, target: User) -> bool:
+async def _draw_user_detail(session: Session, lane: DatabaseLane, target: User, description_level: str) -> bool:
     """Returns whether `target` is currently on the local blocklist --
     unlike `disabled_at`, blocked status isn't a field on `User` itself,
     so `_user_detail_screen`'s dispatch loop needs it back to know
@@ -1757,15 +1817,18 @@ async def _draw_user_detail(session: Session, lane: DatabaseLane, target: User) 
 
     options = []
     if target.pending_approval:
-        options.append(menu_key("A", "pprove"))
-    options.append(menu_key("L", "evel"))
-    options.append(menu_key("T", "oggle enable/disabled"))
-    options.append(menu_key("I", "dentity verification"))
-    options.append(menu_key("K", "ey"))
-    options.append(menu_key("R", "estrict login"))
-    options.append(menu_key("D", "elete"))
-    options.append(menu_key("B", "ack"))
-    await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
+        options.append(MenuEntry(label=menu_key("A", "pprove"), brief="Approve this pending signup"))
+    options.append(MenuEntry(label=menu_key("L", "evel"), brief="Change this user's access level"))
+    options.append(MenuEntry(label=menu_key("T", "oggle enable/disabled"), brief="Enable or disable this account"))
+    options.append(MenuEntry(label=menu_key("I", "dentity verification"), brief="Grant/revoke attestation rights"))
+    options.append(MenuEntry(label=menu_key("K", "ey"), brief="View/replace this user's SSH key"))
+    options.append(MenuEntry(label=menu_key("R", "estrict login"), brief="Block or unblock this account"))
+    options.append(MenuEntry(label=menu_key("D", "elete"), brief="Permanently remove this user"))
+    options.append(MenuEntry(label=menu_key("B", "ack"), brief="Return to the picker"))
+    await session.write_line(
+        "\r\n"
+        + _menu_row(options, description_level, width=session.terminal_width, height=session.terminal_height)
+    )
     await session.write("Choice: ")
     return blocked
 
@@ -1783,7 +1846,8 @@ async def _user_detail_screen(
     same already-selected account without leaving this screen or
     re-picking them through three separate single-purpose flows.
     """
-    blocked = await _draw_user_detail(session, lane, target)
+    description_level = await lane.run(menu_description_level, actor)
+    blocked = await _draw_user_detail(session, lane, target, description_level)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -1795,7 +1859,7 @@ async def _user_detail_screen(
             if await prompt_yes_no(session, "Approve this account so it can log in?", default=False):
                 target = await lane.run(approve_pending_user, target, approved_by=actor)
                 await session.write_line(f"{target.username!r} approved.")
-            blocked = await _draw_user_detail(session, lane, target)
+            blocked = await _draw_user_detail(session, lane, target, description_level)
         elif choice == "l":
             await session.write_line("")
             await session.write(f"New level for {target.username!r} [{target.user_level}]: ")
@@ -1812,7 +1876,7 @@ async def _user_detail_screen(
                         await session.write_line(colored(str(exc), fg_color=MUTED_COLOR))
                     else:
                         await session.write_line(f"{target.username!r} is now level {target.user_level}.")
-            blocked = await _draw_user_detail(session, lane, target)
+            blocked = await _draw_user_detail(session, lane, target, description_level)
         elif choice == "t":
             await session.write_line("")
             currently_disabled = target.disabled_at is not None
@@ -1828,7 +1892,7 @@ async def _user_detail_screen(
                     )
                     if target.disabled_at is not None:
                         await _revoke_live_sessions(session, node_controls, target, actor)
-            blocked = await _draw_user_detail(session, lane, target)
+            blocked = await _draw_user_detail(session, lane, target, description_level)
         elif choice == "i":
             await session.write_line("")
             new_state = "revoke" if target.can_verify_identity else "grant"
@@ -1842,7 +1906,7 @@ async def _user_detail_screen(
                     f"{target.username!r} can now verify identity: "
                     f"{'yes' if target.can_verify_identity else 'no'}."
                 )
-            blocked = await _draw_user_detail(session, lane, target)
+            blocked = await _draw_user_detail(session, lane, target, description_level)
         elif choice == "k":
             await session.write_line("")
             verb = "Replace" if target.fingerprint else "Add"
@@ -1860,7 +1924,7 @@ async def _user_detail_screen(
                         await session.write_line(colored(str(exc), fg_color=MUTED_COLOR))
                     else:
                         await session.write_line(f"Public key set for {target.username!r}.")
-            blocked = await _draw_user_detail(session, lane, target)
+            blocked = await _draw_user_detail(session, lane, target, description_level)
         elif choice == "r":
             await session.write_line("")
             action_word = "Unrestrict" if blocked else "Restrict"
@@ -1881,13 +1945,13 @@ async def _user_detail_screen(
                     else:
                         await session.write_line(f"{target.username!r} is now blocked from logging in.")
                         await _revoke_live_sessions(session, node_controls, target, actor)
-            blocked = await _draw_user_detail(session, lane, target)
+            blocked = await _draw_user_detail(session, lane, target, description_level)
         elif choice == "d":
             await session.write_line("")
             deleted = await _delete_user_confirm(session, lane, actor, target, node_controls)
             if deleted:
                 return
-            blocked = await _draw_user_detail(session, lane, target)
+            blocked = await _draw_user_detail(session, lane, target, description_level)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -2778,7 +2842,14 @@ async def _revoke_live_sessions(
 
 
 async def _node_menu(session: Session, lane: DatabaseLane, actor: User, node_controls: NodeControls) -> None:
-    await _draw_node_menu(session, node_controls)
+    # Fetched once, here, and threaded through as a plain parameter --
+    # NOT re-queried inside `_draw_node_menu` on every redraw. An
+    # earlier version of this rollout learned the hard way that an
+    # extra `lane.run` await point on a screen like this one (drain/
+    # shutdown scheduling) can perturb tests relying on precise async
+    # cancellation timing.
+    description_level = await lane.run(menu_description_level, actor)
+    await _draw_node_menu(session, node_controls, description_level)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -2788,23 +2859,23 @@ async def _node_menu(session: Session, lane: DatabaseLane, actor: User, node_con
         elif choice == "w":
             await session.write_line("")
             await _who_screen(session, lane, actor, node_controls)
-            await _draw_node_menu(session, node_controls)
+            await _draw_node_menu(session, node_controls, description_level)
         elif choice == "s":
             await session.write_line("")
             await _shutdown_screen(session, lane, actor, node_controls)
-            await _draw_node_menu(session, node_controls)
+            await _draw_node_menu(session, node_controls, description_level)
         elif choice == "m":
             await session.write_line("")
             await _maintenance_mode_screen(session, lane, actor, node_controls)
-            await _draw_node_menu(session, node_controls)
+            await _draw_node_menu(session, node_controls, description_level)
         elif choice == "d":
             await session.write_line("")
             await _drain_screen(session, lane, actor, node_controls)
-            await _draw_node_menu(session, node_controls)
+            await _draw_node_menu(session, node_controls, description_level)
         elif choice == "l":
             await session.write_line("")
             await _lock_and_drain_screen(session, lane, actor, node_controls)
-            await _draw_node_menu(session, node_controls)
+            await _draw_node_menu(session, node_controls, description_level)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -2817,7 +2888,7 @@ def _shutdown_source_label(source: str | None) -> str:
     return {"sigterm": "SIGTERM", "sigint": "SIGINT"}.get(source or "", source or "signal")
 
 
-async def _draw_node_menu(session: Session, node_controls: NodeControls) -> None:
+async def _draw_node_menu(session: Session, node_controls: NodeControls, description_level: str) -> None:
     """
     Design doc -- node management, Thiesi's own dogfood-testing report:
     a SysOp who toggled `[M]aintenance mode` and then moved on to
@@ -2831,12 +2902,18 @@ async def _draw_node_menu(session: Session, node_controls: NodeControls) -> None
     """
     await session.write_line("\r\n" + screen_title("Node management", width=session.terminal_width))
     await session.write_line(
-        action_bar(
+        _menu_row(
             [
-                menu_key("W", "ho"), menu_key("M", "aintenance mode"), menu_key("D", "rain"),
-                menu_key("L", "ock & drain"), menu_key("S", "hutdown"), menu_key("B", "ack"),
+                MenuEntry(label=menu_key("W", "ho"), brief="See who's currently connected"),
+                MenuEntry(label=menu_key("M", "aintenance mode"), brief="Block new non-SysOp logins"),
+                MenuEntry(label=menu_key("D", "rain"), brief="Disconnect non-SysOps soon"),
+                MenuEntry(label=menu_key("L", "ock & drain"), brief="Maintenance mode, then drain"),
+                MenuEntry(label=menu_key("S", "hutdown"), brief="Schedule a node shutdown"),
+                MenuEntry(label=menu_key("B", "ack"), brief="Return to Operations"),
             ],
+            description_level,
             width=session.terminal_width,
+            height=session.terminal_height,
         )
     )
     status_lines = [
@@ -3329,7 +3406,8 @@ async def _lock_and_drain_screen(session: Session, lane: DatabaseLane, actor: Us
 
 
 async def _welcome_banner_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
-    await _draw_welcome_banner_menu(session, lane)
+    description_level = await lane.run(menu_description_level, actor)
+    await _draw_welcome_banner_menu(session, lane, description_level)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -3339,24 +3417,24 @@ async def _welcome_banner_menu(session: Session, lane: DatabaseLane, actor: User
         elif choice == "p":
             await session.write_line("")
             await _preview_welcome_banner_screen(session, lane)
-            await _draw_welcome_banner_menu(session, lane)
+            await _draw_welcome_banner_menu(session, lane, description_level)
         elif choice == "e":
             await session.write_line("")
             await _enable_welcome_banner_screen(session, lane, actor)
-            await _draw_welcome_banner_menu(session, lane)
+            await _draw_welcome_banner_menu(session, lane, description_level)
         elif choice == "d":
             await session.write_line("")
             await _disable_welcome_banner_screen(session, lane, actor)
-            await _draw_welcome_banner_menu(session, lane)
+            await _draw_welcome_banner_menu(session, lane, description_level)
         elif choice == "x":
             await session.write_line("")
             await _edit_welcome_banner_screen(session, lane, actor)
-            await _draw_welcome_banner_menu(session, lane)
+            await _draw_welcome_banner_menu(session, lane, description_level)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
-async def _draw_welcome_banner_menu(session: Session, lane: DatabaseLane) -> None:
+async def _draw_welcome_banner_menu(session: Session, lane: DatabaseLane, description_level: str) -> None:
     status = await lane.run(welcome_banner_status)
     state = "ENABLED" if status.enabled else "disabled"
     if status.exists:
@@ -3374,15 +3452,17 @@ async def _draw_welcome_banner_menu(session: Session, lane: DatabaseLane) -> Non
     await session.write_line("\r\n" + screen_title("Welcome banner", width=session.terminal_width))
     await session.write_line(detail)
     await session.write_line(
-        action_bar(
+        _menu_row(
             [
-                menu_key("P", "review"),
-                menu_key("E", "nable"),
-                menu_key("D", "isable"),
-                menu_key("X", " edit"),
-                menu_key("B", "ack"),
+                MenuEntry(label=menu_key("P", "review"), brief="Show the banner as callers see it"),
+                MenuEntry(label=menu_key("E", "nable"), brief="Turn the banner on"),
+                MenuEntry(label=menu_key("D", "isable"), brief="Turn the banner off"),
+                MenuEntry(label=menu_key("X", " edit"), brief="Edit the banner text"),
+                MenuEntry(label=menu_key("B", "ack"), brief="Return to Settings"),
             ],
+            description_level,
             width=session.terminal_width,
+            height=session.terminal_height,
         )
     )
     await session.write("Choice: ")
@@ -3500,7 +3580,8 @@ async def _edit_welcome_banner_screen(session: Session, lane: DatabaseLane, acto
 async def _content_menu(
     session: Session, lane: DatabaseLane, actor: User, *, link_context: LinkContext | None = None
 ) -> None:
-    await _draw_content_menu(session)
+    description_level = await lane.run(menu_description_level, actor)
+    await _draw_content_menu(session, description_level)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -3510,52 +3591,54 @@ async def _content_menu(
         elif choice == "m":
             await session.write_line("")
             await _board_menu(session, lane, actor, link_context=link_context)
-            await _draw_content_menu(session)
+            await _draw_content_menu(session, description_level)
         elif choice == "f":
             await session.write_line("")
             await _area_menu(session, lane, actor, link_context=link_context)
-            await _draw_content_menu(session)
+            await _draw_content_menu(session, description_level)
         elif choice == "n":
             await session.write_line("")
             await _channel_menu(session, lane, actor, link_context=link_context)
-            await _draw_content_menu(session)
+            await _draw_content_menu(session, description_level)
         elif choice == "c":
             await session.write_line("")
             await _category_menu(session, lane, actor)
-            await _draw_content_menu(session)
+            await _draw_content_menu(session, description_level)
         elif choice == "o":
             await session.write_line("")
             await _community_menu(session, lane, actor)
-            await _draw_content_menu(session)
+            await _draw_content_menu(session, description_level)
         elif choice == "g":
             await session.write_line("")
             await _grant_moderator_screen(session, lane, actor)
-            await _draw_content_menu(session)
+            await _draw_content_menu(session, description_level)
         elif choice == "r":
             await session.write_line("")
             await _revoke_moderator_screen(session, lane, actor)
-            await _draw_content_menu(session)
+            await _draw_content_menu(session, description_level)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
-async def _draw_content_menu(session: Session) -> None:
+async def _draw_content_menu(session: Session, description_level: str) -> None:
     await session.write_line(
         "\r\n" + screen_title("Manage message boards/file areas/chat channels", width=session.terminal_width)
     )
     await session.write_line(
-        action_bar(
+        _menu_row(
             [
-                menu_key("M", "essage boards"),
-                menu_key("F", "ile areas"),
-                menu_key("n", "nels", prefix="Chat cha"),
-                menu_key("C", "ategories"),
-                menu_key("O", "mmunities", prefix="C"),
-                menu_key("G", "rant moderator"),
-                menu_key("R", "evoke moderator"),
-                menu_key("B", "ack"),
+                MenuEntry(label=menu_key("M", "essage boards"), brief="Create/edit message boards"),
+                MenuEntry(label=menu_key("F", "ile areas"), brief="Create/edit file areas"),
+                MenuEntry(label=menu_key("n", "nels", prefix="Chat cha"), brief="Create/edit chat channels"),
+                MenuEntry(label=menu_key("C", "ategories"), brief="Organize boards/areas/channels"),
+                MenuEntry(label=menu_key("O", "mmunities", prefix="C"), brief="Manage Communities"),
+                MenuEntry(label=menu_key("G", "rant moderator"), brief="Grant a moderation scope"),
+                MenuEntry(label=menu_key("R", "evoke moderator"), brief="Revoke a moderation scope"),
+                MenuEntry(label=menu_key("B", "ack"), brief="Return to the SysOp console"),
             ],
+            description_level,
             width=session.terminal_width,
+            height=session.terminal_height,
         )
     )
     await session.write("Choice: ")
@@ -3887,7 +3970,8 @@ def _community_label(db: Database, community_id: int | None) -> str:
 
 
 async def _community_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
-    await _draw_community_menu(session)
+    description_level = await lane.run(menu_description_level, actor)
+    await _draw_community_menu(session, description_level)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -3897,20 +3981,27 @@ async def _community_menu(session: Session, lane: DatabaseLane, actor: User) -> 
         elif choice == "c":
             await session.write_line("")
             await _community_screen(session, lane, actor)
-            await _draw_community_menu(session)
+            await _draw_community_menu(session, description_level)
         elif choice == "l":
             await session.write_line("")
             await _list_communities_screen(session, lane, actor)
-            await _draw_community_menu(session)
+            await _draw_community_menu(session, description_level)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
-async def _draw_community_menu(session: Session) -> None:
+async def _draw_community_menu(session: Session, description_level: str) -> None:
     await session.write_line("\r\n" + screen_title("Communities", width=session.terminal_width))
     await session.write_line(
-        action_bar(
-            [menu_key("C", "reate"), menu_key("L", "ist"), menu_key("B", "ack")], width=session.terminal_width
+        _menu_row(
+            [
+                MenuEntry(label=menu_key("C", "reate"), brief="Add a new Community"),
+                MenuEntry(label=menu_key("L", "ist"), brief="Browse and edit Communities"),
+                MenuEntry(label=menu_key("B", "ack"), brief="Return to the Content menu"),
+            ],
+            description_level,
+            width=session.terminal_width,
+            height=session.terminal_height,
         )
     )
     await session.write("Choice: ")
@@ -4062,7 +4153,8 @@ def _community_description(community: Community) -> str:
 async def _community_detail_screen(session: Session, lane: DatabaseLane, actor: User, community: Community) -> None:
     """No "pending" equivalent here, unlike boards/areas -- a Community
     holds no content of its own (design doc §16)."""
-    await _draw_community_detail(session, community)
+    description_level = await lane.run(menu_description_level, actor)
+    await _draw_community_detail(session, community, description_level)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -4074,18 +4166,18 @@ async def _community_detail_screen(session: Session, lane: DatabaseLane, actor: 
             updated = await _community_screen(session, lane, actor, existing=community)
             if updated is not None:
                 community = updated
-            await _draw_community_detail(session, community)
+            await _draw_community_detail(session, community, description_level)
         elif choice == "d":
             await session.write_line("")
             deleted = await _delete_community_screen(session, lane, actor, community)
             if deleted:
                 return
-            await _draw_community_detail(session, community)
+            await _draw_community_detail(session, community, description_level)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
-async def _draw_community_detail(session: Session, community: Community) -> None:
+async def _draw_community_detail(session: Session, community: Community, description_level: str) -> None:
     await session.write_line(
         "\r\n" + screen_title(sanitize_text(community.name), width=session.terminal_width)
     )
@@ -4101,8 +4193,15 @@ async def _draw_community_detail(session: Session, community: Community) -> None
         f"{community.default_min_age if community.default_min_age is not None else 'none'}  "
         f"Default name requirement: {community.default_name_requirement or 'none'}"
     )
-    options = action_bar(
-        [menu_key("E", "dit"), menu_key("D", "elete"), menu_key("B", "ack")], width=session.terminal_width
+    options = _menu_row(
+        [
+            MenuEntry(label=menu_key("E", "dit"), brief="Change this Community's settings"),
+            MenuEntry(label=menu_key("D", "elete"), brief="Permanently remove it"),
+            MenuEntry(label=menu_key("B", "ack"), brief="Return to the list"),
+        ],
+        description_level,
+        width=session.terminal_width,
+        height=session.terminal_height,
     )
     await session.write_line(f"\r\n{options}")
     await session.write("Choice: ")
@@ -4146,7 +4245,8 @@ async def _delete_community_screen(session: Session, lane: DatabaseLane, actor: 
 async def _board_menu(
     session: Session, lane: DatabaseLane, actor: User, *, link_context: LinkContext | None = None
 ) -> None:
-    await _draw_board_menu(session)
+    description_level = await lane.run(menu_description_level, actor)
+    await _draw_board_menu(session, description_level)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -4156,20 +4256,27 @@ async def _board_menu(
         elif choice == "c":
             await session.write_line("")
             await _board_screen(session, lane, actor)
-            await _draw_board_menu(session)
+            await _draw_board_menu(session, description_level)
         elif choice == "l":
             await session.write_line("")
             await _list_boards_screen(session, lane, actor, link_context=link_context)
-            await _draw_board_menu(session)
+            await _draw_board_menu(session, description_level)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
-async def _draw_board_menu(session: Session) -> None:
+async def _draw_board_menu(session: Session, description_level: str) -> None:
     await session.write_line("\r\n" + screen_title("Message boards", width=session.terminal_width))
     await session.write_line(
-        action_bar(
-            [menu_key("C", "reate"), menu_key("L", "ist"), menu_key("B", "ack")], width=session.terminal_width
+        _menu_row(
+            [
+                MenuEntry(label=menu_key("C", "reate"), brief="Add a new message board"),
+                MenuEntry(label=menu_key("L", "ist"), brief="Browse and edit boards"),
+                MenuEntry(label=menu_key("B", "ack"), brief="Return to the Content menu"),
+            ],
+            description_level,
+            width=session.terminal_width,
+            height=session.terminal_height,
         )
     )
     await session.write("Choice: ")
@@ -4353,8 +4460,9 @@ async def _board_detail_screen(
     session: Session, lane: DatabaseLane, actor: User, board: Board, *, link_context: LinkContext | None = None
 ) -> None:
     linked = await lane.run(is_board_linked, board) if link_context is not None else False
+    description_level = await lane.run(menu_description_level, actor)
     is_origin, has_incoming_offer, is_closed = await _draw_board_detail(
-        session, lane, board, linked=linked, link_context=link_context
+        session, lane, board, linked=linked, link_context=link_context, description_level=description_level,
     )
     while True:
         choice = (await session.read_key()).lower()
@@ -4368,7 +4476,8 @@ async def _board_detail_screen(
             if updated is not None:
                 board = updated
             is_origin, has_incoming_offer, is_closed = await _draw_board_detail(
-                session, lane, board, linked=linked, link_context=link_context
+                session, lane, board, linked=linked, link_context=link_context,
+                description_level=description_level,
             )
         elif choice == "d":
             await session.write_line("")
@@ -4376,38 +4485,44 @@ async def _board_detail_screen(
             if deleted:
                 return
             is_origin, has_incoming_offer, is_closed = await _draw_board_detail(
-                session, lane, board, linked=linked, link_context=link_context
+                session, lane, board, linked=linked, link_context=link_context,
+                description_level=description_level,
             )
         elif choice == "p":
             await session.write_line("")
             await _pending_posts_screen(session, lane, actor, board, link_context=link_context)
             is_origin, has_incoming_offer, is_closed = await _draw_board_detail(
-                session, lane, board, linked=linked, link_context=link_context
+                session, lane, board, linked=linked, link_context=link_context,
+                description_level=description_level,
             )
         elif choice == "l" and link_context is not None and not linked:
             await session.write_line("")
             await _link_board_screen(session, lane, board, link_context)
             linked = await lane.run(is_board_linked, board)
             is_origin, has_incoming_offer, is_closed = await _draw_board_detail(
-                session, lane, board, linked=linked, link_context=link_context
+                session, lane, board, linked=linked, link_context=link_context,
+                description_level=description_level,
             )
         elif choice == "t" and link_context is not None and linked and is_origin and not is_closed:
             await session.write_line("")
             await _transfer_board_origin_screen(session, lane, board, link_context)
             is_origin, has_incoming_offer, is_closed = await _draw_board_detail(
-                session, lane, board, linked=linked, link_context=link_context
+                session, lane, board, linked=linked, link_context=link_context,
+                description_level=description_level,
             )
         elif choice == "c" and link_context is not None and linked and is_origin and not is_closed:
             await session.write_line("")
             await _close_board_screen(session, lane, board, link_context)
             is_origin, has_incoming_offer, is_closed = await _draw_board_detail(
-                session, lane, board, linked=linked, link_context=link_context
+                session, lane, board, linked=linked, link_context=link_context,
+                description_level=description_level,
             )
         elif choice == "a" and has_incoming_offer:
             await session.write_line("")
             await _accept_board_origin_transfer_screen(session, lane, board, link_context)
             is_origin, has_incoming_offer, is_closed = await _draw_board_detail(
-                session, lane, board, linked=linked, link_context=link_context
+                session, lane, board, linked=linked, link_context=link_context,
+                description_level=description_level,
             )
         else:
             await session.write(reject_unhandled_key(choice))
@@ -4669,6 +4784,7 @@ async def _draw_board_detail(
     *,
     linked: bool = False,
     link_context: LinkContext | None = None,
+    description_level: str = "off",
 ) -> tuple[bool, bool, bool]:
     """
     Returns `(is_origin, has_incoming_offer, is_closed)` (design doc
@@ -4752,19 +4868,26 @@ async def _draw_board_detail(
                             fg_color=MUTED_COLOR,
                         )
                     )
-    options = [menu_key("E", "dit"), menu_key("D", "elete"), menu_key("P", "ending posts")]
+    options = [
+        MenuEntry(label=menu_key("E", "dit"), brief="Change this board's settings"),
+        MenuEntry(label=menu_key("D", "elete"), brief="Permanently remove this board"),
+        MenuEntry(label=menu_key("P", "ending posts"), brief="Review posts awaiting approval"),
+    ]
     if link_context is not None and not linked:
-        options.append(menu_key("L", "ink this message board"))
+        options.append(MenuEntry(label=menu_key("L", "ink this message board"), brief="Share it via NetBBS Link"))
     if (
         link_context is not None and linked and is_origin and not is_closed
         and board.board_id not in link_context.link_node.pending_origin_transfers
     ):
-        options.append(menu_key("T", "ransfer origin"))
-        options.append(menu_key("C", "lose message board"))
+        options.append(MenuEntry(label=menu_key("T", "ransfer origin"), brief="Hand off origin to a peer"))
+        options.append(MenuEntry(label=menu_key("C", "lose message board"), brief="Stop accepting new posts"))
     if has_incoming_offer:
-        options.append(menu_key("A", "ccept transfer"))
-    options.append(menu_key("B", "ack"))
-    await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
+        options.append(MenuEntry(label=menu_key("A", "ccept transfer"), brief="Accept incoming origin transfer"))
+    options.append(MenuEntry(label=menu_key("B", "ack"), brief="Return to the list"))
+    await session.write_line(
+        "\r\n"
+        + _menu_row(options, description_level, width=session.terminal_width, height=session.terminal_height)
+    )
     await session.write("Choice: ")
     return is_origin, has_incoming_offer, is_closed
 
@@ -4805,21 +4928,23 @@ async def _pending_posts_screen(
         await _post_action_screen(session, lane, actor, selected, board, link_context=link_context)
 
 
-async def _draw_post_action(session: Session, post: Post) -> None:
+async def _draw_post_action(session: Session, post: Post, description_level: str) -> None:
     await session.write_line(
         "\r\n" + screen_title(sanitize_text(post.subject), width=session.terminal_width)
     )
     await session.write_line(f"By: {sanitize_text(post.author_label)}")
     await session.write_line(reflow(sanitize_text(post.body, allow_newlines=True), width=session.terminal_width))
-    options = action_bar(
+    options = _menu_row(
         [
-            menu_key("A", "pprove"),
-            menu_key("R", "eject"),
-            menu_key("P", "in toggle"),
-            menu_key("X", "empt toggle"),
-            menu_key("B", "ack"),
+            MenuEntry(label=menu_key("A", "pprove"), brief="Publish this pending post"),
+            MenuEntry(label=menu_key("R", "eject"), brief="Delete this pending post"),
+            MenuEntry(label=menu_key("P", "in toggle"), brief="Toggle showing at the top"),
+            MenuEntry(label=menu_key("X", "empt toggle"), brief="Toggle exempt from auto-purge"),
+            MenuEntry(label=menu_key("B", "ack"), brief="Return to the pending list"),
         ],
+        description_level,
         width=session.terminal_width,
+        height=session.terminal_height,
     )
     await session.write_line(f"\r\n{options}")
     await session.write("Choice: ")
@@ -4834,7 +4959,8 @@ async def _post_action_screen(
     *,
     link_context: LinkContext | None = None,
 ) -> None:
-    await _draw_post_action(session, post)
+    description_level = await lane.run(menu_description_level, actor)
+    await _draw_post_action(session, post, description_level)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -4856,18 +4982,18 @@ async def _post_action_screen(
                 await lane.run(delete_post, post, deleted_by=actor)
             except PostError as exc:
                 await session.write_line(f"Error: {exc}")
-                await _draw_post_action(session, post)
+                await _draw_post_action(session, post, description_level)
                 continue
             await session.write_line("Rejected.")
             return
         elif choice == "p":
             await session.write_line("")
             post = await lane.run(set_post_pinned, post, not post.pinned, changed_by=actor)
-            await _draw_post_action(session, post)
+            await _draw_post_action(session, post, description_level)
         elif choice == "x":
             await session.write_line("")
             post = await lane.run(set_post_exempt, post, not post.exempt_from_expiry, changed_by=actor)
-            await _draw_post_action(session, post)
+            await _draw_post_action(session, post, description_level)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -5154,7 +5280,8 @@ async def _area_detail_screen(
     session: Session, lane: DatabaseLane, actor: User, area: FileArea, *, link_context: LinkContext | None = None
 ) -> None:
     linked = await lane.run(is_area_linked, area) if link_context is not None else False
-    await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context)
+    description_level = await lane.run(menu_description_level, actor)
+    await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context, description_level=description_level)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -5166,22 +5293,22 @@ async def _area_detail_screen(
             updated = await _area_screen(session, lane, actor, existing=area)
             if updated is not None:
                 area = updated
-            await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context)
+            await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context, description_level=description_level)
         elif choice == "d":
             await session.write_line("")
             deleted = await _delete_area_screen(session, lane, actor, area)
             if deleted:
                 return
-            await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context)
+            await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context, description_level=description_level)
         elif choice == "p":
             await session.write_line("")
             await _pending_files_screen(session, lane, actor, area)
-            await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context)
+            await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context, description_level=description_level)
         elif choice == "l" and link_context is not None and not linked:
             await session.write_line("")
             await _link_area_screen(session, lane, area, link_context)
             linked = await lane.run(is_area_linked, area)
-            await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context)
+            await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context, description_level=description_level)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -5193,6 +5320,7 @@ async def _draw_area_detail(
     *,
     linked: bool = False,
     link_context: LinkContext | None = None,
+    description_level: str = "off",
 ) -> None:
     await session.write_line(
         "\r\n" + screen_title(sanitize_text(area.name), width=session.terminal_width)
@@ -5220,11 +5348,18 @@ async def _draw_area_detail(
     )
     if link_context is not None:
         await session.write_line(f"Linked: {'yes' if linked else 'no'}")
-    options = [menu_key("E", "dit"), menu_key("D", "elete"), menu_key("P", "ending files")]
+    options = [
+        MenuEntry(label=menu_key("E", "dit"), brief="Change this area's settings"),
+        MenuEntry(label=menu_key("D", "elete"), brief="Permanently remove this area"),
+        MenuEntry(label=menu_key("P", "ending files"), brief="Review uploads awaiting approval"),
+    ]
     if link_context is not None and not linked:
-        options.append(menu_key("L", "ink this file area"))
-    options.append(menu_key("B", "ack"))
-    await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
+        options.append(MenuEntry(label=menu_key("L", "ink this file area"), brief="Share it via NetBBS Link"))
+    options.append(MenuEntry(label=menu_key("B", "ack"), brief="Return to the list"))
+    await session.write_line(
+        "\r\n"
+        + _menu_row(options, description_level, width=session.terminal_width, height=session.terminal_height)
+    )
     await session.write("Choice: ")
 
 
@@ -5328,7 +5463,7 @@ async def _pending_files_screen(session: Session, lane: DatabaseLane, actor: Use
         await _file_action_screen(session, lane, actor, selected)
 
 
-async def _draw_file_action(session: Session, entry: FileEntry) -> None:
+async def _draw_file_action(session: Session, entry: FileEntry, description_level: str) -> None:
     await session.write_line(
         "\r\n" + screen_title(sanitize_text(entry.filename), width=session.terminal_width)
     )
@@ -5336,22 +5471,25 @@ async def _draw_file_action(session: Session, entry: FileEntry) -> None:
     if entry.description:
         await session.write_line(sanitize_text(entry.description))
     await session.write_line(f"Size: {entry.size_bytes} bytes")
-    options = action_bar(
+    options = _menu_row(
         [
-            menu_key("A", "pprove"),
-            menu_key("R", "eject"),
-            menu_key("P", "in toggle"),
-            menu_key("X", "empt toggle"),
-            menu_key("B", "ack"),
+            MenuEntry(label=menu_key("A", "pprove"), brief="Publish this pending file"),
+            MenuEntry(label=menu_key("R", "eject"), brief="Delete this pending file"),
+            MenuEntry(label=menu_key("P", "in toggle"), brief="Toggle showing at the top"),
+            MenuEntry(label=menu_key("X", "empt toggle"), brief="Toggle exempt from auto-purge"),
+            MenuEntry(label=menu_key("B", "ack"), brief="Return to the pending list"),
         ],
+        description_level,
         width=session.terminal_width,
+        height=session.terminal_height,
     )
     await session.write_line(f"\r\n{options}")
     await session.write("Choice: ")
 
 
 async def _file_action_screen(session: Session, lane: DatabaseLane, actor: User, entry: FileEntry) -> None:
-    await _draw_file_action(session, entry)
+    description_level = await lane.run(menu_description_level, actor)
+    await _draw_file_action(session, entry, description_level)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -5371,11 +5509,11 @@ async def _file_action_screen(session: Session, lane: DatabaseLane, actor: User,
         elif choice == "p":
             await session.write_line("")
             entry = await lane.run(set_file_pinned, entry, not entry.pinned, changed_by=actor)
-            await _draw_file_action(session, entry)
+            await _draw_file_action(session, entry, description_level)
         elif choice == "x":
             await session.write_line("")
             entry = await lane.run(set_file_exempt, entry, not entry.exempt_from_expiry, changed_by=actor)
-            await _draw_file_action(session, entry)
+            await _draw_file_action(session, entry, description_level)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -5397,7 +5535,8 @@ async def _file_action_screen(session: Session, lane: DatabaseLane, actor: User,
 async def _channel_menu(
     session: Session, lane: DatabaseLane, actor: User, *, link_context: LinkContext | None = None
 ) -> None:
-    await _draw_channel_menu(session)
+    description_level = await lane.run(menu_description_level, actor)
+    await _draw_channel_menu(session, description_level)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -5407,20 +5546,27 @@ async def _channel_menu(
         elif choice == "c":
             await session.write_line("")
             await _channel_screen(session, lane, actor)
-            await _draw_channel_menu(session)
+            await _draw_channel_menu(session, description_level)
         elif choice == "l":
             await session.write_line("")
             await _list_channels_screen(session, lane, actor, link_context=link_context)
-            await _draw_channel_menu(session)
+            await _draw_channel_menu(session, description_level)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
-async def _draw_channel_menu(session: Session) -> None:
+async def _draw_channel_menu(session: Session, description_level: str) -> None:
     await session.write_line("\r\n" + screen_title("Chat channels", width=session.terminal_width))
     await session.write_line(
-        action_bar(
-            [menu_key("C", "reate"), menu_key("L", "ist"), menu_key("B", "ack")], width=session.terminal_width
+        _menu_row(
+            [
+                MenuEntry(label=menu_key("C", "reate"), brief="Add a new chat channel"),
+                MenuEntry(label=menu_key("L", "ist"), brief="Browse and edit channels"),
+                MenuEntry(label=menu_key("B", "ack"), brief="Return to the Content menu"),
+            ],
+            description_level,
+            width=session.terminal_width,
+            height=session.terminal_height,
         )
     )
     await session.write("Choice: ")
@@ -5599,7 +5745,8 @@ async def _channel_detail_screen(
     session: Session, lane: DatabaseLane, actor: User, channel: Channel, *, link_context: LinkContext | None = None
 ) -> None:
     linked = await lane.run(is_channel_linked, channel) if link_context is not None else False
-    await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context)
+    description_level = await lane.run(menu_description_level, actor)
+    await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context, description_level=description_level)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -5611,22 +5758,22 @@ async def _channel_detail_screen(
             updated = await _channel_screen(session, lane, actor, existing=channel)
             if updated is not None:
                 channel = updated
-            await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context)
+            await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context, description_level=description_level)
         elif choice == "d":
             await session.write_line("")
             deleted = await _delete_channel_screen(session, lane, actor, channel)
             if deleted:
                 return
-            await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context)
+            await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context, description_level=description_level)
         elif choice == "r":
             await session.write_line("")
             await _channel_restrictions_screen(session, lane, actor, channel)
-            await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context)
+            await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context, description_level=description_level)
         elif choice == "l" and link_context is not None and not linked:
             await session.write_line("")
             await _link_channel_screen(session, lane, channel, link_context)
             linked = await lane.run(is_channel_linked, channel)
-            await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context)
+            await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context, description_level=description_level)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -5638,6 +5785,7 @@ async def _draw_channel_detail(
     *,
     linked: bool = False,
     link_context: LinkContext | None = None,
+    description_level: str = "off",
 ) -> None:
     await session.write_line(
         "\r\n" + screen_title(sanitize_text(channel.name), width=session.terminal_width)
@@ -5660,11 +5808,18 @@ async def _draw_channel_detail(
     )
     if link_context is not None:
         await session.write_line(f"Linked: {'yes' if linked else 'no'}")
-    options = [menu_key("E", "dit"), menu_key("D", "elete"), menu_key("R", "estrictions")]
+    options = [
+        MenuEntry(label=menu_key("E", "dit"), brief="Change this channel's settings"),
+        MenuEntry(label=menu_key("D", "elete"), brief="Permanently remove this channel"),
+        MenuEntry(label=menu_key("R", "estrictions"), brief="Active mutes and bans"),
+    ]
     if link_context is not None and not linked:
-        options.append(menu_key("L", "ink this chat channel"))
-    options.append(menu_key("B", "ack"))
-    await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
+        options.append(MenuEntry(label=menu_key("L", "ink this chat channel"), brief="Share it via NetBBS Link"))
+    options.append(MenuEntry(label=menu_key("B", "ack"), brief="Return to the list"))
+    await session.write_line(
+        "\r\n"
+        + _menu_row(options, description_level, width=session.terminal_width, height=session.terminal_height)
+    )
     await session.write("Choice: ")
 
 
@@ -5818,7 +5973,8 @@ async def _delete_channel_screen(session: Session, lane: DatabaseLane, actor: Us
 
 
 async def _category_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
-    await _draw_category_menu(session)
+    description_level = await lane.run(menu_description_level, actor)
+    await _draw_category_menu(session, description_level)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -5833,7 +5989,7 @@ async def _category_menu(session: Session, lane: DatabaseLane, actor: User) -> N
                 list_subcategories=list_board_subcategories, delete=delete_board_category,
                 error_type=CategoryError, title="Message board categories",
             )
-            await _draw_category_menu(session)
+            await _draw_category_menu(session, description_level)
         elif choice == "f":
             await session.write_line("")
             await _generic_category_screen(
@@ -5842,7 +5998,7 @@ async def _category_menu(session: Session, lane: DatabaseLane, actor: User) -> N
                 list_subcategories=list_file_subcategories, delete=delete_file_category,
                 error_type=FileCategoryError, title="File-area categories",
             )
-            await _draw_category_menu(session)
+            await _draw_category_menu(session, description_level)
         elif choice == "c":
             await session.write_line("")
             await _generic_category_screen(
@@ -5851,22 +6007,24 @@ async def _category_menu(session: Session, lane: DatabaseLane, actor: User) -> N
                 list_subcategories=list_channel_subcategories, delete=delete_channel_category,
                 error_type=ChannelCategoryError, title="Chat channel categories",
             )
-            await _draw_category_menu(session)
+            await _draw_category_menu(session, description_level)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
-async def _draw_category_menu(session: Session) -> None:
+async def _draw_category_menu(session: Session, description_level: str) -> None:
     await session.write_line("\r\n" + screen_title("Categories", width=session.terminal_width))
     await session.write_line(
-        action_bar(
+        _menu_row(
             [
-                menu_key("M", "essage board category"),
-                menu_key("F", "ile-area category"),
-                menu_key("C", "hat channel category"),
-                menu_key("B", "ack"),
+                MenuEntry(label=menu_key("M", "essage board category"), brief="Organize message boards"),
+                MenuEntry(label=menu_key("F", "ile-area category"), brief="Organize file areas"),
+                MenuEntry(label=menu_key("C", "hat channel category"), brief="Organize chat channels"),
+                MenuEntry(label=menu_key("B", "ack"), brief="Return to the Content menu"),
             ],
+            description_level,
             width=session.terminal_width,
+            height=session.terminal_height,
         )
     )
     await session.write("Choice: ")
@@ -5876,7 +6034,8 @@ async def _generic_category_screen(
     session: Session, lane: DatabaseLane, actor: User, *, create, list_top_level, list_subcategories, delete,
     error_type, title: str,
 ) -> None:
-    await _draw_generic_category_menu(session, title)
+    description_level = await lane.run(menu_description_level, actor)
+    await _draw_generic_category_menu(session, title, description_level)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -5888,24 +6047,30 @@ async def _generic_category_screen(
             await _create_category_screen(
                 session, lane, actor, create=create, list_top_level=list_top_level, error_type=error_type,
             )
-            await _draw_generic_category_menu(session, title)
+            await _draw_generic_category_menu(session, title, description_level)
         elif choice == "l":
             await session.write_line("")
             await _list_categories_screen(
                 session, lane, actor, list_top_level=list_top_level,
                 list_subcategories=list_subcategories, delete=delete,
             )
-            await _draw_generic_category_menu(session, title)
+            await _draw_generic_category_menu(session, title, description_level)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
-async def _draw_generic_category_menu(session: Session, title: str) -> None:
+async def _draw_generic_category_menu(session: Session, title: str, description_level: str) -> None:
     await session.write_line("\r\n" + screen_title(title, width=session.terminal_width))
     await session.write_line(
-        action_bar(
-            [menu_key("C", "reate"), menu_key("L", "ist/delete"), menu_key("B", "ack")],
+        _menu_row(
+            [
+                MenuEntry(label=menu_key("C", "reate"), brief="Add a new category"),
+                MenuEntry(label=menu_key("L", "ist/delete"), brief="Browse and remove categories"),
+                MenuEntry(label=menu_key("B", "ack"), brief="Return to Categories"),
+            ],
+            description_level,
             width=session.terminal_width,
+            height=session.terminal_height,
         )
     )
     await session.write("Choice: ")
