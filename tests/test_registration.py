@@ -276,11 +276,6 @@ def test_registration_rejects_mismatched_passwords(db):
     asyncio.run(_run_login(session, db, _throttle_config(max_attempts_per_connection=2)))
 
     assert "did not match" in session.output
-    # Dogfood report, issue #156: a mismatch drops back to the normal
-    # login prompt, not another signup attempt -- this must be said
-    # explicitly, not left for the caller to infer from suddenly seeing
-    # "Username:" again.
-    assert "Returning you to the login prompt" in session.output
     with pytest.raises(AuthError):
         get_user_by_username(db, "alice")
 
@@ -314,6 +309,83 @@ def test_registration_refuses_a_username_already_taken(db):
     asyncio.run(_run_login(session, db, _throttle_config(max_attempts_per_connection=2)))
 
     assert "already in use" in session.output
+
+
+# -- dogfood follow-up to issue #156: retry signup in place instead of --
+# -- dropping straight back to login on the first fixable mistake -------
+
+
+def test_registration_shows_an_attempt_counter_from_the_first_screen(db):
+    session = FakeSession(["new", "", ""])
+
+    asyncio.run(_run_login(session, db, _throttle_config(max_attempts_per_connection=1)))
+
+    assert f"Attempt 1 of {login_flow._REGISTRATION_MAX_ATTEMPTS}" in session.output
+
+
+def test_registration_retries_in_place_after_a_too_short_password_and_can_still_succeed(db):
+    # Attempt 1: too-short password. Attempt 2: succeeds outright.
+    session = FakeSession(
+        ["new", "alice", "short", "short", "alice", "hunter2pw", "hunter2pw", "y"], keys=["l"],
+    )
+
+    asyncio.run(_run_login(session, db))
+
+    assert f"at least {MIN_REGISTRATION_PASSWORD_LENGTH} characters" in session.output
+    assert "Let's try again" in session.output
+    assert f"Attempt 2 of {login_flow._REGISTRATION_MAX_ATTEMPTS}" in session.output
+    assert "Welcome, alice" in session.output
+    assert get_user_by_username(db, "alice").pending_approval is False
+
+
+def test_registration_retries_in_place_after_a_username_already_taken(db):
+    create_user(db, "bob", password="hunter2")
+    # Attempt 1: "bob" is taken. Attempt 2: "alice" succeeds.
+    session = FakeSession(
+        ["new", "bob", "hunter2pw", "hunter2pw", "alice", "hunter2pw", "hunter2pw", "y"], keys=["l"],
+    )
+
+    asyncio.run(_run_login(session, db))
+
+    assert "already in use" in session.output
+    assert "Let's try again" in session.output
+    assert "Welcome, alice" in session.output
+
+
+def test_registration_exhausts_all_attempts_then_returns_to_the_normal_login_prompt(db):
+    max_attempts = login_flow._REGISTRATION_MAX_ATTEMPTS
+    # Every attempt mismatches -- exhausts all `max_attempts` signup
+    # tries, then _login's own outer attempt is spent too, so this
+    # connection is left with none and closes.
+    lines = ["new"]
+    for _ in range(max_attempts):
+        lines += ["alice", "hunter2pw", "different-pw"]
+    session = FakeSession(lines)
+
+    asyncio.run(_run_login(session, db, _throttle_config(max_attempts_per_connection=1)))
+
+    assert session.output.count("did not match") == max_attempts
+    # "Let's try again" only precedes a retry -- shown after attempts 1
+    # and 2, not after the final (3rd) failure, which instead gets the
+    # issue #156 "returning to login" wording exactly once.
+    assert session.output.count("Let's try again") == max_attempts - 1
+    assert session.output.count("Returning you to the login prompt") == 1
+    with pytest.raises(AuthError):
+        get_user_by_username(db, "alice")
+
+
+def test_registration_blank_username_cancels_immediately_even_mid_retry_sequence(db):
+    # Attempt 1 fails (too short); the caller then abandons signup with a
+    # blank username on attempt 2 rather than continuing to attempt 3 --
+    # a blank username is an explicit cancel regardless of which attempt
+    # this is, not a fourth fixable mistake to keep retrying.
+    session = FakeSession(["new", "alice", "short", "short", "", "", ""])
+
+    asyncio.run(_run_login(session, db, _throttle_config(max_attempts_per_connection=2)))
+
+    assert f"Attempt 3 of {login_flow._REGISTRATION_MAX_ATTEMPTS}" not in session.output
+    with pytest.raises(AuthError):
+        get_user_by_username(db, "alice")
 
 
 def test_registration_is_throttled_by_the_shared_login_throttle(db):

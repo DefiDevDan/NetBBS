@@ -1783,6 +1783,31 @@ async def _login(
     return LoginOutcome.ATTEMPTS_EXHAUSTED
 
 
+# A caller reaches signup only by deliberately typing the three-character
+# `new` sentinel -- see `_register_new_account`'s own docstring -- so a
+# fixable validation mistake gets this many tries in place before falling
+# back to the ordinary login prompt.
+_REGISTRATION_MAX_ATTEMPTS = 3
+
+
+async def _offer_signup_retry(session: Session, attempt: int, max_attempts: int) -> bool:
+    """After a fixable signup validation failure, either announce another
+    attempt is starting (returns `True`, caller should loop) or, once
+    `max_attempts` is reached, send the caller back to the ordinary login
+    prompt with the same explicit "how to get back here" wording issue
+    #156 established (returns `False`, caller should stop)."""
+    if attempt < max_attempts:
+        await session.write_line(colored("Let's try again.", fg_color=MUTED_COLOR))
+        return True
+    await session.write_line(
+        colored(
+            "Returning you to the login prompt -- type 'new' again to retry signing up.",
+            fg_color=MUTED_COLOR,
+        )
+    )
+    return False
+
+
 async def _register_new_account(
     session: Session,
     db: Database,
@@ -1818,93 +1843,110 @@ async def _register_new_account(
     own docstring already explains, so self-registration never offers a
     keypair option here (an account can still gain one later via the
     admin screen, if a SysOp adds it by hand).
+
+    Retries in place, up to `_REGISTRATION_MAX_ATTEMPTS` times, on any of
+    the three *fixable* validation failures (password too short,
+    passwords didn't match, or the desired username is already taken) --
+    dogfood follow-up to issue #156, which only fixed the message wording
+    for a failure that used to always drop straight back to the login
+    prompt. Typing the `new` sentinel at the login prompt is a
+    deliberate, three-keystroke choice, not something a caller falls
+    into by accident -- a mistyped password or a username someone else
+    already has doesn't change that intent, so restarting this whole
+    username/password/confirm mini-workflow in place is the right
+    response, not ejecting them back to Username: on the first typo. A
+    blank username (an explicit cancel) or an idle timeout (the caller
+    left) still exit immediately regardless of which attempt this is --
+    neither is a "fixable mistake" to retry.
     """
-    await session.write_line(
-        "\r\n"
-        + screen_title(
-            "Create account",
-            breadcrumb=(),
-            subtitle="Choose your credentials. A blank username cancels.",
-            width=session.terminal_width,
+    for attempt in range(1, _REGISTRATION_MAX_ATTEMPTS + 1):
+        await session.write_line(
+            "\r\n"
+            + screen_title(
+                "Create account",
+                breadcrumb=(),
+                subtitle=(
+                    "Choose your credentials. A blank username cancels. "
+                    f"(Attempt {attempt} of {_REGISTRATION_MAX_ATTEMPTS})"
+                ),
+                width=session.terminal_width,
+            )
         )
-    )
-    try:
-        await session.write(colored("Desired username: ", fg_color=LABEL_COLOR, bold=True))
-        username = (await asyncio.wait_for(session.read_line(), timeout=idle_timeout)).strip()
-        if not username:
+        try:
+            await session.write(colored("Desired username: ", fg_color=LABEL_COLOR, bold=True))
+            username = (await asyncio.wait_for(session.read_line(), timeout=idle_timeout)).strip()
+            if not username:
+                return None
+
+            await session.write(
+                colored(
+                    f"Password (min {MIN_REGISTRATION_PASSWORD_LENGTH} characters): ",
+                    fg_color=LABEL_COLOR,
+                    bold=True,
+                )
+            )
+            password = await asyncio.wait_for(session.read_line(echo=False), timeout=idle_timeout)
+            await session.write(colored("Confirm password: ", fg_color=LABEL_COLOR, bold=True))
+            confirm = await asyncio.wait_for(session.read_line(echo=False), timeout=idle_timeout)
+        except asyncio.TimeoutError:
             return None
 
-        await session.write(
-            colored(
-                f"Password (min {MIN_REGISTRATION_PASSWORD_LENGTH} characters): ",
-                fg_color=LABEL_COLOR,
-                bold=True,
+        if len(password) < MIN_REGISTRATION_PASSWORD_LENGTH:
+            await session.write_line(
+                colored(
+                    f"Password must be at least {MIN_REGISTRATION_PASSWORD_LENGTH} characters.",
+                    fg_color=ERROR_COLOR,
+                )
             )
-        )
-        password = await asyncio.wait_for(session.read_line(echo=False), timeout=idle_timeout)
-        await session.write(colored("Confirm password: ", fg_color=LABEL_COLOR, bold=True))
-        confirm = await asyncio.wait_for(session.read_line(echo=False), timeout=idle_timeout)
-    except asyncio.TimeoutError:
-        return None
+            if not await _offer_signup_retry(session, attempt, _REGISTRATION_MAX_ATTEMPTS):
+                return None
+            continue
+        if password != confirm:
+            await session.write_line(colored("Passwords did not match.", fg_color=ERROR_COLOR))
+            if not await _offer_signup_retry(session, attempt, _REGISTRATION_MAX_ATTEMPTS):
+                return None
+            continue
 
-    if len(password) < MIN_REGISTRATION_PASSWORD_LENGTH:
-        await session.write_line(
-            colored(
-                f"Password must be at least {MIN_REGISTRATION_PASSWORD_LENGTH} characters.",
-                fg_color=ERROR_COLOR,
+        # Same node-wide budget _login's own password attempts consume
+        # (issue #3) -- keyed by the *desired* username rather than an
+        # authenticating one, but the same per-source/per-username/global
+        # token buckets, checked before the expensive Argon2 hash below runs
+        # (create_user_async), for the identical reason _login checks it
+        # before authenticate_password_async. Not one of the fixable
+        # checks above: retrying *immediately* against a throttle that
+        # just rejected this source/username wouldn't help, so this
+        # drops straight back to login rather than consuming another of
+        # this signup's own three attempts.
+        if not throttle.allow_attempt(source=session.peer_address, username=username):
+            await session.write_line(
+                colored("Too many registration attempts. Please try again later.", fg_color=ERROR_COLOR)
             )
-        )
-        return None
-    if password != confirm:
-        await session.write_line(colored("Passwords did not match.", fg_color=ERROR_COLOR))
-        # Dogfood report, issue #156: `None` here means "back to the
-        # normal login prompt" (see this function's own docstring), not
-        # "try signup again" -- a new caller reasonably assumed the
-        # latter and was confused to land at Username: instead. Said
-        # explicitly, matching the login prompt's own "Type 'new'"
-        # wording so the way back is obvious, not just the fact that
-        # they left signup.
-        await session.write_line(
-            colored(
-                "Returning you to the login prompt -- type 'new' again to retry signing up.",
-                fg_color=MUTED_COLOR,
+            return None
+
+        require_approval = registration_mode == RegistrationMode.APPROVAL_REQUIRED
+        try:
+            new_user = await create_user_async(db, username, password=password, pending_approval=require_approval)
+        except AuthError as exc:
+            await session.write_line(colored(f"Could not create account: {exc}", fg_color=ERROR_COLOR))
+            if not await _offer_signup_retry(session, attempt, _REGISTRATION_MAX_ATTEMPTS):
+                return None
+            continue
+
+        if require_approval:
+            await session.write_line(
+                colored(
+                    f"Account {new_user.username!r} created. A SysOp must approve it before you can log in.",
+                    fg_color=WARNING_COLOR,
+                    bold=True,
+                )
             )
-        )
-        return None
+            return None
 
-    # Same node-wide budget _login's own password attempts consume
-    # (issue #3) -- keyed by the *desired* username rather than an
-    # authenticating one, but the same per-source/per-username/global
-    # token buckets, checked before the expensive Argon2 hash below runs
-    # (create_user_async), for the identical reason _login checks it
-    # before authenticate_password_async.
-    if not throttle.allow_attempt(source=session.peer_address, username=username):
         await session.write_line(
-            colored("Too many registration attempts. Please try again later.", fg_color=ERROR_COLOR)
+            colored(f"Account {new_user.username!r} created.", fg_color=SUCCESS_COLOR, bold=True)
         )
-        return None
-
-    require_approval = registration_mode == RegistrationMode.APPROVAL_REQUIRED
-    try:
-        new_user = await create_user_async(db, username, password=password, pending_approval=require_approval)
-    except AuthError as exc:
-        await session.write_line(colored(f"Could not create account: {exc}", fg_color=ERROR_COLOR))
-        return None
-
-    if require_approval:
-        await session.write_line(
-            colored(
-                f"Account {new_user.username!r} created. A SysOp must approve it before you can log in.",
-                fg_color=WARNING_COLOR,
-                bold=True,
-            )
-        )
-        return None
-
-    await session.write_line(
-        colored(f"Account {new_user.username!r} created.", fg_color=SUCCESS_COLOR, bold=True)
-    )
-    return new_user
+        return new_user
+    return None  # unreachable: the loop's last iteration always returns via _offer_signup_retry
 
 
 # -- Communities navigation (design doc §16) ------------
