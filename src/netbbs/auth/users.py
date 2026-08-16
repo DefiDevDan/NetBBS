@@ -717,6 +717,39 @@ def approve_pending_user(db: Database, target: User, *, approved_by: User) -> Us
     return _get_user_by_id(db, target.id)
 
 
+def set_verify_key(db: Database, target: User, verify_key: nacl.signing.VerifyKey, *, changed_by: User) -> User:
+    """
+    Attach or replace `target`'s public key after account creation.
+
+    Dogfood follow-up: `_create_user_screen`'s own `_prompt_optional_pubkey`
+    (`netbbs.net.admin_flow`) could only ever set this at the moment a
+    SysOp manually created a brand-new account -- the overwhelming
+    majority of accounts self-register with a password and had no route
+    at all to later gain key-based SSH login short of a SysOp deleting
+    and recreating the whole account.
+    """
+    from netbbs.moderation.log import record_action
+
+    public_key_b64 = base64.b64encode(bytes(verify_key)).decode("ascii")
+    fingerprint = fingerprint_from_verify_key(verify_key)
+    try:
+        db.connection.execute(
+            "UPDATE users SET public_key = ?, fingerprint = ? WHERE id = ?",
+            (public_key_b64, fingerprint, target.id),
+        )
+        db.connection.commit()
+    except sqlite3.IntegrityError as exc:
+        db.connection.rollback()
+        raise AuthError(
+            f"could not set a public key for {target.username!r} — that key is already in use"
+        ) from exc
+    record_action(
+        db, actor=changed_by, action="set_verify_key", target_user_id=target.id,
+        detail=f"fingerprint={fingerprint}",
+    )
+    return _get_user_by_id(db, target.id)
+
+
 def set_can_verify_identity(db: Database, target: User, can_verify: bool, *, changed_by: User) -> User:
     """
     Grant or revoke `target`'s identity-verification permission (design

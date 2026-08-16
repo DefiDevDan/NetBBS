@@ -13,6 +13,7 @@ from netbbs.auth.users import (
     create_user,
     generate_challenge,
     get_user_by_username,
+    set_verify_key,
 )
 from netbbs.storage.database import Database
 
@@ -282,3 +283,50 @@ def test_authorize_public_key_updates_last_login_at(db):
 
     after = authorize_public_key(db, "thiesi", signing_key.verify_key)
     assert after.last_login_at is not None
+
+
+# -- attaching a key to an existing account (dogfood: SSH surface) ---------
+
+
+def test_set_verify_key_lets_a_password_only_account_then_log_in_with_it(db):
+    # Dogfood follow-up: a self-registered (password-only) account had no
+    # way to ever gain key-based SSH login short of a SysOp deleting and
+    # recreating it. set_verify_key closes that gap -- prove the key
+    # actually becomes usable for login, not just that it's stored.
+    sysop = create_user(db, "sysop", password="hunter2", user_level=255)
+    thiesi = create_user(db, "thiesi", password="hunter2")
+    assert thiesi.fingerprint is None
+    signing_key = nacl.signing.SigningKey.generate()
+
+    updated = set_verify_key(db, thiesi, signing_key.verify_key, changed_by=sysop)
+    assert updated.fingerprint is not None
+
+    user = authorize_public_key(db, "thiesi", signing_key.verify_key)
+    assert user.username == "thiesi"
+
+
+def test_set_verify_key_replaces_an_existing_key(db):
+    sysop = create_user(db, "sysop", password="hunter2", user_level=255)
+    old_key = nacl.signing.SigningKey.generate()
+    thiesi = create_user(db, "thiesi", verify_key=old_key.verify_key)
+    new_key = nacl.signing.SigningKey.generate()
+
+    set_verify_key(db, thiesi, new_key.verify_key, changed_by=sysop)
+
+    with pytest.raises(AuthError):
+        authorize_public_key(db, "thiesi", old_key.verify_key)
+    user = authorize_public_key(db, "thiesi", new_key.verify_key)
+    assert user.username == "thiesi"
+
+
+def test_set_verify_key_refuses_a_key_already_used_by_another_account(db):
+    sysop = create_user(db, "sysop", password="hunter2", user_level=255)
+    shared_key = nacl.signing.SigningKey.generate()
+    create_user(db, "bob", verify_key=shared_key.verify_key)
+    thiesi = create_user(db, "thiesi", password="hunter2")
+
+    with pytest.raises(AuthError):
+        set_verify_key(db, thiesi, shared_key.verify_key, changed_by=sysop)
+
+    # Refused cleanly -- thiesi's own row is untouched, not left half-updated.
+    assert get_user_by_username(db, "thiesi").fingerprint is None

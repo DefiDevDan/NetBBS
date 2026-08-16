@@ -266,10 +266,33 @@ class _NetBBSSSHServer(asyncssh.SSHServer):
         # same connection, defeating the "one attempt, then reconnect"
         # design this class's own docstring above describes.
         self._registration_attempted = False
+        self._conn: asyncssh.SSHServerConnection | None = None
 
     def connection_made(self, conn: asyncssh.SSHServerConnection) -> None:
         peer = conn.get_extra_info("peername")
         self._peer_address = peer[0] if peer else None
+        self._conn = conn
+
+    def begin_auth(self, username: str) -> bool:
+        # Dogfood follow-up: unlike Telnet/web (`netbbs.net.login_flow.
+        # handle_session` prints `load_welcome_banner` before ever
+        # prompting for credentials), SSH authenticates at the protocol
+        # layer with no interactive screen of its own -- a client
+        # connecting to an unfamiliar server saw a bare "Permission
+        # denied" and nothing else, with no hint that this is a NetBBS
+        # node or that `ssh new@host` self-registers. asyncssh's
+        # `send_auth_banner` (called from here, its own documented hook
+        # for this) is the only channel available before auth completes.
+        # Fires once per distinct username on this connection (asyncssh's
+        # own userauth-request handling only calls this the first time a
+        # given username is seen), so a client retrying the same failed
+        # username doesn't see it again mid-connection.
+        assert self._conn is not None  # connection_made always runs first
+        lines = ["NetBBS"]
+        if get_registration_mode(self._db) != RegistrationMode.CLOSED:
+            lines.append(f"New here? Connect as {NEW_ACCOUNT_SENTINEL!r} to register.")
+        self._conn.send_auth_banner("\r\n".join(lines) + "\r\n")
+        return True
 
     def password_auth_supported(self) -> bool:
         return True

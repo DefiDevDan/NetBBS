@@ -770,6 +770,40 @@ def test_restrict_login_declining_confirmation_leaves_status_unchanged(db, lane,
     assert is_blocked(db, alice) is False
 
 
+# -- public key -------------------------------------------------------------
+
+
+def test_admin_can_attach_a_public_key_to_an_existing_password_account(db, lane, sysop):
+    # Dogfood follow-up: a self-registered (password-only) account had no
+    # way to ever gain key-based login short of a SysOp deleting and
+    # recreating it. [K]ey on the user detail screen closes that gap.
+    alice = create_user(db, "alice", password="hunter2", user_level=10)
+    assert alice.fingerprint is None
+    verify_key = nacl.signing.SigningKey.generate().verify_key
+    raw_b64 = base64.b64encode(bytes(verify_key)).decode()
+
+    session = FakeSession(["u", "e", "0", "1", "k", raw_b64, "b", "b", "b"])
+    _run(session, lane, sysop)
+
+    updated = next(u for u in list_users(db) if u.username == "alice")
+    assert updated.fingerprint is not None
+    assert "Public key set for 'alice'" in _written_text(session)
+
+
+def test_attaching_a_duplicate_public_key_is_refused(db, lane, sysop):
+    verify_key = nacl.signing.SigningKey.generate().verify_key
+    raw_b64 = base64.b64encode(bytes(verify_key)).decode()
+    create_user(db, "bob", verify_key=verify_key, user_level=10)
+    alice = create_user(db, "alice", password="hunter2", user_level=10)
+
+    session = FakeSession(["u", "e", "0", "1", "k", raw_b64, "b", "b", "b"])
+    _run(session, lane, sysop)
+
+    updated = next(u for u in list_users(db) if u.username == "alice")
+    assert updated.fingerprint is None
+    assert "already in use" in _written_text(session)
+
+
 # -- delete -----------------------------------------------------------------
 
 

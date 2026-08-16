@@ -364,6 +364,86 @@ def test_password_auth_rejected_for_keypair_only_user(db):
     asyncio.run(scenario())
 
 
+# -- pre-auth banner --------------------------------------------------------
+
+
+class _BannerCapturingClient(asyncssh.SSHClient):
+    """A minimal `SSHClient` whose only purpose is to capture whatever
+    pre-auth banner the server sends -- the standard SSH auth flow gives
+    a client no other hook to observe it."""
+
+    def __init__(self):
+        self.banners: list[str] = []
+
+    def auth_banner_received(self, msg: str, lang: str) -> None:
+        self.banners.append(msg)
+
+
+def test_ssh_sends_a_netbbs_branded_pre_auth_banner(db):
+    # Dogfood follow-up: unlike Telnet/web (whose login prompt already
+    # shows `load_welcome_banner` before asking for credentials), SSH
+    # authenticates at the protocol layer with no interactive screen at
+    # all -- a first-time visitor previously saw a bare "Permission
+    # denied" with zero NetBBS branding and no hint that `ssh new@host`
+    # self-registers.
+    create_user(db, "alice", password="hunter2", user_level=10)
+    client = _BannerCapturingClient()
+
+    async def handler(session: Session):
+        pass
+
+    async def scenario():
+        server = await _run_server(db, handler)
+        try:
+            async with asyncssh.connect(
+                "127.0.0.1",
+                server.port,
+                username="alice",
+                password="hunter2",
+                known_hosts=None,
+                client_factory=lambda: client,
+            ):
+                pass
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    banner = "\n".join(client.banners)
+    assert "NetBBS" in banner
+    assert "'new'" in banner
+
+
+def test_ssh_pre_auth_banner_omits_the_registration_hint_when_registration_is_closed(db):
+    from netbbs.config import RegistrationMode, set_registration_mode
+
+    set_registration_mode(db, RegistrationMode.CLOSED)
+    create_user(db, "alice", password="hunter2", user_level=10)
+    client = _BannerCapturingClient()
+
+    async def handler(session: Session):
+        pass
+
+    async def scenario():
+        server = await _run_server(db, handler)
+        try:
+            async with asyncssh.connect(
+                "127.0.0.1",
+                server.port,
+                username="alice",
+                password="hunter2",
+                known_hosts=None,
+                client_factory=lambda: client,
+            ):
+                pass
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    banner = "\n".join(client.banners)
+    assert "NetBBS" in banner
+    assert "'new'" not in banner
+
+
 # -- GitHub issue #25: no second login prompt over SSH ----------------------
 
 

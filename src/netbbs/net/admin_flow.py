@@ -69,6 +69,7 @@ from netbbs.auth.users import (
     set_can_verify_identity,
     set_user_disabled,
     set_user_level,
+    set_verify_key,
 )
 from netbbs.backup import get_last_backup_summary
 from netbbs.boards.boards import Board, BoardError, create_board, delete_board, list_boards, update_board
@@ -1638,6 +1639,9 @@ async def _draw_user_detail(session: Session, lane: DatabaseLane, target: User) 
     await session.write_line(
         f"Can verify identity (age/name attestation): {'yes' if target.can_verify_identity else 'no'}"
     )
+    await session.write_line(
+        f"Public key (SSH/Link login): {target.fingerprint if target.fingerprint else '(none)'}"
+    )
     # Dogfood follow-up (`netbbs.moderation.blocklist`): the local
     # blocklist enforcement path was real and already wired into login
     # (`netbbs.net.login_flow`'s own distinct "Your access to this
@@ -1687,6 +1691,7 @@ async def _draw_user_detail(session: Session, lane: DatabaseLane, target: User) 
     options.append(menu_key("L", "evel"))
     options.append(menu_key("T", "oggle enable/disabled"))
     options.append(menu_key("I", "dentity verification"))
+    options.append(menu_key("K", "ey"))
     options.append(menu_key("R", "estrict login"))
     options.append(menu_key("D", "elete"))
     options.append(menu_key("B", "ack"))
@@ -1767,6 +1772,24 @@ async def _user_detail_screen(
                     f"{target.username!r} can now verify identity: "
                     f"{'yes' if target.can_verify_identity else 'no'}."
                 )
+            blocked = await _draw_user_detail(session, lane, target)
+        elif choice == "k":
+            await session.write_line("")
+            verb = "Replace" if target.fingerprint else "Add"
+            await session.write(f"{verb} public key (base64, or an ssh-ed25519 line, blank to cancel): ")
+            text = (await session.read_line()).strip()
+            if text:
+                try:
+                    verify_key = parse_verify_key(text)
+                except IdentityError as exc:
+                    await session.write_line(colored(f"Could not parse key: {exc}", fg_color=MUTED_COLOR))
+                else:
+                    try:
+                        target = await lane.run(set_verify_key, target, verify_key, changed_by=actor)
+                    except AuthError as exc:
+                        await session.write_line(colored(str(exc), fg_color=MUTED_COLOR))
+                    else:
+                        await session.write_line(f"Public key set for {target.username!r}.")
             blocked = await _draw_user_detail(session, lane, target)
         elif choice == "r":
             await session.write_line("")
