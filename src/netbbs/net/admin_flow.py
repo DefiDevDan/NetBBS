@@ -63,6 +63,7 @@ from netbbs.auth.users import (
     approve_pending_user,
     create_user,
     delete_user,
+    get_user_by_id,
     get_user_by_username,
     list_users,
     set_can_verify_identity,
@@ -86,6 +87,7 @@ from netbbs.boards.posts import (
     set_post_exempt,
     set_post_pinned,
 )
+from netbbs.chat.moderation import ChannelRestriction, list_active_channel_restrictions, unban_user, unmute_user
 from netbbs.chat.categories import CategoryError as ChannelCategoryError
 from netbbs.chat.categories import create_category as create_channel_category
 from netbbs.chat.categories import delete_category as delete_channel_category
@@ -189,6 +191,7 @@ from netbbs.link.work_items import (
     list_work_items,
     replay_work_item,
 )
+from netbbs.moderation.blocklist import BlocklistError, block_user, is_blocked, unblock_user
 from netbbs.moderation.log import list_actions_for_target_user, record_action
 from netbbs.moderation.roles import (
     BoardPermission,
@@ -1612,7 +1615,14 @@ def _user_description(user: User) -> str:
     return f"level {user.user_level}, {_status_label(user)}"
 
 
-async def _draw_user_detail(session: Session, lane: DatabaseLane, target: User) -> None:
+async def _draw_user_detail(session: Session, lane: DatabaseLane, target: User) -> bool:
+    """Returns whether `target` is currently on the local blocklist --
+    unlike `disabled_at`, blocked status isn't a field on `User` itself,
+    so `_user_detail_screen`'s dispatch loop needs it back to know
+    which of `[R]estrict`'s two directions a confirmation should offer,
+    same shape `_render_profile`/`_draw_channel_detail` already use to
+    hand a caller-needed piece of drawn state back to their own dispatch
+    loops."""
     await session.write_line(
         "\r\n" + screen_title(sanitize_text(target.username), width=session.terminal_width)
     )
@@ -1628,18 +1638,48 @@ async def _draw_user_detail(session: Session, lane: DatabaseLane, target: User) 
     await session.write_line(
         f"Can verify identity (age/name attestation): {'yes' if target.can_verify_identity else 'no'}"
     )
+    # Dogfood follow-up (`netbbs.moderation.blocklist`): the local
+    # blocklist enforcement path was real and already wired into login
+    # (`netbbs.net.login_flow`'s own distinct "Your access to this
+    # system has been revoked." message), but nothing in the
+    # interactive product could ever create an entry -- only a
+    # dev/admin script (`scripts/block_user.py`) could. `[T]oggle
+    # enable/disabled` already covers "stop this local account from
+    # logging in" for most purposes; this is additionally fingerprint-
+    # based when the account has a keypair, the form the same
+    # mechanism is designed to extend to remote nodes/traffic later
+    # (module docstring) -- a real, separate capability, not just a
+    # second button for the same thing.
+    blocked = await lane.run(is_blocked, target)
+    await session.write_line(f"Blocked (local blocklist): {'yes' if blocked else 'no'}")
 
     entries = await lane.run(list_actions_for_target_user, target.id)
     if not entries:
         await session.write_line(colored("No recorded admin actions.", fg_color=MUTED_COLOR))
     else:
+        # Dogfood follow-up: this list used to show *what* happened but
+        # never *who* did it, even though `actor_user_id` is stored for
+        # exactly this (`netbbs.moderation.log.ModerationLogEntry`'s own
+        # docstring: nullable specifically so a deleted actor's audit
+        # trail survives, implying display was always the intent) --
+        # the in-channel notice for the same action already says "by
+        # bob," this screen just never repeated it. Resolved once for
+        # the shown slice, not once per entry.
+        shown = entries[-10:]
+        actor_ids = {entry.actor_user_id for entry in shown if entry.actor_user_id is not None}
+        actor_usernames: dict[int, str] = {}
+        for actor_id in actor_ids:
+            actor = await lane.run(get_user_by_id, actor_id)
+            actor_usernames[actor_id] = actor.username if actor is not None else "(deleted account)"
+
         await session.write_line(colored("Recent admin actions:", fg_color=MUTED_COLOR))
-        for entry in entries[-10:]:
+        for entry in shown:
             when = format_for_display(
                 entry.created_at, override_format=display_format, override_timezone=display_timezone
             )
             detail = f" -- {sanitize_text(entry.detail)}" if entry.detail else ""
-            await session.write_line(f"  {when}: {sanitize_text(entry.action)}{detail}")
+            by = actor_usernames.get(entry.actor_user_id, "(unknown)") if entry.actor_user_id is not None else "(system)"
+            await session.write_line(f"  {when}: {sanitize_text(entry.action)} (by {sanitize_text(by)}){detail}")
 
     options = []
     if target.pending_approval:
@@ -1647,10 +1687,12 @@ async def _draw_user_detail(session: Session, lane: DatabaseLane, target: User) 
     options.append(menu_key("L", "evel"))
     options.append(menu_key("T", "oggle enable/disabled"))
     options.append(menu_key("I", "dentity verification"))
+    options.append(menu_key("R", "estrict login"))
     options.append(menu_key("D", "elete"))
     options.append(menu_key("B", "ack"))
     await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
     await session.write("Choice: ")
+    return blocked
 
 
 async def _user_detail_screen(
@@ -1666,7 +1708,7 @@ async def _user_detail_screen(
     same already-selected account without leaving this screen or
     re-picking them through three separate single-purpose flows.
     """
-    await _draw_user_detail(session, lane, target)
+    blocked = await _draw_user_detail(session, lane, target)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -1678,7 +1720,7 @@ async def _user_detail_screen(
             if await prompt_yes_no(session, "Approve this account so it can log in?", default=False):
                 target = await lane.run(approve_pending_user, target, approved_by=actor)
                 await session.write_line(f"{target.username!r} approved.")
-            await _draw_user_detail(session, lane, target)
+            blocked = await _draw_user_detail(session, lane, target)
         elif choice == "l":
             await session.write_line("")
             await session.write(f"New level for {target.username!r} [{target.user_level}]: ")
@@ -1695,7 +1737,7 @@ async def _user_detail_screen(
                         await session.write_line(colored(str(exc), fg_color=MUTED_COLOR))
                     else:
                         await session.write_line(f"{target.username!r} is now level {target.user_level}.")
-            await _draw_user_detail(session, lane, target)
+            blocked = await _draw_user_detail(session, lane, target)
         elif choice == "t":
             await session.write_line("")
             currently_disabled = target.disabled_at is not None
@@ -1711,7 +1753,7 @@ async def _user_detail_screen(
                     )
                     if target.disabled_at is not None:
                         await _revoke_live_sessions(session, node_controls, target, actor)
-            await _draw_user_detail(session, lane, target)
+            blocked = await _draw_user_detail(session, lane, target)
         elif choice == "i":
             await session.write_line("")
             new_state = "revoke" if target.can_verify_identity else "grant"
@@ -1725,13 +1767,34 @@ async def _user_detail_screen(
                     f"{target.username!r} can now verify identity: "
                     f"{'yes' if target.can_verify_identity else 'no'}."
                 )
-            await _draw_user_detail(session, lane, target)
+            blocked = await _draw_user_detail(session, lane, target)
+        elif choice == "r":
+            await session.write_line("")
+            action_word = "Unrestrict" if blocked else "Restrict"
+            prompt = (
+                f"{action_word} {target.username!r} from logging in?"
+                if not blocked
+                else f"{action_word} {target.username!r} (allow login again)?"
+            )
+            if await prompt_yes_no(session, prompt, default=False):
+                if blocked:
+                    await lane.run(unblock_user, target)
+                    await session.write_line(f"{target.username!r} can log in again.")
+                else:
+                    try:
+                        await lane.run(block_user, target, blocked_by=actor)
+                    except BlocklistError as exc:
+                        await session.write_line(colored(str(exc), fg_color=MUTED_COLOR))
+                    else:
+                        await session.write_line(f"{target.username!r} is now blocked from logging in.")
+                        await _revoke_live_sessions(session, node_controls, target, actor)
+            blocked = await _draw_user_detail(session, lane, target)
         elif choice == "d":
             await session.write_line("")
             deleted = await _delete_user_confirm(session, lane, actor, target, node_controls)
             if deleted:
                 return
-            await _draw_user_detail(session, lane, target)
+            blocked = await _draw_user_detail(session, lane, target)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -5257,6 +5320,10 @@ async def _channel_detail_screen(
             if deleted:
                 return
             await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context)
+        elif choice == "r":
+            await session.write_line("")
+            await _channel_restrictions_screen(session, lane, actor, channel)
+            await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context)
         elif choice == "l" and link_context is not None and not linked:
             await session.write_line("")
             await _link_channel_screen(session, lane, channel, link_context)
@@ -5295,12 +5362,93 @@ async def _draw_channel_detail(
     )
     if link_context is not None:
         await session.write_line(f"Linked: {'yes' if linked else 'no'}")
-    options = [menu_key("E", "dit"), menu_key("D", "elete")]
+    options = [menu_key("E", "dit"), menu_key("D", "elete"), menu_key("R", "estrictions")]
     if link_context is not None and not linked:
         options.append(menu_key("L", "ink this channel"))
     options.append(menu_key("B", "ack"))
     await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
     await session.write("Choice: ")
+
+
+async def _channel_restrictions_screen(session: Session, lane: DatabaseLane, actor: User, channel: Channel) -> None:
+    """
+    Lists every currently-active mute/ban on `channel` and lets a
+    SysOp lift one -- the ordinary door alongside `_check_ban`'s own
+    emergency SysOp bypass (`netbbs.net.chat_flow`, dogfood follow-up).
+    Before this, a self-ban or a ban placed by any channel moderator
+    had no interactive recovery path whatsoever: `/unban` can only be
+    run from *inside* the channel by someone holding MODERATE, which
+    is exactly what being banned prevents, and no admin screen anywhere
+    even listed `channel_restrictions` rows -- the only fix was direct
+    database surgery.
+
+    Usernames/timestamps are resolved once per redraw via `lane.run`,
+    then read synchronously by `pick_item`'s own `name_of`/
+    `description_of` callbacks -- same "pre-fetch, don't call the lane
+    from inside a sync callback" shape `_who_screen` already
+    established (see this module's own docstring) for the identical
+    reason.
+    """
+    def _load(db: Database) -> tuple[list[ChannelRestriction], dict[int, str], str | None, str | None]:
+        restrictions = list_active_channel_restrictions(db, channel)
+        user_ids = {r.user_id for r in restrictions} | {r.imposed_by_user_id for r in restrictions}
+        usernames: dict[int, str] = {}
+        for user_id in user_ids:
+            resolved = get_user_by_id(db, user_id)
+            usernames[user_id] = resolved.username if resolved is not None else "(deleted account)"
+        display_format, display_timezone = resolve_display_preferences(db)
+        return restrictions, usernames, display_format, display_timezone
+
+    def _name_of(r: ChannelRestriction, usernames: dict[int, str]) -> str:
+        return f"{r.kind} -- {usernames[r.user_id]}"
+
+    def _description_of(
+        r: ChannelRestriction, usernames: dict[int, str], display_format: str | None, display_timezone: str | None
+    ) -> str:
+        if r.expires_at is None:
+            expiry = "indefinite"
+        else:
+            expiry = f"until {format_for_display(r.expires_at, override_format=display_format, override_timezone=display_timezone)}"
+        by = f"by {usernames[r.imposed_by_user_id]}"
+        reason = f" -- {sanitize_text(r.reason)}" if r.reason else ""
+        return f"{expiry} ({by}){reason}"
+
+    while True:
+        restrictions, usernames, display_format, display_timezone = await lane.run(_load)
+
+        selected = await pick_item(
+            session, restrictions,
+            name_of=lambda r: _name_of(r, usernames),
+            stable_id_of=lambda r: r.id,
+            description_of=lambda r: _description_of(r, usernames, display_format, display_timezone),
+            title=f"Restrictions on {channel.name!r}",
+            empty_message="No active mute/ban restrictions on this channel.",
+        )
+        if selected is None:
+            return
+
+        target_label = usernames[selected.user_id]
+        if not await prompt_yes_no(session, f"Lift this {selected.kind} on {target_label!r}?", default=False):
+            await session.write_line("Cancelled.")
+            continue
+
+        target = await lane.run(get_user_by_id, selected.user_id)
+        if target is None:
+            # The account was deleted after this restriction was
+            # imposed -- nothing left to look up an unmute/unban
+            # against by object, and the restriction row itself is
+            # already unreachable through any ordinary path once its
+            # subject is gone. Same "nothing to do" shape lifting an
+            # already-lifted restriction gets, just for a different
+            # reason.
+            await session.write_line(colored("That account no longer exists.", fg_color=MUTED_COLOR))
+            continue
+
+        if selected.kind == "mute":
+            await lane.run(unmute_user, channel, target, unmuted_by=actor)
+        else:
+            await lane.run(unban_user, channel, target, unbanned_by=actor)
+        await session.write_line(f"Lifted the {selected.kind} on {target_label!r}.")
 
 
 async def _link_channel_screen(session: Session, lane: DatabaseLane, channel: Channel, link_context: LinkContext) -> None:

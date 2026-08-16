@@ -25,6 +25,7 @@ from netbbs.net.char_input import (
     REFRESH_KEY,
     EditorKeyKind,
     discard_buffered_enter,
+    discard_buffered_input,
     read_editor_key,
     read_key,
     read_line,
@@ -747,3 +748,40 @@ def test_discard_buffered_enter_is_a_no_op_when_nothing_arrives_in_time():
         await discard_buffered_enter(source)
 
     asyncio.run(scenario())
+
+
+# -- discard_buffered_input (dogfood follow-up: a moderation kick/ban --
+# -- landing mid-keystroke used to leak already-typed input into the --
+# -- next screen the eviction landed the caller on) --------------------
+
+
+def test_discard_buffered_input_drains_multiple_buffered_bytes_not_just_one():
+    async def scenario():
+        # Simulates a caller who was mid-typing "still here" when
+        # evicted -- every byte of it must be gone, not just the first
+        # (which `discard_buffered_enter` alone would leave sitting
+        # there for whatever screen comes next to consume one keystroke
+        # at a time). `FakeByteSource` delivers its whole fixed byte
+        # string with no real gap, so the only way to observe "was
+        # everything actually consumed" here is the source's own
+        # position, not a subsequent read (there's nothing left after
+        # a genuine full drain for one to return).
+        buffered = b"still here, mid-sentence when kicked"
+        source = FakeByteSource(buffered)
+        await discard_buffered_input(source)
+        assert source._pos == len(buffered)
+
+    asyncio.run(scenario())
+
+
+def test_discard_buffered_input_is_a_no_op_when_nothing_arrives_in_time():
+    async def scenario():
+        # A genuinely idle connection (the common case: an ordinary
+        # kick with nothing mid-typed) -- must return promptly, not
+        # hang waiting for input that was never coming.
+        source = FakeByteSource(b"")
+        await discard_buffered_input(source)
+
+    asyncio.run(scenario())
+
+

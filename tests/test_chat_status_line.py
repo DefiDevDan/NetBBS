@@ -296,8 +296,15 @@ def _grant_moderate(db, user, channel):
 
 
 def test_render_shows_indefinite_mute_indicator(db, hub, presence, channel, alice, bob):
-    _grant_moderate(db, alice, channel)
-    mute_user(db, channel, bob, duration=None, reason=None, muted_by=alice)
+    # A dedicated higher-level moderator, not `alice` herself -- both
+    # `alice`/`bob` are level 10 in this file's shared fixtures, and
+    # the rank-protection check (`_ensure_target_rank_allows_
+    # moderation`, dogfood follow-up) refuses same-level moderation.
+    # This test is about the status line's own rendering for the
+    # *muted target*, not about who imposed it.
+    moderator = create_user(db, "modindef", password="hunter2", user_level=50)
+    _grant_moderate(db, moderator, channel)
+    mute_user(db, channel, bob, duration=None, reason=None, muted_by=moderator)
     text = _plain(chat_flow._render_chat_status_line(db, hub, presence, channel, bob))
     assert "[muted]" in text
 
@@ -305,8 +312,11 @@ def test_render_shows_indefinite_mute_indicator(db, hub, presence, channel, alic
 def test_render_shows_timed_mute_indicator_with_expiry(db, hub, presence, channel, alice, bob):
     import datetime
 
-    _grant_moderate(db, alice, channel)
-    mute_user(db, channel, bob, duration=datetime.timedelta(minutes=10), reason=None, muted_by=alice)
+    # See the sibling test just above for why this uses a dedicated
+    # higher-level moderator rather than `alice`.
+    moderator = create_user(db, "modtimed", password="hunter2", user_level=50)
+    _grant_moderate(db, moderator, channel)
+    mute_user(db, channel, bob, duration=datetime.timedelta(minutes=10), reason=None, muted_by=moderator)
     text = _plain(chat_flow._render_chat_status_line(db, hub, presence, channel, bob))
     assert "muted until" in text
 
@@ -609,8 +619,11 @@ def test_status_line_regains_its_background_once_away_is_cleared(lane, hub, pres
 
 
 def test_status_line_repaints_when_a_muted_message_is_rejected(db, lane, hub, presence, mailbox, channel, alice, bob):
-    _grant_moderate(db, bob, channel)
-    mute_user(db, channel, alice, duration=None, reason=None, muted_by=bob)
+    # A dedicated higher-level moderator, not `bob` -- see the rank-
+    # protection comment on the sibling tests above.
+    moderator = create_user(db, "modrepaint", password="hunter2", user_level=50)
+    _grant_moderate(db, moderator, channel)
+    mute_user(db, channel, alice, duration=None, reason=None, muted_by=moderator)
     session, _ = asyncio.run(_run(lane, hub, presence, mailbox, channel, alice, ["hello", "/quit"]))
     text = _written_text(session)
     assert "You are muted" in text

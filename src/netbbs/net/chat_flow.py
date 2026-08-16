@@ -94,6 +94,7 @@ from netbbs.chat import (
     ChannelMessage,
     ChatHub,
     ChatModerationError,
+    ChatModerationRankError,
     DirectChatInvite,
     DirectChatInvites,
     DurationError,
@@ -1476,6 +1477,9 @@ async def _handle_mute(ctx: ChatCommandContext, args: str) -> None:
 
     try:
         await ctx.lane.run(mute_user, ctx.channel, target, duration=duration, reason=reason, muted_by=ctx.user)
+    except ChatModerationRankError as exc:
+        await ctx.session.write_line(colored(str(exc), fg_color=MUTED_COLOR))
+        return
     except ChatModerationError:
         await ctx.session.write_line(
             colored("You do not have permission to mute in this channel.", fg_color=MUTED_COLOR)
@@ -1524,6 +1528,9 @@ async def _handle_ban(ctx: ChatCommandContext, args: str) -> None:
 
     try:
         await ctx.lane.run(ban_user, ctx.channel, target, duration=duration, reason=reason, banned_by=ctx.user)
+    except ChatModerationRankError as exc:
+        await ctx.session.write_line(colored(str(exc), fg_color=MUTED_COLOR))
+        return
     except ChatModerationError:
         await ctx.session.write_line(
             colored("You do not have permission to ban in this channel.", fg_color=MUTED_COLOR)
@@ -1571,8 +1578,42 @@ async def _handle_kick(ctx: ChatCommandContext, args: str) -> None:
     if target is None:
         return
 
+    # Dogfood follow-up: a kick persists no state at all (module
+    # docstring, netbbs.chat.moderation) -- unlike mute/ban, there is
+    # nothing to actually check against, so without this a `/kick` of
+    # someone not currently in the channel still ran the permission
+    # check, recorded an audit-log entry, and announced "X was kicked"
+    # to everyone present, even though nothing was removed.
+    #
+    # Permission is checked here explicitly, *before* the presence
+    # check just below, deliberately duplicating what `kick_user`
+    # itself will also check internally: an unauthorized caller must
+    # never learn whether someone is even in this channel (a channel
+    # they may not otherwise be able to see the membership of) before
+    # their own authorization has been confirmed. `kick_user`'s own
+    # check stays too, as the real source of truth (defense in depth,
+    # not just for this UI path).
+    if not await ctx.lane.run(_requires_moderate, ctx.channel, ctx.user):
+        await ctx.session.write_line(
+            colored("You do not have permission to kick in this channel.", fg_color=MUTED_COLOR)
+        )
+        return
+
+    # Checked against *this channel's* live participants specifically
+    # (not `ctx.presence.is_online`, node-wide -- `/msg`'s own check
+    # just above answers a different question), matching `_kick_live_
+    # sessions`'s own lookup below exactly.
+    if not ctx.hub.participants_for_username(ctx.channel.name, target.username):
+        await ctx.session.write_line(
+            colored(f"{sanitize_text(target.username)} is not currently in this channel.", fg_color=MUTED_COLOR)
+        )
+        return
+
     try:
         await ctx.lane.run(kick_user, ctx.channel, target, reason=reason, kicked_by=ctx.user)
+    except ChatModerationRankError as exc:
+        await ctx.session.write_line(colored(str(exc), fg_color=MUTED_COLOR))
+        return
     except ChatModerationError:
         await ctx.session.write_line(
             colored("You do not have permission to kick in this channel.", fg_color=MUTED_COLOR)
@@ -2194,6 +2235,16 @@ _COMMANDS: dict[str, CommandHandler] = {
 # handlers themselves (mute_user/kick_user/etc., via ChatModerationError/
 # MembershipError) remain the sole source of truth for what's actually
 # allowed to run.
+#
+# `_requires_moderate` specifically (dogfood follow-up) is *also* now
+# called directly by `_handle_kick`, as a real pre-check -- `kick_user`
+# persists no state to check presence against (module docstring,
+# netbbs.chat.moderation), so its own permission check alone can't be
+# relied on to run *before* a presence check without either revealing
+# channel membership to an unauthorized caller or (worse) running the
+# presence check first, which used to leak that same information for
+# free. `kick_user`'s own internal check still runs too and remains
+# the actual source of truth; this one exists purely for ordering.
 def _requires_moderate(db: Database, channel: Channel, user: User) -> bool:
     return has_permission(
         db, user, object_type="channel", object_id=channel.id, permission=ChannelPermission.MODERATE
@@ -2396,7 +2447,21 @@ def _check_mute(db: Database, channel: Channel, user: User) -> str | None:
 
 def _check_ban(db: Database, channel: Channel, user: User) -> str | None:
     """Same shape as `_check_mute`, for `_chat_loop`'s entry-time ban
-    check."""
+    check.
+
+    A SysOp always bypasses this (dogfood follow-up, matching `netbbs.
+    moderation.roles.has_permission`'s own unconditional SysOp bypass
+    for every *other* moderation check) -- without it, a self-ban or a
+    ban placed by any channel moderator had no interactive recovery
+    path whatsoever, not even for a SysOp: `/unban` can only be run
+    from *inside* the channel by someone holding MODERATE, which is
+    exactly what being banned prevents. This bypass is the emergency
+    door; `_channel_restrictions_screen` (`netbbs.net.admin_flow`) is
+    the ordinary one -- lets a SysOp actually see and lift the
+    restriction rather than silently walking through it every time.
+    """
+    if meets_level(user, SYSOP_LEVEL):
+        return None
     restriction = is_banned(db, channel, user)
     if restriction is None:
         return None
@@ -3646,6 +3711,20 @@ async def _chat_loop(
             # its own fresh line below the notice, not appended straight
             # onto the pinned input row's now-empty "> ".
             try:
+                # Dogfood follow-up: a kick/ban can land mid-keystroke --
+                # `send_task` (which owned the in-progress line read) was
+                # just cancelled above, not given a chance to finish
+                # reading whatever the caller had already typed. Without
+                # draining that first, it silently satisfies "press any
+                # key" with its first leftover character, then leaks the
+                # rest into whatever screen comes next one keystroke at a
+                # time, invisibly navigating the caller through unrelated
+                # menus. `getattr` guard matches every other optional-
+                # Session-method call site -- not every lightweight test
+                # double implements it.
+                discard_buffered_input = getattr(session, "discard_buffered_input", None)
+                if discard_buffered_input is not None:
+                    await discard_buffered_input()
                 await session.write(
                     reset_scroll_region() + "\r\n" + colored("Press any key to continue...", fg_color=MUTED_COLOR)
                 )
@@ -4036,6 +4115,12 @@ async def run_direct_chat_loop(
 
         if receive_task in done and pinned_ui.active:
             try:
+                # See _chat_loop's own identical comment: without this,
+                # whatever the caller had already typed mid-eviction
+                # leaks into whatever screen comes next.
+                discard_buffered_input = getattr(session, "discard_buffered_input", None)
+                if discard_buffered_input is not None:
+                    await discard_buffered_input()
                 await session.write(
                     reset_scroll_region() + "\r\n" + colored("Press any key to continue...", fg_color=MUTED_COLOR)
                 )

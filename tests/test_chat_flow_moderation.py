@@ -16,10 +16,11 @@ import asyncio
 
 import pytest
 
-from netbbs.auth.users import create_user
+from netbbs.auth.users import SYSOP_LEVEL, create_user
 from netbbs.chat.channels import create_channel
 from netbbs.chat.hub import ChatHub
 from netbbs.chat.mailbox import MessageMailbox
+from netbbs.chat.moderation import ban_user
 from netbbs.chat.presence import PresenceRegistry
 from netbbs.chat.scrollback import get_scrollback
 from netbbs.moderation import ChannelPermission, grant_permissions
@@ -174,6 +175,31 @@ def test_kick_forces_out_a_present_target(db, lane, hub, presence, mailbox, hist
     assert any(m.kind == "kick" for m in scrollback)
 
 
+def test_kick_of_an_absent_user_does_not_announce_or_log(db, lane, hub, presence, mailbox, history, sysop, channel):
+    # Dogfood follow-up: kick_user persists no state at all (there's
+    # nothing to actually check "kicked" against, unlike mute/ban), so
+    # without a presence check `/kick`ing someone not currently in the
+    # channel still ran the permission check, recorded an audit-log
+    # entry, and announced "X was kicked" to everyone present, even
+    # though nothing was actually removed.
+    create_user(db, "carol", password="hunter2", user_level=10)
+
+    async def scenario():
+        mod_session = FakeSession(["/kick carol not even here", "/quit"])
+        await asyncio.wait_for(
+            chat_flow._chat_loop(mod_session, lane, hub, presence, mailbox, history, channel, sysop), timeout=2
+        )
+        return mod_session
+
+    mod_session = asyncio.run(scenario())
+
+    text = _written_text(mod_session)
+    assert "is not currently in this channel" in text
+    assert "was kicked" not in text
+    scrollback = get_scrollback(db, channel)
+    assert not any(m.kind == "kick" for m in scrollback)
+
+
 def test_kicked_target_can_read_the_notice_before_the_screen_clears(
     db, lane, hub, presence, mailbox, history, sysop, bob, channel
 ):
@@ -267,6 +293,30 @@ def test_banned_user_cannot_rejoin(db, lane, hub, presence, mailbox, history, sy
     rejoin_session = asyncio.run(scenario())
     assert "banned" in _written_text(rejoin_session)
     assert hub.participant_count(channel.name) == 0
+
+
+def test_a_true_sysop_bypasses_a_ban_on_themselves_when_entering(
+    db, lane, hub, presence, mailbox, history, channel
+):
+    # Dogfood follow-up: a self-ban (or a ban placed by any channel
+    # moderator) previously had no interactive recovery path at all --
+    # not even for a SysOp, since /unban can only be run from *inside*
+    # the channel by someone holding MODERATE, exactly what being
+    # banned prevents. `_check_ban` now bypasses unconditionally for a
+    # true SysOp (SYSOP_LEVEL, not just a high-ish level -- this file's
+    # own `sysop` fixture is level 100, deliberately not that).
+    real_sysop = create_user(db, "realsysop", password="hunter2", user_level=SYSOP_LEVEL)
+    ban_user(db, channel, real_sysop, duration=None, reason="test self-ban", banned_by=real_sysop)
+
+    async def scenario():
+        session = FakeSession(["/quit"])
+        await asyncio.wait_for(
+            chat_flow._chat_loop(session, lane, hub, presence, mailbox, history, channel, real_sysop), timeout=2
+        )
+        return session
+
+    session = asyncio.run(scenario())
+    assert "banned" not in _written_text(session)
 
 
 # -- mute -------------------------------------------------------------------

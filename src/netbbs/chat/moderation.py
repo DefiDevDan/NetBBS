@@ -34,7 +34,7 @@ import datetime
 import sqlite3
 from dataclasses import dataclass
 
-from netbbs.auth.users import User
+from netbbs.auth.users import SYSOP_LEVEL, User
 from netbbs.chat.channels import Channel
 from netbbs.moderation import ChannelPermission, has_permission, record_action
 from netbbs.storage.database import Database
@@ -44,6 +44,44 @@ from netbbs.timeutil import utc_now_iso
 class ChatModerationError(Exception):
     """Raised when the acting user doesn't hold
     `ChannelPermission.MODERATE` on the channel."""
+
+
+class ChatModerationRankError(ChatModerationError):
+    """Raised (dogfood follow-up) when the actor *does* hold MODERATE
+    but the target's own level makes them ineligible to be moderated by
+    this actor anyway -- see `_ensure_target_rank_allows_moderation`. A
+    distinct subtype, not just a different message on the base error,
+    so `netbbs.net.chat_flow`'s command handlers can show this specific
+    explanation instead of the base error's generic "you do not have
+    permission" text, which would otherwise be actively misleading here
+    -- the actor does have permission; the target is just not eligible."""
+
+
+def _ensure_target_rank_allows_moderation(actor: User, target: User) -> None:
+    """A moderator below SysOp level may never mute/ban/kick a target at
+    or above their own level.
+
+    Two real gaps this closes at once, found live: a channel moderator
+    could `/ban` *themselves* (self-target has `target.user_level ==
+    actor.user_level`, already caught by the `>=` comparison below) with
+    no interactive way back in short of a SysOp's own channel-entry
+    bypass (`netbbs.net.chat_flow._check_ban`) or direct database
+    surgery; and a channel-scoped grant carried no protection at all for
+    its *target* side -- a level-10 moderator could kick/ban/mute the
+    SysOp who handed out that very grant, with no warning or
+    confirmation.
+
+    SysOp-level actors are exempt, matching `netbbs.moderation.roles.
+    has_permission`'s own unconditional SysOp bypass -- a SysOp must
+    always be able to act regardless of the target's level, including
+    against another SysOp if genuinely needed.
+    """
+    if actor.user_level >= SYSOP_LEVEL:
+        return
+    if target.user_level >= actor.user_level:
+        raise ChatModerationRankError(
+            f"You cannot moderate {target.username!r}: their level is not below yours."
+        )
 
 
 class DurationError(Exception):
@@ -152,6 +190,7 @@ def kick_user(db: Database, channel: Channel, target: User, *, reason: str | Non
         db, kicked_by, object_type="channel", object_id=channel.id, permission=ChannelPermission.MODERATE
     ):
         raise ChatModerationError(f"{kicked_by.username!r} does not hold moderate permission on this channel")
+    _ensure_target_rank_allows_moderation(kicked_by, target)
     record_action(
         db,
         actor=kicked_by,
@@ -179,6 +218,28 @@ def list_channel_restrictions(db: Database, channel: Channel) -> list[ChannelRes
     return [_row_to_restriction(row) for row in rows]
 
 
+def list_active_channel_restrictions(db: Database, channel: Channel) -> list[ChannelRestriction]:
+    """Every currently-active (non-expired) mute/ban on `channel`, most
+    recent first -- the admin-facing counterpart to `list_channel_
+    restrictions`'s full history (which includes stale expired rows
+    that are no longer restricting anyone -- `is_muted`/`is_banned`'s
+    own filtering, see this module's docstring). Backs the SysOp
+    channel-restrictions screen (`netbbs.net.admin_flow`, dogfood
+    follow-up): a self-ban or a ban placed by any channel moderator
+    previously had no interactive way to see or lift it short of a
+    SysOp's own channel-entry bypass (`netbbs.net.chat_flow._check_
+    ban`) or direct database surgery -- this is what that screen lists."""
+    rows = db.connection.execute(
+        """
+        SELECT * FROM channel_restrictions
+        WHERE channel_id = ? AND (expires_at IS NULL OR expires_at > ?)
+        ORDER BY created_at DESC
+        """,
+        (channel.id, utc_now_iso()),
+    ).fetchall()
+    return [_row_to_restriction(row) for row in rows]
+
+
 def _impose(
     db: Database,
     channel: Channel,
@@ -193,6 +254,7 @@ def _impose(
         db, imposed_by, object_type="channel", object_id=channel.id, permission=ChannelPermission.MODERATE
     ):
         raise ChatModerationError(f"{imposed_by.username!r} does not hold moderate permission on this channel")
+    _ensure_target_rank_allows_moderation(imposed_by, target)
 
     expires_at = None
     if duration is not None:

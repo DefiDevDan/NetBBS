@@ -242,6 +242,24 @@ class Session(ABC):
         for non-interactive and lightweight Session adapters.
         """
 
+    async def discard_buffered_input(self) -> None:
+        """Discard *every* byte/keystroke currently buffered ahead of the
+        next real read -- a wider-scoped sibling of
+        ``discard_buffered_enter`` (which only ever looks for one trailing
+        Enter). Used when this session is about to be evicted mid-
+        keystroke from whatever it was doing (a moderation kick/ban):
+        without this, whatever the caller had already typed but not yet
+        submitted silently leaks into whatever screen the eviction lands
+        them on next, one keystroke at a time, invisibly navigating them
+        through unrelated screens with no indication why (dogfood follow-
+        up). Interactive transports override this with a bounded loop of
+        the same pushback-safe peek ``discard_buffered_enter`` already
+        uses, repeated until nothing more arrives. The no-op default
+        preserves compatibility for non-interactive and lightweight
+        Session adapters, same reasoning as ``discard_buffered_enter``'s
+        own default.
+        """
+
     @abstractmethod
     async def close(self) -> None:
         """Close the underlying connection."""

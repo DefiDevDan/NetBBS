@@ -614,6 +614,20 @@ class WebSession(Session):
         elif not (isinstance(item, str) and item == _LF):
             self._pushed_back_item = item
 
+    async def discard_buffered_input(self) -> None:
+        """Web counterpart to ``char_input.discard_buffered_input``.
+
+        Loops the same bounded-lookahead peek ``discard_buffered_enter``
+        above uses, but discards everything rather than pushing back
+        anything that isn't part of one trailing Enter -- see
+        ``Session.discard_buffered_input``'s own docstring for why.
+        """
+        while True:
+            try:
+                await asyncio.wait_for(self._read_item(), timeout=0.05)
+            except asyncio.TimeoutError:
+                return
+
     async def close(self) -> None:
         self._reader_task.cancel()
         try:

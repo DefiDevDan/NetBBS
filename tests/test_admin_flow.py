@@ -469,6 +469,19 @@ def test_list_users_and_select_shows_detail(db, lane, sysop):
     assert "Level: 255" in _written_text(session)
 
 
+def test_user_detail_recent_admin_actions_show_who_performed_them(db, lane, sysop):
+    # Dogfood follow-up: this list used to show *what* happened but
+    # never *who* did it, even though actor_user_id is stored for
+    # exactly this.
+    alice = create_user(db, "alice", password="hunter2", user_level=10)
+    session = FakeSession(["u", "l", "0", "1", "l", "20", "b", "b", "b"])
+    _run(session, lane, sysop)
+
+    text = _written_text(session)
+    assert "level" in text.lower()
+    assert "(by sysop)" in text
+
+
 def test_list_users_sort_by_highest_level_first_changes_pick_order(db, lane, sysop):
     """Design doc -- Thiesi's own dogfood-testing report: SysOps wanted
     more than the one fixed alphabetical order this screen always used
@@ -709,6 +722,52 @@ def test_disable_shows_lockout_guard_message(db, lane, sysop):
     session = FakeSession(["u", "e", "0", "1", "t", "y", "b", "b", "b"])
     _run(session, lane, sysop)
     assert "only active SysOp-level account" in _written_text(session)
+
+
+# -- local blocklist (dogfood follow-up) -------------------------------------
+#
+# Enforcement (netbbs.net.login_flow's own distinct "Your access to this
+# system has been revoked." message) already existed and was already
+# tested elsewhere -- what didn't exist was any way to actually create an
+# entry from the interactive product, only a dev/admin script
+# (scripts/block_user.py).
+
+
+def test_restrict_login_blocks_a_user(db, lane, sysop):
+    from netbbs.moderation import is_blocked
+
+    alice = create_user(db, "alice", password="hunter2", user_level=10)
+    session = FakeSession(["u", "e", "0", "1", "r", "y", "b", "b", "b"])
+    _run(session, lane, sysop)
+
+    updated = next(u for u in list_users(db) if u.username == "alice")
+    assert is_blocked(db, updated) is True
+    assert "is now blocked from logging in" in _written_text(session)
+
+
+def test_restrict_login_toggle_unblocks_an_already_blocked_user(db, lane, sysop):
+    from netbbs.moderation import block_user, is_blocked
+
+    alice = create_user(db, "alice", password="hunter2", user_level=10)
+    block_user(db, alice, blocked_by=sysop, reason="pre-blocked for test")
+    assert is_blocked(db, alice) is True
+
+    session = FakeSession(["u", "e", "0", "1", "r", "y", "b", "b", "b"])
+    _run(session, lane, sysop)
+
+    updated = next(u for u in list_users(db) if u.username == "alice")
+    assert is_blocked(db, updated) is False
+    assert "can log in again" in _written_text(session)
+
+
+def test_restrict_login_declining_confirmation_leaves_status_unchanged(db, lane, sysop):
+    from netbbs.moderation import is_blocked
+
+    alice = create_user(db, "alice", password="hunter2", user_level=10)
+    session = FakeSession(["u", "e", "0", "1", "r", "n", "b", "b", "b"])
+    _run(session, lane, sysop)
+
+    assert is_blocked(db, alice) is False
 
 
 # -- delete -----------------------------------------------------------------
@@ -2003,6 +2062,48 @@ def test_link_this_channel_flow(db, lane, sysop):
     genesis = link_context.link_node.channels[channel.channel_id]
     assert genesis.content_id in link_context.link_node.known_event_ids
     assert genesis.payload["origin_fingerprint"] == link_context.node_identity.fingerprint
+
+
+def test_channel_restrictions_screen_lists_and_lifts_an_active_ban(db, lane, sysop):
+    """Dogfood follow-up: a self-ban or a ban placed by any channel
+    moderator previously had no interactive recovery path at all -- no
+    admin screen anywhere even listed `channel_restrictions` rows, the
+    only fix was direct database surgery. `[R]estrictions` on the
+    channel detail screen is that missing screen."""
+    from netbbs.chat.channels import create_channel
+    from netbbs.chat.moderation import ban_user, is_banned
+
+    channel = create_channel(db, "Lobby", creator=sysop)
+    alice = create_user(db, "alice", password="hunter2", user_level=10)
+    ban_user(db, channel, alice, duration=None, reason="testing", banned_by=sysop)
+    assert is_banned(db, channel, alice) is not None
+
+    inputs = [
+        "m", "n", "l", "0", "1",  # navigate to channel detail
+        "r",  # [R]estrictions
+        "0", "1",  # pick the one active restriction
+        "y",  # confirm lifting it
+        "b", "b", "b", "b", "b",
+    ]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+
+    text = _written_text(session)
+    assert "ban -- alice" in text
+    assert "Lifted the ban on 'alice'" in text
+    assert is_banned(db, channel, alice) is None
+
+
+def test_channel_restrictions_screen_empty_state_when_nothing_active(db, lane, sysop):
+    from netbbs.chat.channels import create_channel
+
+    create_channel(db, "Lobby", creator=sysop)
+
+    inputs = ["m", "n", "l", "0", "1", "r", "b", "b", "b", "b", "b"]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+
+    assert "No active mute/ban restrictions on this channel." in _written_text(session)
 
 
 def test_link_this_channel_is_not_offered_once_already_linked(db, lane, sysop):

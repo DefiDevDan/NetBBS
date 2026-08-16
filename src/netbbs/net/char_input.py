@@ -1040,6 +1040,22 @@ async def discard_buffered_enter(source: ByteSource) -> None:
         _push_back(source, peek)
 
 
+async def discard_buffered_input(source: ByteSource) -> None:
+    """Discard every byte currently queued ahead of the next real read --
+    the wider-scoped sibling of ``discard_buffered_enter`` above (which
+    only ever looks for one trailing Enter). Loops the same bounded peek
+    until nothing more arrives: a genuinely idle connection (the common
+    case) returns after one short wait; a burst of already-buffered
+    input (someone mid-typing when evicted) drains in a handful of
+    near-instant reads before that same final wait concludes there's
+    nothing left.
+    """
+    while True:
+        peek = await _read_byte_with_timeout(source, _FOLLOWUP_BYTE_TIMEOUT)
+        if peek is None:
+            return
+
+
 async def _read_utf8_continuation(source: ByteSource, lead_byte: int) -> str | None:
     """
     Given a UTF-8 multi-byte lead byte already read, read the appropriate

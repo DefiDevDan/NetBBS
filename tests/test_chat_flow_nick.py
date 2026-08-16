@@ -296,14 +296,35 @@ def test_finger_reflows_a_bio_the_same_way_the_directory_and_profile_screens_do(
 
 
 def test_moderation_notices_stay_canonical_only(db, lane, hub, presence, alice, bob, channel):
+    from netbbs.auth.users import set_user_level
     from netbbs.moderation import ChannelPermission, grant_permissions
 
     set_nick(db, alice, "DeepParse")
+    # Rank protection requires the moderator to outrank the target; alice
+    # and bob both start at the default level 10.
+    alice = set_user_level(db, alice, 50, changed_by=alice)
     grant_permissions(
         db, alice, object_type="channel", object_id=channel.id,
         permissions=ChannelPermission.MODERATE, granted_by=alice,
     )
-    session = asyncio.run(_run(lane, hub, presence, channel, alice, ["/kick bob testing", "/quit"]))
+
+    async def scenario():
+        mailbox = MessageMailbox()
+        history = InputHistory()
+        target_session = FakeSession()  # never types anything
+        target_task = asyncio.create_task(
+            chat_flow._chat_loop(target_session, lane, hub, presence, mailbox, history, channel, bob)
+        )
+        await asyncio.sleep(0)  # let target actually join before the kick is issued
+
+        mod_session = FakeSession(["/kick bob testing", "/quit"])
+        await asyncio.wait_for(
+            chat_flow._chat_loop(mod_session, lane, hub, presence, mailbox, history, channel, alice), timeout=2
+        )
+        await asyncio.wait_for(target_task, timeout=2)
+        return mod_session
+
+    session = asyncio.run(scenario())
     # The moderator's own alias must not appear in the kick notice --
     # moderation/auditing always shows canonical identity only.
     assert "by DeepParse|alice" not in _written_text(session)

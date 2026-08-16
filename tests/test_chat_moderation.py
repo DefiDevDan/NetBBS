@@ -7,10 +7,11 @@ import datetime
 
 import pytest
 
-from netbbs.auth.users import create_user
+from netbbs.auth.users import SYSOP_LEVEL, create_user
 from netbbs.chat.channels import create_channel
 from netbbs.chat.moderation import (
     ChatModerationError,
+    ChatModerationRankError,
     DurationError,
     ban_user,
     is_banned,
@@ -40,8 +41,12 @@ def sysop(db):
 
 @pytest.fixture
 def alice(db):
-    """A channel moderator, once granted MODERATE."""
-    return create_user(db, "alice", password="hunter2", user_level=10)
+    """A channel moderator, once granted MODERATE. Level 50, above
+    `bob`'s -- issue's own rank-protection check
+    (`_ensure_target_rank_allows_moderation`, dogfood follow-up)
+    otherwise refuses same-level moderation, which most of this file's
+    tests aren't about and shouldn't need to think about."""
+    return create_user(db, "alice", password="hunter2", user_level=50)
 
 
 @pytest.fixture
@@ -125,6 +130,67 @@ def test_unmute_requires_moderate_permission(db, bob, alice, channel):
 def test_unban_requires_moderate_permission(db, bob, alice, channel):
     with pytest.raises(ChatModerationError):
         unban_user(db, channel, bob, unbanned_by=alice)
+
+
+# -- rank protection (dogfood follow-up) -----------------------------------
+#
+# Two real gaps found live: a channel moderator could `/ban` themselves
+# with no interactive way back in (self-target has the same level as the
+# actor, so this is the same check as "equal level" below), and a
+# channel-scoped grant carried no protection for its target side at all --
+# a level-10 moderator could kick/ban/mute the SysOp who granted it.
+
+
+def test_mute_refuses_a_target_at_the_actors_own_level(db, channel):
+    same_level_a = create_user(db, "modA", password="hunter2", user_level=50)
+    same_level_b = create_user(db, "modB", password="hunter2", user_level=50)
+    _grant_moderate(db, same_level_a, channel)
+
+    with pytest.raises(ChatModerationRankError):
+        mute_user(db, channel, same_level_b, duration=None, reason=None, muted_by=same_level_a)
+
+
+def test_ban_refuses_a_higher_level_target(db, channel):
+    moderator = create_user(db, "lowmod", password="hunter2", user_level=20)
+    higher = create_user(db, "highuser", password="hunter2", user_level=90)
+    _grant_moderate(db, moderator, channel)
+
+    with pytest.raises(ChatModerationRankError):
+        ban_user(db, channel, higher, duration=None, reason=None, banned_by=moderator)
+
+
+def test_kick_refuses_self_targeting(db, channel):
+    moderator = create_user(db, "selfmod", password="hunter2", user_level=30)
+    _grant_moderate(db, moderator, channel)
+
+    with pytest.raises(ChatModerationRankError):
+        kick_user(db, channel, moderator, reason=None, kicked_by=moderator)
+
+
+def test_sysop_actor_is_exempt_from_rank_protection(db, channel):
+    # A SysOp must always be able to act, including against a target at
+    # or above their own level (matching netbbs.moderation.roles.
+    # has_permission's own unconditional SysOp bypass). SYSOP_LEVEL
+    # (255), not just "a high number" -- this file's own `sysop`
+    # fixture uses 100, which is high but not actually SysOp-level.
+    sysop_actor = create_user(db, "realop", password="hunter2", user_level=SYSOP_LEVEL)
+    other_sysop = create_user(db, "othersysop", password="hunter2", user_level=SYSOP_LEVEL)
+    _grant_moderate(db, sysop_actor, channel)
+
+    mute_user(db, channel, other_sysop, duration=None, reason=None, muted_by=sysop_actor)  # must not raise
+
+
+def test_rank_error_is_a_chat_moderation_error(db, channel):
+    """A caller only checking the base type (existing code, e.g. any
+    `except ChatModerationError` written before this rank check existed)
+    must still catch it -- ChatModerationRankError is a subtype, not an
+    unrelated new error class."""
+    same_level_a = create_user(db, "baseA", password="hunter2", user_level=50)
+    same_level_b = create_user(db, "baseB", password="hunter2", user_level=50)
+    _grant_moderate(db, same_level_a, channel)
+
+    with pytest.raises(ChatModerationError):
+        mute_user(db, channel, same_level_b, duration=None, reason=None, muted_by=same_level_a)
 
 
 # -- mute -----------------------------------------------------------------
