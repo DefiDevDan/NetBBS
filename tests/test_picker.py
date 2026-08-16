@@ -153,6 +153,35 @@ def test_search_and_goto_are_rejected_when_the_list_is_empty_but_refreshable():
     assert result["value"] is None
 
 
+def test_ctrl_c_is_an_alias_for_back():
+    """Dogfood feature request, issue #157: an incremental Ctrl-C
+    alias for this screen's own [B]ack action."""
+    result = {}
+    items = ["alpha", "beta"]
+
+    async def handler(session: Session):
+        result["value"] = await pick_item(
+            session, items, name_of=lambda x: x, stable_id_of=lambda x: items.index(x) + 1, title="Items", empty_message="none"
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await skip_initial_negotiation(reader)
+            await _read_until_quiet(reader)
+            writer.write(b"\x03")
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert result["value"] is None
+
+
 def test_select_by_two_digit_number():
     result = {}
     items = ["alpha", "beta", "gamma"]

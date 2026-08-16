@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+from netbbs.net.char_input import CANCEL_KEY
 from netbbs.net.composition import ReviewAction, edit_line_body, review_composition
 
 
@@ -170,6 +171,18 @@ def test_review_renders_all_fields_and_returns_explicit_actions():
     assert "Subject: " in text and "Hello" in text
     assert "first\nsecond" in text
     assert "\b" in text  # unsupported key was visibly rejected
+
+
+def test_review_ctrl_c_is_an_alias_for_cancel():
+    """Dogfood feature request, issue #157: an incremental Ctrl-C
+    alias for this screen's own [C]ancel action."""
+    session = FakeSession(keys=(CANCEL_KEY,))
+    action = asyncio.run(
+        review_composition(
+            session, recipient=None, subject="Subject", body="Body", commit_key="p", commit_label="ost",
+        )
+    )
+    assert action is ReviewAction.CANCEL
 
 
 def test_post_review_has_no_recipient_action_and_can_commit():

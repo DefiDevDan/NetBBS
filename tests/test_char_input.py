@@ -19,6 +19,7 @@ import pytest
 
 import netbbs.net.char_input as char_input_module
 from netbbs.net.char_input import (
+    CANCEL_KEY,
     HELP_KEY,
     REDRAW_KEY,
     REFRESH_KEY,
@@ -298,9 +299,13 @@ def test_read_key_does_not_echo_ctrl_l_or_ctrl_r():
 def test_read_key_still_skips_other_control_bytes_as_before():
     """Regression guard: the Ctrl-L/Ctrl-R carve-out must stay narrow --
     every other control byte keeps the old "no meaning, skip it"
-    treatment, not a broadened blanket pass-through."""
+    treatment, not a broadened blanket pass-through.
+
+    \\x03 (Ctrl-C) deliberately excluded here -- issue #157 gave it new
+    meaning (CANCEL_KEY) at this exact layer; its own dedicated tests
+    above cover that."""
     async def scenario():
-        source = FakeByteSource(b"\x01\x02\x03z")
+        source = FakeByteSource(b"\x01\x02z")
         writer = Writer()
         key = await read_key(source, writer)
         assert key == "z"
@@ -345,6 +350,42 @@ def test_read_line_still_treats_the_same_byte_as_real_backspace():
     assert line == "ab"
 
 
+# -- issue #157: Ctrl-C as a returnable key (incremental cancel) ---------
+
+
+def test_read_key_returns_ctrl_c_as_cancel_key():
+    async def scenario():
+        source = FakeByteSource(b"\x03")
+        writer = Writer()
+        key = await read_key(source, writer)
+        assert key == CANCEL_KEY == "\x03"
+
+    asyncio.run(scenario())
+
+
+def test_read_key_does_not_echo_ctrl_c():
+    async def scenario():
+        source = FakeByteSource(b"\x03")
+        writer = Writer()
+        await read_key(source, writer)
+        assert writer.joined == ""
+
+    asyncio.run(scenario())
+
+
+def test_read_line_still_discards_ctrl_c_with_no_special_meaning():
+    """This increment is read_key()-only -- read_line()'s editable path
+    keeps discarding 0x03 exactly as before (no caller-agnostic safe
+    meaning for it there yet, see CANCEL_KEY's own docstring)."""
+    async def scenario():
+        source = FakeByteSource(b"ab\x03c\r\n")
+        writer = Writer()
+        return await read_line(source, writer)
+
+    line = asyncio.run(scenario())
+    assert line == "abc"
+
+
 # -- reject_unhandled_key: real dogfood-reported bug fix -----------------
 # -- (Ctrl-L/Ctrl-R erasing the previous on-screen character on a menu ---
 # -- that doesn't specifically support them) ------------------------------
@@ -365,6 +406,13 @@ def test_reject_unhandled_key_bells_only_for_help_key():
     """Same reasoning as REDRAW_KEY/REFRESH_KEY -- HELP_KEY is also
     unechoed, for a menu that doesn't specifically support it."""
     assert reject_unhandled_key(HELP_KEY) == "\a"
+
+
+def test_reject_unhandled_key_bells_only_for_cancel_key():
+    """Same reasoning as REDRAW_KEY/REFRESH_KEY/HELP_KEY -- CANCEL_KEY
+    is also unechoed, for a menu that doesn't specifically support it
+    (issue #157's incremental rollout: not every screen opts in)."""
+    assert reject_unhandled_key(CANCEL_KEY) == "\a"
 
 
 def test_reject_unhandled_key_matches_reject_keystroke_for_ordinary_keys():

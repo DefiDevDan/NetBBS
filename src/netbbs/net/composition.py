@@ -12,7 +12,7 @@ from __future__ import annotations
 from enum import Enum, auto
 from pathlib import Path
 
-from netbbs.net.char_input import reject_unhandled_key
+from netbbs.net.char_input import CANCEL_KEY, reject_unhandled_key
 from netbbs.net.draft_storage import delete_draft, load_draft, offer_draft_recovery, save_draft
 from netbbs.net.session import Session
 from netbbs.rendering import (
@@ -274,6 +274,8 @@ async def review_composition(
         "u": ReviewAction.EDIT_SUBJECT,
         "b": ReviewAction.EDIT_BODY,
         "c": ReviewAction.CANCEL,
+        # Issue #157: Ctrl-C as an incremental alias for [C]ancel.
+        CANCEL_KEY: ReviewAction.CANCEL,
     }
     if recipient is not None:
         actions["t"] = ReviewAction.EDIT_RECIPIENT

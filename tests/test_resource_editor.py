@@ -10,7 +10,7 @@ import asyncio
 
 import pytest
 
-from netbbs.net.char_input import HELP_KEY
+from netbbs.net.char_input import CANCEL_KEY, HELP_KEY
 from netbbs.net.resource_editor import FieldSpec, bool_field, choice_field, edit_resource_draft, text_field
 from netbbs.net.session import Session
 from netbbs.rendering import menu_key
@@ -114,6 +114,28 @@ def test_back_discards_the_draft_and_never_calls_save():
         return "should not happen"
 
     session = FakeSession(["b"])
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Create thing", fields=[_name_field()], draft={"name": "lobby"},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        )
+    )
+    assert result is None
+    assert save_calls == []
+
+
+def test_ctrl_c_is_an_alias_for_back():
+    """Dogfood feature request, issue #157: an incremental Ctrl-C
+    alias for this screen's own [B]ack action."""
+    save_calls = []
+
+    async def save(draft):
+        save_calls.append(draft)
+        return "should not happen"
+
+    session = FakeSession([CANCEL_KEY])
     result = asyncio.run(
         edit_resource_draft(
             session, None,

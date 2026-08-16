@@ -277,6 +277,21 @@ Backspace already has nothing to act on, but not inside a real text editor,
 where 0x08 is live backspace-editing. Authoring help text per field is
 incremental, not required for every field up front.
 
+Ctrl-C (confirmed with Thiesi, dogfood question) is an *incremental*, not a
+universal, cancel key: `char_input.read_key()` returns it as a distinct
+`CANCEL_KEY` sentinel, the same "return a distinguishable value, let call
+sites opt in" shape `REDRAW_KEY`/`REFRESH_KEY`/`HELP_KEY` already use,
+wired in screen-by-screen wherever an existing cancel affordance
+(`[B]ack`, `[C]ancel`) already exists rather than swept across every
+prompt at once. Deliberately does not touch `read_line()`'s editable
+path in this pass -- unlike Backspace's byte, Ctrl-C during real
+free-text entry has no single safe meaning across every caller (a bare
+blank line already means something different per caller, e.g. "finish
+and review" in the line editor, not "cancel"), so real-text-entry
+cancellation is left for a later, separately-scoped increment. A
+screen with no cancel affordance at all, or one that hasn't adopted
+this yet, simply bells for Ctrl-C like any other unrecognized key.
+
 Conventional yes/no prompts act on one key: `Y`/`N` immediately, or Enter for
 the displayed default/current value. This uses a confirmation-specific input
 primitive; generic single-key menus retain their deliberate rule that Enter is

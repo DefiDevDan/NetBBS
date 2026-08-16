@@ -42,7 +42,7 @@ from __future__ import annotations
 import math
 from typing import Awaitable, Callable, Sequence, TypeVar
 
-from netbbs.net.char_input import REDRAW_KEY, REFRESH_KEY, Completer, reject_unhandled_key
+from netbbs.net.char_input import CANCEL_KEY, REDRAW_KEY, REFRESH_KEY, Completer, reject_unhandled_key
 from netbbs.net.session import Session
 from netbbs.rendering import (
     ACCENT_COLOR,
@@ -268,7 +268,9 @@ async def pick_item(
             page_items = await _render()
             continue
 
-        if key_lower == "b":
+        if key_lower == "b" or key == CANCEL_KEY:
+            # Issue #157: Ctrl-C as an incremental alias for [B]ack --
+            # this screen's own "leave without selecting" action.
             await session.write_line("")
             return None
 

@@ -2593,6 +2593,27 @@ already claims 0x08 unconditionally for real backspacing inside a
 fullscreen editor, so reusing it there the way `read_key()` safely can
 would break actual editing, not just look inconsistent.
 
+**A "universal cancel key" is not one design decision, it is at least two,
+and only one of them has a codebase-wide-safe answer today.** Issue #157:
+Ctrl-C (0x03) as `CANCEL_KEY` was added the same `read_key()`-only,
+opt-in-per-screen way as `REDRAW_KEY`/`REFRESH_KEY`/`HELP_KEY` -- safe
+because a single-keystroke menu has no free-text buffer for Ctrl-C to
+interrupt, so returning it there costs nothing regardless of which
+screen actually wires it in. `read_line()`'s editable path is the
+second, harder decision, deliberately *not* made in this pass: there is
+no single meaning for "the user pressed Ctrl-C while typing" that is
+correct for every caller, because a bare blank line (the closest
+existing analog) already means different things to different callers --
+`netbbs.net.composition.edit_line_body` treats it as "finish and enter
+review," not "cancel," while a plain single-line prompt like "Subject
+(or press Enter to cancel)" treats it as an explicit cancel. Giving
+Ctrl-C one hardcoded behavior inside `read_line()` itself would be
+silently wrong for whichever caller's blank-line convention doesn't
+match it. Extending cancellation into real text entry needs a
+per-caller opt-in mechanism (e.g. a parameter, not a blanket byte
+reinterpretation) and is intentionally left for a future, separately-
+scoped increment.
+
 **A manual `BLOCKED` trust verdict on `HELLO` doesn't just refuse the
 request -- `LinkServer._handle_hello` actively evicts the peer from
 `self._node.peers` (`self._node.peers.pop(peer.fingerprint, None)`) the

@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from netbbs.net.char_input import HELP_KEY, reject_unhandled_key
+from netbbs.net.char_input import CANCEL_KEY, HELP_KEY, reject_unhandled_key
 from netbbs.net.help_overlay import show_help
 from netbbs.net.session import Session
 from netbbs.rendering import HEADER_COLOR, MUTED_COLOR, action_bar, colored, sanitize_text, screen_title
@@ -134,7 +134,9 @@ async def edit_resource_draft(
         if choice == HELP_KEY:
             await _show_field_help(session, fields)
             continue
-        if choice == back_hotkey:
+        if choice == back_hotkey or choice == CANCEL_KEY:
+            # Issue #157: Ctrl-C as an incremental alias for [B]ack --
+            # this screen's own "discard the draft" action.
             await session.write_line("")
             return None
         if choice == save_hotkey:

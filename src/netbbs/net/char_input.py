@@ -60,9 +60,10 @@ _TAB = 0x09
 # their own distinct keys, rather than the generic "no meaning as a
 # standalone key, skip it and keep reading" treatment every other
 # control byte still gets below. Exported (not `_`-prefixed) since a
-# menu loop comparing `key == REDRAW_KEY`/`REFRESH_KEY`/`HELP_KEY`
-# needs these same values — a raw `"\x0c"`/`"\x12"`/`"\x08"` literal at
-# every call site would be both unreadable and easy to typo.
+# menu loop comparing `key == REDRAW_KEY`/`REFRESH_KEY`/`HELP_KEY`/
+# `CANCEL_KEY` needs these same values — a raw `"\x0c"`/`"\x12"`/
+# `"\x08"`/`"\x03"` literal at every call site would be both unreadable
+# and easy to typo.
 #
 # Deliberately narrow: only these bytes get this treatment, not a
 # blanket "pass every control byte through" -- CR/LF/DEL/ESC above keep
@@ -81,22 +82,38 @@ REFRESH_KEY = "\x12"  # Ctrl-R
 # (see _read_line_editable's unchanged _BS handling) -- this carve-out
 # is read_key()-only, the same way REDRAW_KEY/REFRESH_KEY already are.
 HELP_KEY = "\x08"  # Ctrl-H
+# Issue #157: Ctrl-C, adopted incrementally -- confirmed with Thiesi as
+# the same "return a distinct sentinel, let call sites opt in" shape
+# REDRAW_KEY/REFRESH_KEY/HELP_KEY already use, not a single sweeping
+# change. read_key()-only for now, same reasoning as HELP_KEY: a
+# single-keystroke menu has no in-progress typed text for Ctrl-C to
+# interrupt, so returning it here takes nothing away. Deliberately
+# does *not* touch read_line()'s editable path in this pass -- unlike
+# Backspace's byte, Ctrl-C during real free-text entry has no single
+# safe universal meaning across every caller (e.g. composition.py's
+# line editor already gives a bare blank line an entirely different
+# meaning -- "finish and review," not "cancel" -- so silently
+# reinterpreting Ctrl-C as "submit blank" there would be actively
+# wrong for that caller). Extending real-text-entry cancellation is
+# left for a later, separately-scoped increment.
+CANCEL_KEY = "\x03"  # Ctrl-C
 
 
 def reject_unhandled_key(key: str, *, count: int = 1) -> str:
     """
     Like `netbbs.rendering.ansi.reject_keystroke`, but aware that
-    `REDRAW_KEY`/`REFRESH_KEY`/`HELP_KEY` are returned *unechoed* by
-    `read_key()` above (a real dogfood-reported bug this fixes):
-    `reject_keystroke()` unconditionally erases "the last echoed
-    character" before ringing the bell, an assumption that's wrong for
-    these -- since nothing was echoed for this particular keystroke,
-    that erase instead deletes whatever real character was last drawn
-    on screen, once per press. A menu loop that doesn't specifically
-    support one of these just bells for it instead; every other
-    unrecognized key keeps today's erase-and-bell behavior unchanged.
+    `REDRAW_KEY`/`REFRESH_KEY`/`HELP_KEY`/`CANCEL_KEY` are returned
+    *unechoed* by `read_key()` above (a real dogfood-reported bug this
+    fixes): `reject_keystroke()` unconditionally erases "the last
+    echoed character" before ringing the bell, an assumption that's
+    wrong for these -- since nothing was echoed for this particular
+    keystroke, that erase instead deletes whatever real character was
+    last drawn on screen, once per press. A menu loop that doesn't
+    specifically support one of these just bells for it instead; every
+    other unrecognized key keeps today's erase-and-bell behavior
+    unchanged.
     """
-    if key in (REDRAW_KEY, REFRESH_KEY, HELP_KEY):
+    if key in (REDRAW_KEY, REFRESH_KEY, HELP_KEY, CANCEL_KEY):
         return "\a"
     return reject_keystroke(count)
 
@@ -837,16 +854,17 @@ async def read_key(source: ByteSource, write: WriteFunc, echo: bool = True) -> s
     Left/Right/Home/End/Delete to act within, and Up/Down have no
     history to recall in a single-keystroke menu) — are silently
     skipped and reading continues, rather than being returned as a key
-    in their own right. Three narrow exceptions: Ctrl-L and Ctrl-R
+    in their own right. Four narrow exceptions: Ctrl-L and Ctrl-R
     (issue #102) are returned as `REDRAW_KEY`/`REFRESH_KEY`, unechoed
     (unlike every other returned key below) — echoing a raw Ctrl-L byte
     back to a real terminal risks triggering its own local
     form-feed/clear behavior, fighting whatever redraw the caller is
     about to do on purpose. Ctrl-H (issue #150) is returned as
-    `HELP_KEY`, also unechoed, for the same reason -- see that
-    constant's own docstring for why reusing Backspace's byte here is
-    safe. Every *other* control byte, Backspace included, keeps the
-    plain "no meaning, keep reading" treatment unchanged.
+    `HELP_KEY` and Ctrl-C (issue #157) as `CANCEL_KEY`, also unechoed,
+    for the same reason -- see each constant's own docstring for why
+    reusing Backspace's/a still-unclaimed byte here is safe. Every
+    *other* control byte, Backspace included, keeps the plain "no
+    meaning, keep reading" treatment unchanged.
     """
     while True:
         b = await _read_byte(source)
@@ -866,6 +884,8 @@ async def read_key(source: ByteSource, write: WriteFunc, echo: bool = True) -> s
             return REFRESH_KEY
         if b == ord(HELP_KEY):
             return HELP_KEY
+        if b == ord(CANCEL_KEY):
+            return CANCEL_KEY
 
         if b < 0x20:
             continue
