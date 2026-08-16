@@ -73,17 +73,40 @@ _OVERFETCH_LIMIT = 500
 def _match_expression(query: str) -> str | None:
     """Turn free-typed `query` into a safe FTS5 MATCH expression, or
     `None` for a blank query (nothing to search). Every whitespace-
-    separated token is individually double-quoted (FTS5 escapes an
-    embedded `"` as `""`) and implicitly AND-ed together -- this treats
-    the query as a literal phrase-per-token search, never letting a
-    user's typed text be interpreted as FTS5 query syntax (AND/OR/NOT/
-    NEAR/column filters/prefix `*`), which would otherwise let oddly
-    formatted input raise a syntax error deep inside a MATCH clause
-    instead of just searching for it literally."""
-    tokens = query.split()
+    separated token is individually double-quoted and implicitly AND-ed
+    together -- this treats the query as a literal phrase-per-token
+    search, never letting a user's typed text be interpreted as FTS5
+    query syntax (AND/OR/NOT/NEAR/column filters/prefix `*`), which
+    would otherwise let oddly formatted input raise a syntax error deep
+    inside a MATCH clause instead of just searching for it literally.
+
+    A caller's own `"` characters are stripped before tokenizing, not
+    individually re-escaped and quoted along with the token they
+    surround -- this was investigated as a dogfood report claiming a
+    quoted phrase (e.g. `"quokkatown"`) silently failed to match, but
+    turned out to be a misdiagnosis: verified directly against FTS5
+    that the un-stripped double-double-quoted form
+    (`""""quokkatown""""`) already matches identically to the stripped
+    form. Kept anyway as a harmless simplification -- cleaner emitted
+    syntax, one fewer moving part -- but it fixes no real defect; still
+    no phrase/adjacency semantics either way (`"a b"` is the same
+    AND-of-tokens as `a b`).
+
+    The report's actual reproducible symptom (`"quokkatown" OR
+    aardvark` returning zero matches) turned out to be unrelated to
+    quoting at all: the *unquoted* `quokkatown OR aardvark` fails
+    identically, because "OR" becomes a third required literal word --
+    exactly the "never interpreted as FTS5 syntax" behavior this
+    function's docstring already documents as intentional, not a bug.
+    The caller-facing UI hint for that specific case lives in
+    `netbbs.net.login_flow._looks_like_attempted_boolean_syntax`, not
+    here -- this function's own contract (never special-case any word)
+    is correct and shouldn't grow an exception for "OR"/"AND"/"NOT".
+    """
+    tokens = query.replace('"', " ").split()
     if not tokens:
         return None
-    return " ".join('"' + token.replace('"', '""') + '"' for token in tokens)
+    return " ".join('"' + token + '"' for token in tokens)
 
 
 @dataclass(frozen=True)

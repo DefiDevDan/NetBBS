@@ -1525,24 +1525,78 @@ class _SearchResultItem:
     file, or retained channel message, already filtered to what `user`
     can currently access (`search_posts`/`search_files`/
     `search_channel_messages`'s own authorization). Built fresh per
-    query, never persisted -- same `stable_id_of=lambda item: id(item)`
-    idiom as `_ScanItem`."""
+    query, never persisted.
+
+    `result_index` (dogfood follow-up), not `id(item)`, is this item's
+    `stable_id_of` -- a plain 1-based position in this one query's own
+    result list. `root_post_id`/`file_id` are long content-addressed
+    hash strings, not small integers a caller could ever type back into
+    `pick_item`'s `[G]oto #` prompt (which is exactly why `_ScanItem`
+    elsewhere in this module still uses the unreachable `id(item)`
+    idiom -- there's no natural typeable id for those items either).
+    Search results are a fixed, never-reordered, never-re-paginated
+    list for the lifetime of one query, unlike a board/category
+    listing `goto` is designed to keep working across -- so a plain
+    per-query sequential number is a real, honest identifier here, not
+    a leaky abstraction, and matches the `(#N)` reference already
+    printed next to every row."""
 
     kind: str  # "post" | "file" | "channel_message"
     name: str
     description: str
+    result_index: int
     post: PostSearchHit | None = None
     file: FileSearchHit | None = None
     message: ChannelMessageSearchHit | None = None
 
 
-# A channel message's whole body would otherwise stand in as its list
-# "name" -- trimmed to a scannable snippet length, same spirit as
-# _ScanItem's "replies to you" list capping at 10 (a display shaping
-# choice, unrelated to and separate from pick_item's own sanitize_text
-# call, which still runs on whatever (possibly still-long) string this
-# produces).
-_MESSAGE_SNIPPET_LENGTH = 80
+# A search result row renders as "  NN. (#N) name - description",
+# colored_truncate()d to terminal_width -- front-to-back, so anything
+# past the cutoff is dropped wholesale, not shortened (`netbbs.net.
+# picker.pick_item`). A channel message's whole body -- and, since the
+# same dogfood follow-up that added post/file snippets below, a
+# post's/file's own matched body/description text -- would otherwise
+# stand in as (or bloat) the name/description field with no budget left
+# for the row prefix, the `(#N)` goto reference, and each other on an
+# ordinary 80-column terminal. Trimmed to a scannable length that
+# leaves real room for the rest of the row in the common case, same
+# spirit as _ScanItem's "replies to you" list capping at 10 (a display
+# shaping choice, unrelated to and separate from pick_item's own
+# sanitize_text call, which still runs on whatever this produces).
+_SEARCH_RESULT_SNIPPET_LENGTH = 20
+
+# Mirrors netbbs.search.search_posts/search_files/search_channel_
+# messages' own default `limit` -- passed explicitly (rather than
+# relying on that default) so `_load` below can request one extra hit
+# per category purely to detect truncation (dogfood follow-up), without
+# the two ever silently drifting apart.
+_SEARCH_RESULT_LIMIT = 20
+
+
+def _search_snippet(text: str) -> str:
+    text = text.strip()
+    if len(text) <= _SEARCH_RESULT_SNIPPET_LENGTH:
+        return text
+    return text[:_SEARCH_RESULT_SNIPPET_LENGTH] + "..."
+
+
+# Dogfood follow-up: `netbbs.search._match_expression`'s own docstring
+# is explicit that "OR"/"AND"/"NOT" are deliberately never interpreted
+# as FTS5 boolean operators -- every typed word is required and matched
+# literally instead (so oddly formatted input can never raise a syntax
+# error deep inside a MATCH clause). That's correct, intentional
+# design, not a bug -- but a caller who tries `cats OR dogs` expecting
+# an alternation gets an AND-of-three-literal-words query instead,
+# which will essentially never match anything, and the plain "No
+# matches" message gives no hint why. Investigated and confirmed live:
+# quoting the term changes nothing here either (`"cats" OR dogs` fails
+# identically to `cats OR dogs`) -- the standalone word is what matters,
+# not any surrounding punctuation.
+_BOOLEAN_LOOKING_WORDS = frozenset({"or", "and", "not"})
+
+
+def _looks_like_attempted_boolean_syntax(query: str) -> bool:
+    return any(token.lower() in _BOOLEAN_LOOKING_WORDS for token in query.split())
 
 
 async def _find_screen(
@@ -1593,57 +1647,113 @@ async def _find_screen(
         await session.write_line(colored("Search cancelled.", fg_color=MUTED_COLOR))
         return
 
-    def _load(db: Database) -> list[_SearchResultItem]:
+    def _load(db: Database) -> tuple[list[_SearchResultItem], bool]:
+        # Fetched one past the actual display cap, purely to detect
+        # truncation (dogfood follow-up) -- a broad query used to
+        # silently drop everything past the top `_SEARCH_RESULT_LIMIT`
+        # per category with no indication anything was cut, distinct
+        # from a genuine "no matches" empty state.
+        next_index = 1
         items: list[_SearchResultItem] = []
-        for hit in search_posts(db, user, query):
+        truncated = False
+
+        post_hits = search_posts(db, user, query, limit=_SEARCH_RESULT_LIMIT + 1)
+        truncated = truncated or len(post_hits) > _SEARCH_RESULT_LIMIT
+        for hit in post_hits[:_SEARCH_RESULT_LIMIT]:
             items.append(
                 _SearchResultItem(
-                    kind="post", name=hit.subject, description=f"[POST] {hit.board.name}", post=hit,
+                    kind="post", name=hit.subject,
+                    description=f"[POST] {hit.board.name}: {_search_snippet(hit.body)}",
+                    result_index=next_index, post=hit,
                 )
             )
-        for hit in search_files(db, user, query):
+            next_index += 1
+
+        file_hits = search_files(db, user, query, limit=_SEARCH_RESULT_LIMIT + 1)
+        truncated = truncated or len(file_hits) > _SEARCH_RESULT_LIMIT
+        for hit in file_hits[:_SEARCH_RESULT_LIMIT]:
+            description = f"[FILE] {hit.area.name}"
+            if hit.description:
+                description += f": {_search_snippet(hit.description)}"
             items.append(
                 _SearchResultItem(
-                    kind="file", name=hit.filename, description=f"[FILE] {hit.area.name}", file=hit,
+                    kind="file", name=hit.filename, description=description,
+                    result_index=next_index, file=hit,
                 )
             )
+            next_index += 1
+
         visible_channels = list_visible_channels_for(db, user)
-        for hit in search_channel_messages(db, user, query, visible_channels=visible_channels):
-            snippet = hit.body[:_MESSAGE_SNIPPET_LENGTH]
-            if len(hit.body) > _MESSAGE_SNIPPET_LENGTH:
-                snippet += "..."
+        message_hits = search_channel_messages(
+            db, user, query, visible_channels=visible_channels, limit=_SEARCH_RESULT_LIMIT + 1
+        )
+        truncated = truncated or len(message_hits) > _SEARCH_RESULT_LIMIT
+        for hit in message_hits[:_SEARCH_RESULT_LIMIT]:
             items.append(
                 _SearchResultItem(
-                    kind="channel_message", name=snippet,
-                    description=f"[CHAT] #{hit.channel.name} by {hit.author_label}", message=hit,
+                    kind="channel_message", name=_search_snippet(hit.body),
+                    description=f"[CHAT] #{hit.channel.name} by {hit.author_label}",
+                    result_index=next_index, message=hit,
                 )
             )
-        return items
+            next_index += 1
+        return items, truncated
 
-    items = await lane.run(_load)
-
-    selected = await pick_item(
-        session, items,
-        name_of=lambda item: item.name,
-        stable_id_of=lambda item: id(item),
-        description_of=lambda item: item.description,
-        title=f"Search results for {query!r}",
-        empty_message="No matches. Try fewer or broader search terms.",
-    )
-    if selected is None:
-        return
-
-    if selected.kind == "post":
-        cursor = await lane.run(post_jump_cursor, selected.post.board.id, selected.post.root_post_id)
-        await _show_board(session, db, selected.post.board, user, link_context=link_context, initial_cursor=cursor)
-    elif selected.kind == "file":
-        cursor = await lane.run(file_jump_cursor, selected.file.area.id, selected.file.file_id)
-        await enter_file_area(session, lane, selected.file.area, user, initial_cursor=cursor, link_context=link_context)
-    else:
-        await browse_channels(
-            session, lane, hub, presence, mailbox, history, user,
-            initial_channel=selected.message.channel, link_context=link_context,
+    items, truncated = await lane.run(_load)
+    if truncated:
+        await session.write_line(
+            colored(
+                f"Showing the top {_SEARCH_RESULT_LIMIT} matches per category -- "
+                "narrow your search terms for a complete list.",
+                fg_color=MUTED_COLOR,
+            )
         )
+
+    # Loops back to the results list after viewing a hit (dogfood
+    # follow-up), same "pick, view, pick again" shape `_browse_
+    # directory`/mail's inbox/sent already use -- checking hit #2 of #5
+    # is the whole point of search results specifically, more so than
+    # this screen's own one-shot sibling `_new_scan_screen` (one pick
+    # per resource *category*, not per hit within one query). Re-uses
+    # the same already-fetched `items` rather than re-querying on every
+    # loop -- the query text can't change mid-loop (there's no `[S]earch`
+    # re-prompt wired to a new query here), so nothing to refresh.
+    empty_message = "No matches. Try fewer or broader search terms."
+    if _looks_like_attempted_boolean_syntax(query):
+        empty_message = (
+            'No matches. "OR"/"AND"/"NOT" are not search operators here -- '
+            "every word you type is required and matched literally, so "
+            "combining one of these with other terms can make a query "
+            "impossible to satisfy. Try searching without them."
+        )
+
+    while True:
+        selected = await pick_item(
+            session, items,
+            name_of=lambda item: item.name,
+            stable_id_of=lambda item: item.result_index,
+            description_of=lambda item: item.description,
+            title=f"Search results for {query!r}",
+            empty_message=empty_message,
+        )
+        if selected is None:
+            return
+
+        if selected.kind == "post":
+            cursor = await lane.run(post_jump_cursor, selected.post.board.id, selected.post.root_post_id)
+            await _show_board(
+                session, db, selected.post.board, user, link_context=link_context, initial_cursor=cursor
+            )
+        elif selected.kind == "file":
+            cursor = await lane.run(file_jump_cursor, selected.file.area.id, selected.file.file_id)
+            await enter_file_area(
+                session, lane, selected.file.area, user, initial_cursor=cursor, link_context=link_context
+            )
+        else:
+            await browse_channels(
+                session, lane, hub, presence, mailbox, history, user,
+                initial_channel=selected.message.channel, link_context=link_context,
+            )
 
 
 async def _login(

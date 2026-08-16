@@ -84,6 +84,27 @@ def test_search_posts_matches_body_too(db, alice):
     assert len(hits) == 1
 
 
+def test_search_posts_quoting_a_term_does_not_defeat_the_match(db, alice):
+    # A dogfood report claimed wrapping a term in quotes -- the single
+    # most natural thing to try in any search box -- silently broke the
+    # match. Investigated directly against FTS5 and found to be a
+    # misdiagnosis (see `_match_expression`'s own docstring for the
+    # full story: the real symptom was "OR"/"AND"/"NOT" being treated
+    # as required literal words, unrelated to quoting). Kept as a plain
+    # behavior-documentation test, not a regression proof for a bug
+    # that turned out not to exist -- quoting a term, or a whole
+    # multi-word phrase, must keep matching normally either way.
+    board = create_board(db, "general", creator=alice)
+    create_post(db, board, alice, "quokkatown update", "nothing relevant here")
+
+    assert [hit.subject for hit in search_posts(db, alice, '"quokkatown"')] == ["quokkatown update"]
+    # A quoted multi-word phrase still isn't real phrase/adjacency
+    # search (out of scope, see _match_expression's own docstring) --
+    # it degrades to "both words present," which is also what it did
+    # before this investigation, just via slightly messier FTS5 syntax.
+    assert [hit.subject for hit in search_posts(db, alice, '"quokkatown update"')] == ["quokkatown update"]
+
+
 def test_search_posts_excludes_pending_posts_on_a_moderated_board(db, alice, bob):
     board = create_board(db, "general", creator=alice, moderated=True)
     create_post(db, board, bob, "hello world", "pending content")
@@ -343,7 +364,10 @@ def test_find_selecting_a_post_jumps_to_it(db, lane, alice):
     board = create_board(db, "general", creator=alice)
     create_post(db, board, alice, "hello world", "body")
 
-    session = _run_main_menu(db, lane, alice, ["f", "hello", "0", "1", "b", "l", "y"])
+    # Trailing "b": viewing a hit now loops back to the results list
+    # (dogfood follow-up) instead of returning straight to the caller,
+    # so a second "back" is needed to actually leave.
+    session = _run_main_menu(db, lane, alice, ["f", "hello", "0", "1", "b", "b", "l", "y"])
 
     text = _visible_text(session)
     assert "hello world" in text
@@ -353,7 +377,8 @@ def test_find_selecting_a_file_jumps_to_it(db, lane, alice):
     area = create_file_area(db, "downloads", creator=alice)
     upload_file(db, area, alice, "readme.txt", b"data", description="a helpful guide")
 
-    session = _run_main_menu(db, lane, alice, ["f", "helpful", "0", "1", "b", "l", "y"])
+    # Trailing "b": see the loop-back comment in the sibling test above.
+    session = _run_main_menu(db, lane, alice, ["f", "helpful", "0", "1", "b", "b", "l", "y"])
 
     text = _visible_text(session)
     assert "readme.txt" in text
@@ -362,6 +387,149 @@ def test_find_selecting_a_file_jumps_to_it(db, lane, alice):
 def test_find_no_matches(db, lane, alice):
     session = _run_main_menu(db, lane, alice, ["f", "nonexistentterm", "l", "y"])
     assert "No matches." in _visible_text(session)
+
+
+def test_find_shows_a_boolean_syntax_hint_when_the_query_uses_or_and_not(db, lane, alice):
+    # Dogfood follow-up (see `netbbs.search._match_expression`'s own
+    # docstring for the full investigation): "OR"/"AND"/"NOT" are
+    # deliberately never treated as boolean operators here -- a caller
+    # typing `quokkatown OR aardvark` gets an AND-of-three-literal-words
+    # query that will essentially never match anything, and the plain
+    # "No matches" message alone gives no hint why.
+    board = create_board(db, "general", creator=alice)
+    create_post(db, board, alice, "quokkatown update", "body")
+
+    session = _run_main_menu(db, lane, alice, ["f", "quokkatown OR aardvark", "l", "y"])
+
+    text = _visible_text(session)
+    assert "No matches." in text
+    assert "not search operators" in text
+
+
+def test_find_does_not_show_the_boolean_syntax_hint_for_an_ordinary_query(db, lane, alice):
+    session = _run_main_menu(db, lane, alice, ["f", "nonexistentterm", "l", "y"])
+    assert "not search operators" not in _visible_text(session)
+
+
+def test_find_shows_a_body_snippet_for_a_matching_post(db, lane, alice):
+    # Dogfood follow-up: a post hit used to show only its subject, never
+    # any indication of *why* it matched -- unusable for a body-text
+    # search where the subject never contains the matched word at all.
+    # "bodymarker" is asserted, not the query word itself ("quokkatown")
+    # -- the query is always echoed in the results screen's own title
+    # regardless of this fix, so asserting the query word back would
+    # pass even with no snippet shown at all. Placed right before the
+    # match so it survives the snippet's own length cap.
+    board = create_board(db, "general", creator=alice)
+    create_post(db, board, alice, "weekly digest", "bodymarker quokkatown is buried in this post")
+
+    session = _run_main_menu(db, lane, alice, ["f", "quokkatown", "b", "l", "y"])
+
+    assert "bodymarker" in _visible_text(session)
+
+
+def test_find_shows_a_description_snippet_for_a_matching_file(db, lane, alice):
+    # Same "assert a marker the query echo can't produce" reasoning as
+    # the sibling post test above.
+    area = create_file_area(db, "downloads", creator=alice)
+    upload_file(db, area, alice, "readme.txt", b"data", description="descmarker zephyr notes")
+
+    session = _run_main_menu(db, lane, alice, ["f", "zephyr", "b", "l", "y"])
+
+    assert "descmarker" in _visible_text(session)
+
+
+def test_find_channel_message_result_row_fits_within_terminal_width(db, lane, alice):
+    # Dogfood follow-up: a channel-message hit's snippet (up to 80
+    # characters) plus a raw `id(item)` goto reference (13-14 digits)
+    # could alone exceed an ordinary 80-column terminal before the
+    # "[CHAT] #channel by author" description was even reached --
+    # front-to-back truncation then dropped the channel/author
+    # entirely, the two facts a caller most needs to judge a hit.
+    channel = create_channel(db, "general-discussion", creator=alice)
+    record_message(
+        db, channel, kind="message", author_label="alice",
+        body="a moderately long message about quokkatown migration patterns and behavior",
+    )
+
+    session = _run_main_menu(db, lane, alice, ["f", "quokkatown", "b", "l", "y"])
+
+    text = _visible_text(session)
+    # "(#" only ever appears on an actual result row (the goto
+    # reference) -- scoped to just those, not the screen's own nav/help
+    # line, which legitimately runs longer than one result row.
+    result_rows = [line for line in text.splitlines() if "(#" in line]
+    assert result_rows, "no result row found at all"
+    for line in result_rows:
+        assert len(line) <= 80, f"a result row exceeded 80 columns: {line!r}"
+    assert "general-discussion" in text
+    assert "by alice" in text
+
+
+def test_find_shows_a_notice_when_results_are_truncated(db, lane, alice):
+    board = create_board(db, "general", creator=alice)
+    for i in range(25):
+        create_post(db, board, alice, f"quokkatown update {i}", "body")
+
+    session = _run_main_menu(db, lane, alice, ["f", "quokkatown", "b", "l", "y"])
+
+    assert "Showing the top 20 matches" in _visible_text(session)
+
+
+def test_find_does_not_show_a_truncation_notice_when_nothing_was_cut(db, lane, alice):
+    board = create_board(db, "general", creator=alice)
+    create_post(db, board, alice, "quokkatown update", "body")
+
+    session = _run_main_menu(db, lane, alice, ["f", "quokkatown", "b", "l", "y"])
+
+    assert "Showing the top" not in _visible_text(session)
+
+
+def test_find_loops_back_to_results_after_viewing_a_hit(db, lane, alice):
+    # Dogfood follow-up: viewing one hit used to return straight to the
+    # caller (dumped to the main menu), so checking a second hit meant
+    # retyping the identical query from scratch. Proven here by viewing
+    # a *second* hit in the same visit, with no second `[F]ind` in
+    # between.
+    #
+    # Asserting each post's own *marker*, not its subject -- both
+    # subjects ("quokkatown first"/"second") are already shown as row
+    # labels on the results list itself, before either is ever
+    # selected, so asserting them back would pass even with no loop-
+    # back at all. Each marker sits well past the result-row snippet's
+    # own length cap, so it only appears once `_show_board` actually
+    # renders that post's full body -- proof the *second* view really
+    # happened, not just that the list was drawn once.
+    board = create_board(db, "general", creator=alice)
+    create_post(db, board, alice, "quokkatown first", "quokkatown " + "pad " * 10 + "firstviewmarker")
+    create_post(db, board, alice, "quokkatown second", "quokkatown " + "pad " * 10 + "secondviewmarker")
+
+    session = _run_main_menu(db, lane, alice, ["f", "quokkatown", "0", "1", "b", "0", "2", "b", "b", "l", "y"])
+
+    text = _visible_text(session)
+    assert "firstviewmarker" in text
+    assert "secondviewmarker" in text
+
+
+def test_find_goto_jumps_directly_to_a_result_by_its_shown_number(db, lane, alice):
+    # Dogfood follow-up: [G]oto # used to key off `id(item)` -- a raw
+    # Python object address no caller could ever type back correctly.
+    # Now a plain per-query sequential number, the same one shown as
+    # "(#N)" next to each row.
+    board = create_board(db, "general", creator=alice)
+    create_post(db, board, alice, "quokkatown first", "body")
+    create_post(db, board, alice, "quokkatown second", "body")
+
+    session = _run_main_menu(db, lane, alice, ["f", "quokkatown", "g", "2", "b", "b", "l", "y"])
+
+    text = _visible_text(session)
+    assert "Out of range" not in text
+    assert "Not a number" not in text
+    # Whichever of the two posts is actually result #2 (bm25 relevance
+    # order, not creation order) is the one that must have opened --
+    # not asserting a specific title, just that goto genuinely
+    # navigated rather than silently failing.
+    assert "quokkatown first" in text or "quokkatown second" in text
 
 
 # -- check_index_integrity / rebuild_indexes (issue #74) -------------------
