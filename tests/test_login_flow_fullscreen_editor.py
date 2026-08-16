@@ -133,6 +133,20 @@ def test_profile_color_depth_toggle_cycles_auto_truecolor_256(db, alice):
     assert color_depth_override(db, alice) is None
 
 
+def test_profile_menu_descriptions_toggle_cycles_off_brief_detailed(db, alice):
+    from netbbs.net.menu_description_preference import menu_description_level
+
+    assert menu_description_level(db, alice) == "brief"  # default
+    session = FakeSession(["d", "d", "d", "b"])
+    asyncio.run(login_flow._edit_profile(session, db, alice))
+    text = _written_text(session)
+    assert "Menu descriptions are now detailed" in text
+    assert "Menu descriptions are now off" in text
+    assert "Menu descriptions are now brief" in text
+    # Three presses of a 3-state cycle starting from "brief" return to it.
+    assert menu_description_level(db, alice) == "brief"
+
+
 # -- composing a new post ---------------------------------------------------
 
 

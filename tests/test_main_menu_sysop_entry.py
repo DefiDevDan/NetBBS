@@ -126,6 +126,34 @@ def test_main_menu_collapses_sections_at_minimum_width(tmp_path):
     db.close()
 
 
+def test_main_menu_shows_descriptions_by_default(tmp_path):
+    # GitHub issue #160: descriptions on by default -- a caller who has
+    # never touched the setting still gets the discoverability benefit.
+    db = Database(tmp_path / "node.db")
+    user = create_user(db, "alice", password="hunter2", user_level=10)
+    session = FakeSession()
+
+    asyncio.run(_draw_main_menu(session, db, MessageMailbox(), user))
+
+    text = _visible_text(session)
+    assert "Look up other callers" in text  # [D]irectory's own description
+    db.close()
+
+
+def test_main_menu_hides_descriptions_when_the_user_turns_them_off(tmp_path):
+    from netbbs.net.menu_description_preference import set_menu_description_level
+
+    db = Database(tmp_path / "node.db")
+    user = create_user(db, "alice", password="hunter2", user_level=10)
+    set_menu_description_level(db, user, "off")
+    session = FakeSession()
+
+    asyncio.run(_draw_main_menu(session, db, MessageMailbox(), user))
+
+    assert "Look up other callers" not in _visible_text(session)
+    db.close()
+
+
 def test_pressing_s_reaches_the_sysop_branch_for_a_sysop_level_user(tmp_path):
     db = Database(tmp_path / "node.db")
     sysop = create_user(db, "root", password="hunter2", user_level=255)

@@ -161,6 +161,22 @@ def test_sysop_lands_on_an_operations_overview(db, lane, sysop):
     assert "QUICK" in text
 
 
+def test_console_shows_descriptions_by_default(db, lane, sysop):
+    # GitHub issue #160 pilot: descriptions on by default.
+    session = FakeSession(["b"])
+    _run(session, lane, sysop)
+    assert "Manage user accounts" in _written_text(session)
+
+
+def test_console_hides_descriptions_when_sysop_turns_them_off(db, lane, sysop):
+    from netbbs.net.menu_description_preference import set_menu_description_level
+
+    set_menu_description_level(db, sysop, "off")
+    session = FakeSession(["b"])
+    _run(session, lane, sysop)
+    assert "Manage user accounts" not in _written_text(session)
+
+
 def test_console_refresh_key_is_labeled_refresh_not_dashboard(db, lane, sysop):
     # Dogfood follow-up: "[D]ashboard" read as a promise of a separate,
     # deeper stats view -- it's actually a manual redraw of the exact
@@ -2100,6 +2116,23 @@ def test_board_detail_shows_post_count_and_last_activity(db, lane, sysop):
     _run(session, lane, sysop)
 
     assert "Posts: 2 (last post" in _written_text(session)
+
+
+def test_file_area_menu_explains_what_gc_means(db, lane, sysop):
+    # GitHub issue #160/#8: a new SysOp had no way to know what "GC"
+    # stood for -- the description now spells it out right there.
+    session = FakeSession(["m", "f", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Reclaim space from orphaned files" in _written_text(session)
+
+
+def test_file_area_menu_respects_the_sysop_own_description_setting(db, lane, sysop):
+    from netbbs.net.menu_description_preference import set_menu_description_level
+
+    set_menu_description_level(db, sysop, "off")
+    session = FakeSession(["m", "f", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Reclaim space from orphaned files" not in _written_text(session)
 
 
 def test_area_detail_shows_no_files_yet_for_an_empty_area(db, lane, sysop):

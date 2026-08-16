@@ -217,6 +217,7 @@ from netbbs.net.shutdown import (
     run_drain_sequence,
     run_shutdown_sequence,
 )
+from netbbs.net.menu_description_preference import menu_description_level
 from netbbs.operational_history import list_operational_run_history
 from netbbs.selfupdate import (
     UpdateError,
@@ -244,11 +245,13 @@ from netbbs.rendering import (
     MUTED_COLOR,
     SUCCESS_COLOR,
     WARNING_COLOR,
+    MenuEntry,
     action_bar,
     badge,
     colored,
     colored_truncate,
     empty_state,
+    menu_grid,
     menu_key,
     reflow,
     reject_keystroke,
@@ -410,6 +413,7 @@ async def _draw_admin_menu(
             "recent_warnings": sum(entry.level == "WARNING" for entry in recent_diagnostics),
             "backup": get_last_backup_summary(db),
             "update": get_last_check_summary(db),
+            "description_level": menu_description_level(db, actor),
         }
 
     if state is None:
@@ -475,27 +479,54 @@ async def _draw_admin_menu(
             f"{state['recent_warnings']} warning(s)"
         )
 
-    await session.write_line(colored("\r\nCONSOLE", fg_color=HEADER_COLOR, bold=True))
-    await session.write_line(action_bar(
-        [menu_key("U", "sers"), menu_key("C", "ontent"), menu_key("O", "perations"),
-         menu_key("S", "ettings"),
-         # Dogfood follow-up: this used to say "Dashboard" (hotkey "d"),
-         # which reads as a promise of some separate, deeper stats view
-         # -- it's actually a manual redraw of the exact screen already
-         # on display (see the "r" dispatch case in `admin_menu`).
-         # "Refresh" says what it actually does; "d" wasn't a natural
-         # fit for that word, so the hotkey moves to "r" (unused at
-         # this menu) rather than forcing a mismatched letter.
-         menu_key("R", "efresh"), menu_key("B", "ack")],
-        width=session.terminal_width,
-    ))
-    quick = [menu_key("K", "up", prefix="Bac")]
+    # Brief descriptions are kept to roughly 34 characters or less --
+    # the actual available width once this renders in two columns at
+    # the classic 80-column terminal (menu_grid's own column_width
+    # minus its description indent). Longer, fuller text belongs in
+    # `detailed`, shown only when a caller opts into that verbosity.
+    console = [
+        MenuEntry(label=menu_key("U", "sers"), brief="Manage user accounts"),
+        MenuEntry(
+            label=menu_key("C", "ontent"),
+            brief="Boards, areas, channels & more",
+            detailed="Manage boards, file areas, channels, and Communities -- including GC (storage garbage collection) under file areas.",
+        ),
+        MenuEntry(
+            label=menu_key("O", "perations"),
+            brief="Observe the node, fix trouble",
+            detailed="Live node observation: sessions, Link status, the audit log, backup status, and draft cleanup.",
+        ),
+        MenuEntry(label=menu_key("S", "ettings"), brief="Durable node configuration"),
+        # Dogfood follow-up: this used to say "Dashboard" (hotkey "d"),
+        # which reads as a promise of some separate, deeper stats view
+        # -- it's actually a manual redraw of the exact screen already
+        # on display (see the "r" dispatch case in `admin_menu`).
+        # "Refresh" says what it actually does; "d" wasn't a natural
+        # fit for that word, so the hotkey moves to "r" (unused at
+        # this menu) rather than forcing a mismatched letter.
+        MenuEntry(label=menu_key("R", "efresh"), brief="Redraw with current numbers"),
+        MenuEntry(label=menu_key("B", "ack"), brief="Return to the main menu"),
+    ]
+    quick = [MenuEntry(label=menu_key("K", "up", prefix="Bac"), brief="Last backup status and history")]
     if node_controls is not None:
-        quick.insert(0, menu_key("N", "ode"))
+        quick.insert(
+            0,
+            MenuEntry(label=menu_key("N", "ode"), brief="Sessions, shutdown, and drain"),
+        )
     if link_context is not None:
-        quick.extend([menu_key("L", "ink status"), menu_key("X", "outbox")])
-    await session.write_line(colored("QUICK", fg_color=MUTED_COLOR))
-    await session.write_line(action_bar(quick, width=session.terminal_width))
+        quick.extend([
+            MenuEntry(label=menu_key("L", "ink status"), brief="NetBBS Link peer/network health"),
+            MenuEntry(label=menu_key("X", "outbox"), brief="Pending outgoing Link work items"),
+        ])
+    await session.write_line(
+        "\r\n"
+        + menu_grid(
+            [("Console", console), ("Quick", quick)],
+            width=session.terminal_width,
+            height=session.terminal_height,
+            description_level=state["description_level"],
+        )
+    )
     await session.write("Choice: ")
     return state
 
@@ -4807,7 +4838,8 @@ async def _post_action_screen(
 async def _area_menu(
     session: Session, lane: DatabaseLane, actor: User, *, link_context: LinkContext | None = None
 ) -> None:
-    await _draw_area_menu(session)
+    description_level = await lane.run(menu_description_level, actor)
+    await _draw_area_menu(session, description_level)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -4817,25 +4849,42 @@ async def _area_menu(
         elif choice == "c":
             await session.write_line("")
             await _area_screen(session, lane, actor)
-            await _draw_area_menu(session)
+            await _draw_area_menu(session, description_level)
         elif choice == "l":
             await session.write_line("")
             await _list_areas_screen(session, lane, actor, link_context=link_context)
-            await _draw_area_menu(session)
+            await _draw_area_menu(session, description_level)
         elif choice == "g":
             await session.write_line("")
             await _gc_screen(session, lane)
-            await _draw_area_menu(session)
+            await _draw_area_menu(session, description_level)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
-async def _draw_area_menu(session: Session) -> None:
+async def _draw_area_menu(session: Session, description_level: str) -> None:
     await session.write_line("\r\n" + screen_title("File areas", width=session.terminal_width))
     await session.write_line(
-        action_bar(
-            [menu_key("C", "reate"), menu_key("L", "ist"), menu_key("G", "C storage"), menu_key("B", "ack")],
+        menu_grid(
+            [(
+                "",
+                [
+                    MenuEntry(label=menu_key("C", "reate"), brief="Add a new file area"),
+                    MenuEntry(label=menu_key("L", "ist"), brief="Browse and edit file areas"),
+                    MenuEntry(
+                        label=menu_key("G", "C storage"),
+                        brief="Reclaim space from orphaned files",
+                        detailed=(
+                            "Garbage-collect (GC) uploaded file storage: reclaim disk space still "
+                            "held by blobs no file entry references anymore, e.g. after a delete."
+                        ),
+                    ),
+                    MenuEntry(label=menu_key("B", "ack"), brief="Return to the Content menu"),
+                ],
+            )],
             width=session.terminal_width,
+            height=session.terminal_height,
+            description_level=description_level,
         )
     )
     await session.write("Choice: ")

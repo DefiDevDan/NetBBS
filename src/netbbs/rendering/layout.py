@@ -9,19 +9,35 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from netbbs.rendering.ansi import colored
 from netbbs.rendering.theme import (
     ERROR_COLOR,
     HEADER_COLOR,
     METADATA_COLOR,
+    MUTED_COLOR,
     SUCCESS_COLOR,
     WARNING_COLOR,
 )
-from netbbs.rendering.width import cut_to_width, display_width
+from netbbs.rendering.width import cut_to_width, display_width, wrap_to_width
 
 _SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
 _WIDE_MENU_MIN_WIDTH = 72
+# GitHub issue #160: a third column once there's genuinely room for one --
+# beyond this, `menu_grid`'s own multi-line-per-entry layout (once
+# descriptions are shown) gets cramped rather than more useful.
+_THREE_COLUMN_MIN_WIDTH = 120
+# Below this many rows, descriptions are always suppressed regardless of
+# the caller's requested level -- genuinely short terminals are rare
+# enough in real usage (issue #160 design discussion: no real client has
+# defaulted below 80x24 in decades, and `netbbs.net.session.
+# clamp_terminal_size` itself enforces no such floor) that a smooth
+# multi-step degrade curve isn't worth designing for. One defensive
+# floor, mirroring the fullscreen editors' own `_MIN_HEIGHT`-style clamp.
+_MIN_HEIGHT_FOR_DESCRIPTIONS = 15
+_DESCRIPTION_LEVELS = ("off", "brief", "detailed")
+_COLUMN_GUTTER = 3
 
 
 def visible_width(text: str) -> int:
@@ -103,46 +119,176 @@ def screen_title(
     return "\r\n".join(lines)
 
 
-def menu_grid(
-    sections: Sequence[tuple[str, Sequence[str]]], *, width: int = 80
-) -> str:
-    """Render named menu groups in two columns when space permits.
+@dataclass(frozen=True)
+class MenuEntry:
+    """One menu option for `menu_grid` (design doc, dogfood feature
+    request -- issue #160): `label` is already-styled text (normally
+    `menu_key()` output, exactly what a plain `str` option has always
+    been), `brief`/`detailed` are optional plain-text descriptions shown
+    indented underneath when descriptions are enabled. `detailed` falls
+    back to `brief` when not given separately -- authoring one string is
+    enough to support both levels; a second, longer one is opt-in, not
+    required. Sanitized like any other rendered text is expected to be
+    by the caller authoring it (these are trusted, hardcoded UI copy,
+    never untrusted/remote content), matching every other menu label in
+    this codebase."""
 
-    Options arrive already styled (normally through ``menu_key``). Narrow
-    terminals receive the same groups in one column without losing actions.
+    label: str
+    brief: str | None = None
+    detailed: str | None = None
+
+
+_MenuOption = str | MenuEntry
+
+
+def _as_entry(option: _MenuOption) -> MenuEntry:
+    return option if isinstance(option, MenuEntry) else MenuEntry(label=option)
+
+
+def _column_count(width: int, section_count: int) -> int:
+    if width >= _THREE_COLUMN_MIN_WIDTH:
+        target = 3
+    elif width >= _WIDE_MENU_MIN_WIDTH:
+        target = 2
+    else:
+        target = 1
+    return max(1, min(target, section_count))
+
+
+_DESCRIPTION_INDENT = "    "
+
+
+def _section_lines(
+    title: str, entries: Sequence[MenuEntry], *, description_level: str, available_width: int
+) -> list[str]:
+    # An empty title means "one flat group of options, no heading" -- a
+    # legitimate caller shape (a single-purpose menu with nothing to
+    # group), not just an unlabeled section; skip the line entirely
+    # rather than rendering a blank one.
+    lines = [colored(title.upper(), fg_color=METADATA_COLOR, bold=True)] if title else []
+    description_width = max(1, available_width - len(_DESCRIPTION_INDENT))
+    for entry in entries:
+        lines.append(f"  {entry.label}")
+        if description_level == "off":
+            continue
+        text = entry.detailed if description_level == "detailed" and entry.detailed else entry.brief
+        if text:
+            # A hard cut, not a wrap: descriptions are meant to be one
+            # short line to begin with (the whole point of this feature
+            # over full online help), so losing an unlikely overflowing
+            # tail on a narrow terminal is an acceptable, simple
+            # degradation -- the same convention `screen_title`/
+            # `empty_state` already use for their own text in this module.
+            lines.append(
+                colored(f"{_DESCRIPTION_INDENT}{cut_to_width(text, description_width)}", fg_color=MUTED_COLOR)
+            )
+    return lines
+
+
+def menu_grid(
+    sections: Sequence[tuple[str, Sequence[_MenuOption]]],
+    *,
+    width: int = 80,
+    height: int | None = None,
+    description_level: str = "off",
+) -> str:
+    """Render named menu groups in columns when space permits, one
+    column per fixed width breakpoint (GitHub issue #160: 1 below 72,
+    2 from 72-119, 3 from 120 up) rather than the fixed 2-column-max
+    this used to be capped at.
+
+    Options arrive already styled (normally through ``menu_key``) as
+    plain strings, or as a `MenuEntry` when a short description should
+    show underneath -- the two are freely mixable within one section.
+    Narrow terminals receive the same groups in fewer columns without
+    losing actions; every existing caller that never passes
+    `description_level` (default `"off"`) or `height` renders byte-for-
+    byte as before, since a `MenuEntry` with only a `label` and no
+    description text behaves identically to a bare `str`.
+
+    `description_level` is `"off"`/`"brief"`/`"detailed"` -- the
+    caller's own resolved `netbbs.net.menu_description_preference`
+    setting, not something this pure rendering function looks up
+    itself. `height`, if given, forces descriptions off below
+    `_MIN_HEIGHT_FOR_DESCRIPTIONS` regardless of the requested level --
+    a real terminal that short is rare enough in practice that a
+    smoother multi-step degrade isn't worth building (issue #160).
+
+    Whenever the rendered result is actually narrower (fewer columns
+    than the section count would otherwise use) or plainer (descriptions
+    requested but suppressed by the height floor) than what was asked
+    for, a standing muted note is appended explaining why -- mirroring
+    this codebase's existing "AT LENGTH LIMIT"-style always-visible
+    state indicators, not a one-off flash the caller could miss.
     """
     if width < 1:
         raise ValueError("width must be >= 1")
-    populated = [(title, list(options)) for title, options in sections if options]
+    if description_level not in _DESCRIPTION_LEVELS:
+        raise ValueError(f"description_level must be one of {_DESCRIPTION_LEVELS}, got {description_level!r}")
+    populated = [(title, [_as_entry(o) for o in options]) for title, options in sections if options]
     if not populated:
         return ""
 
-    if width < _WIDE_MENU_MIN_WIDTH or len(populated) == 1:
-        blocks = []
-        for title, options in populated:
-            heading = colored(title.upper(), fg_color=METADATA_COLOR, bold=True)
-            blocks.append("\r\n".join([heading, *(f"  {option}" for option in options)]))
-        return "\r\n\r\n".join(blocks)
+    effective_level = description_level
+    descriptions_collapsed = False
+    if effective_level != "off" and height is not None and height < _MIN_HEIGHT_FOR_DESCRIPTIONS:
+        effective_level = "off"
+        descriptions_collapsed = True
 
-    column_width = max(1, (width - 3) // 2)
-    blocks = []
-    for offset in range(0, len(populated), 2):
-        left = populated[offset]
-        right = populated[offset + 1] if offset + 1 < len(populated) else ("", [])
-        row_count = max(len(left[1]), len(right[1])) + 1
-        rows = []
-        for row in range(row_count):
-            left_text = (
-                colored(left[0].upper(), fg_color=METADATA_COLOR, bold=True)
-                if row == 0
-                else f"  {left[1][row - 1]}" if row - 1 < len(left[1]) else ""
-            )
-            right_text = (
-                colored(right[0].upper(), fg_color=METADATA_COLOR, bold=True)
-                if row == 0 and right[0]
-                else f"  {right[1][row - 1]}" if row and row - 1 < len(right[1]) else ""
-            )
-            padding = " " * max(1, column_width - visible_width(left_text))
-            rows.append(f"{left_text}{padding}   {right_text}".rstrip())
-        blocks.append("\r\n".join(rows))
-    return "\r\n\r\n".join(blocks)
+    columns = _column_count(width, len(populated))
+    # Only the single-column fallback counts as "collapsed" -- going
+    # from 3 columns to 2 (or having only 2 sections to begin with) is
+    # routine width adaptation most real terminals hit every day (the
+    # classic 80-column default never reaches the 3-column breakpoint),
+    # not a degraded state worth flagging. Squeezing multiple sections
+    # down to one column, on the other hand, is a genuinely narrower
+    # experience than this menu would otherwise give.
+    columns_collapsed = columns == 1 and len(populated) > 1
+
+    if columns == 1:
+        blocks = [
+            "\r\n".join(_section_lines(title, entries, description_level=effective_level, available_width=width))
+            for title, entries in populated
+        ]
+        result = "\r\n\r\n".join(blocks)
+    else:
+        column_width = max(1, (width - _COLUMN_GUTTER * (columns - 1)) // columns)
+        blocks = []
+        for offset in range(0, len(populated), columns):
+            group = populated[offset : offset + columns]
+            column_lines = [
+                _section_lines(title, entries, description_level=effective_level, available_width=column_width)
+                for title, entries in group
+            ]
+            row_count = max(len(lines) for lines in column_lines)
+            rows = []
+            for row in range(row_count):
+                cells = [lines[row] if row < len(lines) else "" for lines in column_lines]
+                parts = []
+                for i, cell in enumerate(cells):
+                    if i < len(cells) - 1:
+                        padding = " " * max(1, column_width - visible_width(cell))
+                        parts.append(cell + padding + " " * _COLUMN_GUTTER)
+                    else:
+                        parts.append(cell)
+                rows.append("".join(parts).rstrip())
+            blocks.append("\r\n".join(rows))
+        result = "\r\n\r\n".join(blocks)
+
+    notices = []
+    if columns_collapsed:
+        notices.append("Showing fewer columns than usual -- widen your terminal to see more at once.")
+    if descriptions_collapsed:
+        notices.append("Descriptions hidden -- terminal too short to show them.")
+    if notices:
+        # Wrapped, not just cut, to `width` -- this text is informational
+        # prose, not a fixed-format label, and a hard cut on top of an
+        # already-narrow terminal (the exact situation this notice fires
+        # in) could chop it mid-sentence into something unreadable.
+        notice_lines = [
+            colored(wrapped, fg_color=MUTED_COLOR)
+            for notice in notices
+            for wrapped in wrap_to_width(notice, width)
+        ]
+        result = f"{result}\r\n\r\n" + "\r\n".join(notice_lines)
+    return result

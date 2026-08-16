@@ -143,6 +143,7 @@ from netbbs.net.chat_flow import (
     run_direct_chat_loop,
 )
 from netbbs.net.color_depth_preference import color_depth_override, set_color_depth_override
+from netbbs.net.menu_description_preference import menu_description_level, set_menu_description_level
 from netbbs.net.composition import ReviewAction, edit_line_body, review_composition
 from netbbs.net.draft_storage import delete_draft, drafts_directory, load_draft
 from netbbs.net.editor_preference import fullscreen_editor_enabled, set_fullscreen_editor_enabled
@@ -171,6 +172,7 @@ from netbbs.rendering import (
     SUCCESS_COLOR,
     VALUE_COLOR,
     WARNING_COLOR,
+    MenuEntry,
     action_bar,
     badge,
     colored,
@@ -993,34 +995,62 @@ async def _draw_main_menu(
 
     unread = unread_mail_count(db, user)
     mail_label = f"-mail ({unread} unread)" if unread else "-mail"
+    # Brief descriptions are kept to roughly 34 characters or less --
+    # the actual available width once this renders in two columns at
+    # the classic 80-column terminal (menu_grid's own column_width
+    # minus its description indent). Longer, fuller text belongs in
+    # `detailed`, shown only when a caller opts into that verbosity.
     explore_options = []
     if _has_visible_communities(db, user):
-        explore_options.append(menu_key("C", "ommunities"))
+        explore_options.append(MenuEntry(
+            label=menu_key("C", "ommunities"),
+            brief="Spaces shared by other callers",
+            detailed="Browse Communities -- groups of boards/channels/file areas organized by topic.",
+        ))
     if _has_uncategorized_resources(db, user):
-        explore_options.append(menu_key("U", "ncategorized"))
+        explore_options.append(MenuEntry(
+            label=menu_key("U", "ncategorized"),
+            brief="Boards/areas outside a Community",
+        ))
     explore_options.extend(
         [
-            menu_key("J", "ump to..."),
-            menu_key("N", "ew scan"),
-            menu_key("F", "ind"),
+            MenuEntry(label=menu_key("J", "ump to..."), brief="Go straight to a name you know"),
+            MenuEntry(
+                label=menu_key("N", "ew scan"),
+                brief="Activity since your last visit",
+                detailed="Scan every accessible board/channel/file area for activity since your last visit.",
+            ),
+            MenuEntry(label=menu_key("F", "ind"), brief="Search boards, files, and mail"),
         ]
     )
     personal_options = [
-            menu_key("D", "irectory"),
-            menu_key("P", "rofile"),
-            menu_key("E", mail_label),
-            menu_key("H", "istory"),
+            MenuEntry(label=menu_key("D", "irectory"), brief="Look up other callers"),
+            MenuEntry(
+                label=menu_key("P", "rofile"),
+                brief="Your bio and preferences",
+                detailed="Edit your bio, visibility, and preferences -- including these menu descriptions.",
+            ),
+            MenuEntry(label=menu_key("E", mail_label), brief="Read and send private mail"),
+            MenuEntry(label=menu_key("H", "istory"), brief="Your recent sessions"),
     ]
     if node_controls is not None:
-        personal_options.append(menu_key("W", "ho's online"))
+        personal_options.append(
+            MenuEntry(label=menu_key("W", "ho's online"), brief="See who's connected now")
+        )
     if list_pending_invitations_for_user(db, user):
-        personal_options.append(menu_key("I", "nvitations"))
+        personal_options.append(
+            MenuEntry(label=menu_key("I", "nvitations"), brief="Pending invitations for you")
+        )
     if user.can_verify_identity or meets_level(user, SYSOP_LEVEL):
-        personal_options.append(menu_key("V", "erify"))
+        personal_options.append(
+            MenuEntry(label=menu_key("V", "erify"), brief="Verify a caller's identity")
+        )
     system_options = []
     if meets_level(user, SYSOP_LEVEL):
-        system_options.append(menu_key("S", "ysOp"))
-    system_options.append(menu_key("L", "ogoff"))
+        system_options.append(
+            MenuEntry(label=menu_key("S", "ysOp"), brief="Node administration console")
+        )
+    system_options.append(MenuEntry(label=menu_key("L", "ogoff"), brief="Disconnect from this node"))
 
     title = screen_title(
         "Main menu:",
@@ -1040,6 +1070,8 @@ async def _draw_main_menu(
     options = menu_grid(
         [("Explore", explore_options), ("You", personal_options), ("System", system_options)],
         width=session.terminal_width,
+        height=session.terminal_height,
+        description_level=menu_description_level(db, user),
     )
     await session.write_line(f"\r\n{title}\r\n{options}\r\n")
     await session.write(_main_menu_prompt(db, user, node_controls))
@@ -3561,6 +3593,10 @@ async def _render_profile(session: Session, db: Database, user: User) -> bool:
             f"{sort_preference_count} saved" if sort_preference_count else "none saved",
         )
     )
+    # GitHub issue #160: one setting, three states -- off/brief/detailed
+    # -- controlling whether menu_grid shows each entry's short
+    # description underneath it.
+    await session.write_line(_profile_field("Menu descriptions", menu_description_level(db, user)))
 
     options = [
             menu_key("E", "dit bio"),
@@ -3569,6 +3605,7 @@ async def _render_profile(session: Session, db: Database, user: User) -> bool:
             menu_key("M", "essages"),
             menu_key("H", "istory visibility"),
             menu_key("C", "olor depth"),
+            menu_key("D", "escriptions"),
             menu_key("N", "ame & details"),
             menu_key("S", "ort preferences"),
             menu_key("B", "ack"),
@@ -3645,6 +3682,13 @@ async def _edit_profile(session: Session, db: Database, user: User) -> None:
         elif choice == "s":
             await session.write_line("")
             await _sort_preferences_screen(session, db, user)
+            visible = await _render_profile(session, db, user)
+        elif choice == "d":
+            await session.write_line("")
+            current = menu_description_level(db, user)
+            next_value = {"off": "brief", "brief": "detailed", "detailed": "off"}[current]
+            set_menu_description_level(db, user, next_value)
+            await session.write_line(f"Menu descriptions are now {next_value}.")
             visible = await _render_profile(session, db, user)
         else:
             await session.write(reject_unhandled_key(choice))
