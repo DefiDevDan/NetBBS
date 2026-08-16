@@ -221,7 +221,7 @@ def test_board_page_has_location_post_count_and_actions(tmp_path, monkeypatch):
 
     asyncio.run(_show_board(session, db, board, user))
 
-    assert "NetBBS / Boards / general" in session.output
+    assert "NetBBS / Message boards / general" in session.output
     assert "2 posts on this page" in session.output
     assert "]ost" in session.output
     assert "]ack" in session.output

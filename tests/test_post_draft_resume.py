@@ -160,7 +160,7 @@ def test_reentering_the_board_offers_edit_delete_or_ignore(db, alice):
     reentry_session = FakeSession(["i", "b", ""])
     asyncio.run(login_flow._show_board(reentry_session, db, board, alice))
     text = _written_text(reentry_session)
-    assert "saved post draft for this board" in text
+    assert "saved post draft for this message board" in text
     assert "[E]dit it, [D]elete it, or [I]gnore" in text
 
 

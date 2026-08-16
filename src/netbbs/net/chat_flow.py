@@ -505,7 +505,7 @@ async def _pick_channel(
     def _sort_label() -> str:
         return _CHANNEL_SORT_MODE_LABELS[mode_box["mode"]]
 
-    title = f"{title_prefix} — chat channels" if title_prefix is not None else "Available channels"
+    title = f"{title_prefix} — chat channels" if title_prefix is not None else "Available chat channels"
 
     if not categories_here:
         async def on_sort_flat() -> list[Channel] | None:
@@ -2154,9 +2154,9 @@ async def _handle_members(ctx: ChatCommandContext, args: str) -> None:
 # `_handle_help`'s bare listing skips any `_COMMANDS` name absent here.
 _COMMAND_INFO: dict[str, tuple[str, str]] = {
     "quit": ("/quit", "Leave chat and return to the main menu."),
-    "leave": ("/leave", "Leave this channel and return to the channel picker."),
-    "join": ("/join <channel>", "Switch to another channel."),
-    "topic": ("/topic [text]", "Set the channel topic; a bare /topic clears it (requires edit permission)."),
+    "leave": ("/leave", "Leave this chat channel and return to the chat channel picker."),
+    "join": ("/join <channel>", "Switch to another chat channel."),
+    "topic": ("/topic [text]", "Set the chat channel topic; a bare /topic clears it (requires edit permission)."),
     "msg": ("/msg <user> <text>", "Send a one-off private message to an online user."),
     "private": ("/private <user>", "Enter a private conversation with an online user."),
     "close": ("/close", "Leave the current private conversation."),
@@ -2167,21 +2167,21 @@ _COMMAND_INFO: dict[str, tuple[str, str]] = {
     "clear": ("/clear", "Clear your own screen (alias: /cls). Cosmetic only, nothing else changes."),
     "away": ("/away [message]", "Mark yourself away, or clear away status."),
     "timestamps": ("/timestamps [on|off]", "Toggle chat timestamps, or set them on/off explicitly."),
-    "mute": ("/mute <user> [duration] [reason]", "Silence a user's messages in this channel."),
+    "mute": ("/mute <user> [duration] [reason]", "Silence a user's messages in this chat channel."),
     "unmute": ("/unmute <user>", "Lift a mute."),
-    "ban": ("/ban <user> [duration] [reason]", "Bar a user from this channel."),
+    "ban": ("/ban <user> [duration] [reason]", "Bar a user from this chat channel."),
     "unban": ("/unban <user>", "Lift a ban."),
-    "kick": ("/kick <user> [reason]", "Force a user out of this channel right now."),
+    "kick": ("/kick <user> [reason]", "Force a user out of this chat channel right now."),
     "finger": ("/finger <user>", "Show a user's public profile."),
-    "names": ("/names", "List everyone currently in this channel."),
-    "who": ("/who", "List everyone in this channel, with away status."),
-    "list": ("/list", "List every channel you can see."),
-    "whois": ("/whois <user>", "Show a user's profile plus online/away/channel status."),
-    "invite": ("/invite <user>", "Invite a user to a members-only channel."),
+    "names": ("/names", "List everyone currently in this chat channel."),
+    "who": ("/who", "List everyone in this chat channel, with away status."),
+    "list": ("/list", "List every chat channel you can see."),
+    "whois": ("/whois <user>", "Show a user's profile plus online/away/chat channel status."),
+    "invite": ("/invite <user>", "Invite a user to a members-only chat channel."),
     "uninvite": ("/uninvite <user>", "Revoke a pending invitation."),
-    "grantaccess": ("/grantaccess <user>", "Directly grant a user access to this channel."),
-    "revokeaccess": ("/revokeaccess <user>", "Revoke a user's access to this channel."),
-    "members": ("/members", "List users with direct access to this channel."),
+    "grantaccess": ("/grantaccess <user>", "Directly grant a user access to this chat channel."),
+    "revokeaccess": ("/revokeaccess <user>", "Revoke a user's access to this chat channel."),
+    "members": ("/members", "List users with direct access to this chat channel."),
 }
 
 _COMMANDS: dict[str, CommandHandler] = {

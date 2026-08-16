@@ -159,7 +159,7 @@ def test_empty_area_has_a_guided_empty_state(tmp_path):
     asyncio.run(_show_area(session, lane, area, user))
 
     assert "NetBBS / Files / docs" in session.output
-    assert "This area has no files yet" in session.output
+    assert "This file area has no files yet" in session.output
     assert "Uploads and fetched Link files will appear here" in session.output
     lane.close()
     db.close()
@@ -200,7 +200,7 @@ def test_download_reports_a_clear_error_for_a_truly_nonexistent_file(tmp_path, m
 
     asyncio.run(_show_area(session, lane, area, user))
 
-    assert "No file named 'does-not-exist.txt' in this area." in session.output
+    assert "No file named 'does-not-exist.txt' in this file area." in session.output
     lane.close()
     db.close()
 

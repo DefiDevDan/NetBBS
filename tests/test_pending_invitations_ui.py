@@ -96,7 +96,7 @@ def test_announce_reports_a_single_pending_invitation(tmp_path):
     asyncio.run(_announce_pending_invitations(session, db, bob))
 
     text = _written_text(session)
-    assert "1 pending channel invitation." in text  # singular, no trailing 's'
+    assert "1 pending chat channel invitation." in text  # singular, no trailing 's'
     assert "[I]nvitations" in text
     db.close()
 
@@ -114,7 +114,7 @@ def test_announce_reports_multiple_pending_invitations_with_correct_plural(tmp_p
 
     asyncio.run(_announce_pending_invitations(session, db, bob))
 
-    assert "2 pending channel invitations." in _written_text(session)
+    assert "2 pending chat channel invitations." in _written_text(session)
     db.close()
 
 
@@ -128,7 +128,7 @@ def test_show_pending_invitations_with_none_pending(tmp_path):
 
     asyncio.run(_show_pending_invitations(session, db, bob))
 
-    assert "no pending channel invitations" in _written_text(session)
+    assert "no pending chat channel invitations" in _written_text(session)
     db.close()
 
 
@@ -241,7 +241,7 @@ def test_offline_invitee_sees_the_notice_and_menu_option_on_next_login(tmp_path)
     )
 
     text = _written_text(session)
-    assert "pending channel invitation" in text
+    assert "pending chat channel invitation" in text
     assert "Pending invitations:" in text
     assert "lobby" in text
     db.close()

@@ -222,7 +222,7 @@ def test_dashboard_shows_real_node_scale_totals_not_just_pending_counts(db, lane
     # changes.
     from netbbs.auth.users import list_users
     assert f"Users: {len(list_users(db))}" in text
-    assert "Boards: 1" in text
+    assert "Message boards: 1" in text
     assert "Posts: 1" in text
     assert "File areas: 1" in text
     assert "Files: 1" in text
@@ -1977,7 +1977,7 @@ def test_create_board_flow(db, lane, sysop):
     boards = list_boards(db)
     assert [b.name for b in boards] == ["General"]
     assert boards[0].moderated is True
-    assert "Created board" in _written_text(session)
+    assert "Created message board" in _written_text(session)
 
 
 def test_create_board_name_requirement_label_reads_as_words_not_a_field_name(db, lane, sysop):
@@ -2346,7 +2346,7 @@ def test_channel_restrictions_screen_empty_state_when_nothing_active(db, lane, s
     session = FakeSession(inputs)
     _run(session, lane, sysop)
 
-    assert "No active mute/ban restrictions on this channel." in _written_text(session)
+    assert "No active mute/ban restrictions on this chat channel." in _written_text(session)
 
 
 def test_link_this_channel_is_not_offered_once_already_linked(db, lane, sysop):
@@ -2807,7 +2807,7 @@ def test_create_channel_flow(db, lane, sysop):
 
     channels = list_channels(db)
     assert [c.name for c in channels] == ["Lobby"]
-    assert "Created channel" in _written_text(session)
+    assert "Created chat channel" in _written_text(session)
 
 
 def test_create_channel_can_be_cancelled_without_creating_anything(db, lane, sysop):

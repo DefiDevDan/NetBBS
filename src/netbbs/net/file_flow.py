@@ -373,7 +373,7 @@ async def _render_area_page(
     # remote files" rather than needing a second lane round trip here
     # just to decide whether to print the hint.
     if show_remote_hint:
-        hints.append(menu_key("/remote", " — browse/fetch this area's remote catalogue"))
+        hints.append(menu_key("/remote", " — browse/fetch this file area's remote catalogue"))
     await session.write_line(action_bar(hints, width=session.terminal_width))
 
 
@@ -470,7 +470,7 @@ async def _show_area(
         heading = screen_title(area_name, breadcrumb=("NetBBS", "Files"), width=session.terminal_width)
         await session.write_line(f"\r\n{heading}")
         state = empty_state(
-            "This area has no files yet",
+            "This file area has no files yet",
             detail="Uploads and fetched Link files will appear here.",
             width=session.terminal_width,
         )
@@ -519,7 +519,7 @@ async def _show_area(
     if can_write:
         hints.append(menu_key("/upload", " — send via Zmodem"))
     if show_remote_hint:
-        hints.append(menu_key("/remote", " — browse/fetch this area's remote catalogue"))
+        hints.append(menu_key("/remote", " — browse/fetch this file area's remote catalogue"))
     await session.write_line(f"\r\n{action_bar(hints, width=session.terminal_width)}")
     await session.write("Command (or press Enter to go back): ")
     command = (await session.read_line()).strip()
@@ -560,7 +560,7 @@ async def _browse_remote_files(
         )
         await session.write_line(f"\r\n{heading}")
         state = empty_state(
-            "This area has no remote catalogue entries",
+            "This file area has no remote catalogue entries",
             detail="New Link descriptors will appear here automatically.",
             width=session.terminal_width,
         )
@@ -778,7 +778,7 @@ async def _handle_download(session: Session, lane: DatabaseLane, area: FileArea,
     entry = await lane.run(get_file_by_name, area, filename, requesting_user=user)
     if entry is None:
         await session.write_line(
-            colored(f"\r\nNo file named {sanitize_text(filename)!r} in this area.", fg_color=ERROR_COLOR)
+            colored(f"\r\nNo file named {sanitize_text(filename)!r} in this file area.", fg_color=ERROR_COLOR)
         )
         return
 

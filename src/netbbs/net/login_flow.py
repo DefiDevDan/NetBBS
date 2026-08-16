@@ -860,7 +860,7 @@ async def _announce_pending_invitations(session: Session, db: Database, user: Us
     plural = "s" if len(pending) != 1 else ""
     await session.write_line(
         colored(
-            f"\r\n*** You have {len(pending)} pending channel invitation{plural}. "
+            f"\r\n*** You have {len(pending)} pending chat channel invitation{plural}. "
             "See [I]nvitations on the main menu. ***",
             fg_color=MUTED_COLOR,
         )
@@ -879,7 +879,7 @@ async def _show_pending_invitations(session: Session, db: Database, user: User) 
     header = colored("Pending invitations:", fg_color=HEADER_COLOR, bold=True)
     await session.write_line(f"\r\n{header}")
     if not pending:
-        await session.write_line("You have no pending channel invitations.")
+        await session.write_line("You have no pending chat channel invitations.")
         return
     for invitation in pending:
         when = format_for_display(invitation.created_at, db)
@@ -889,7 +889,7 @@ async def _show_pending_invitations(session: Session, db: Database, user: User) 
         )
     await session.write_line(
         colored(
-            "Use [C]hat, then /join <channel> from the channel picker to accept one.",
+            "Use [C]hat, then /join <channel> from the chat channel picker to accept one.",
             fg_color=MUTED_COLOR,
         )
     )
@@ -1005,7 +1005,7 @@ async def _draw_main_menu(
         explore_options.append(MenuEntry(
             label=menu_key("C", "ommunities"),
             brief="Spaces shared by other callers",
-            detailed="Browse Communities -- groups of boards/channels/file areas organized by topic.",
+            detailed="Browse Communities -- groups of message boards/chat channels/file areas organized by topic.",
         ))
     if _has_uncategorized_resources(db, user):
         explore_options.append(MenuEntry(
@@ -1018,7 +1018,7 @@ async def _draw_main_menu(
             MenuEntry(
                 label=menu_key("N", "ew scan"),
                 brief="Activity since your last visit",
-                detailed="Scan every accessible board/channel/file area for activity since your last visit.",
+                detailed="Scan every accessible message board/chat channel/file area for activity since your last visit.",
             ),
             MenuEntry(label=menu_key("F", "ind"), brief="Search boards, files, and mail"),
         ]
@@ -1510,7 +1510,7 @@ async def _new_scan_screen(
         await session.write_line(f"Replies to you: {len(replies)}")
         for reply in replies[:10]:
             reply_board = boards_by_id.get(reply.board_id)
-            board_label = sanitize_text(reply_board.name) if reply_board is not None else "unknown board"
+            board_label = sanitize_text(reply_board.name) if reply_board is not None else "unknown message board"
             await session.write_line(f"  {sanitize_text(reply.subject)} ({board_label})")
         if len(replies) > 10:
             await session.write_line(f"  ...and {len(replies) - 10} more.")
@@ -2704,7 +2704,7 @@ async def _show_board(
             # since both return `None` the same way.
             if draft_path.exists():
                 await session.write_line(
-                    colored("Draft saved -- you'll be offered it next time you visit this board.", fg_color=MUTED_COLOR)
+                    colored("Draft saved -- you'll be offered it next time you visit this message board.", fg_color=MUTED_COLOR)
                 )
             else:
                 await session.write_line(colored("Post cancelled.", fg_color=MUTED_COLOR))
@@ -2736,7 +2736,7 @@ async def _show_board(
                     # in review."
                     await session.write_line(
                         colored(
-                            "Draft saved -- you'll be offered it next time you visit this board.",
+                            "Draft saved -- you'll be offered it next time you visit this message board.",
                             fg_color=MUTED_COLOR,
                         )
                     )
@@ -2770,7 +2770,7 @@ async def _show_board(
             return
         await session.write_line(
             colored(
-                "\r\nYou have a saved post draft for this board from an earlier session.",
+                "\r\nYou have a saved post draft for this message board from an earlier session.",
                 fg_color=MUTED_COLOR,
             )
         )
@@ -2823,10 +2823,10 @@ async def _show_board(
         # navigation loop (nothing to browse either way), but offers the
         # same explicit choice before composing anything.
         await session.write_line(
-            f"\r\n{screen_title(board_name, breadcrumb=('NetBBS', 'Boards'), width=session.terminal_width)}"
+            f"\r\n{screen_title(board_name, breadcrumb=('NetBBS', 'Message boards'), width=session.terminal_width)}"
         )
         await session.write_line(
-            f"\r\n{empty_state('This board has no posts yet', detail='It is ready for its first conversation.', width=session.terminal_width)}"
+            f"\r\n{empty_state('This message board has no posts yet', detail='It is ready for its first conversation.', width=session.terminal_width)}"
         )
         if not can_post:
             return
@@ -3098,7 +3098,7 @@ async def _render_post_page(
 ) -> None:
     header = screen_title(
         board_name,
-        breadcrumb=("NetBBS", "Boards"),
+        breadcrumb=("NetBBS", "Message boards"),
         subtitle=f"{len(page.posts)} post{'s' if len(page.posts) != 1 else ''} on this page",
         width=session.terminal_width,
     )
@@ -3458,7 +3458,9 @@ async def _last_sessions_screen(session: Session, db: Database, user: User) -> N
         )
 
 
-_SORT_PREFERENCE_KIND_LABELS = {"channel": "Channels", "board": "Boards", "file_area": "File areas"}
+_SORT_PREFERENCE_KIND_LABELS = {
+    "channel": "Chat channels", "board": "Message boards", "file_area": "File areas",
+}
 
 
 def _sort_preference_scope_label(db: Database, pref: SortPreference) -> str:
@@ -3499,7 +3501,7 @@ async def _sort_preferences_screen(session: Session, db: Database, user: User) -
             )
             await session.write_line(
                 colored(
-                    "Set one from any channel/board/file-area picker's [O]rder command.",
+                    "Set one from any chat channel/message board/file-area picker's [O]rder command.",
                     fg_color=MUTED_COLOR,
                 )
             )

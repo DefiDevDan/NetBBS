@@ -461,7 +461,7 @@ async def _draw_admin_menu(
 
     await session.write_line(colored("CONTENT", fg_color=LABEL_COLOR, bold=True))
     await session.write_line(
-        f"  Users: {state['total_users']}  Boards: {state['total_boards']}  "
+        f"  Users: {state['total_users']}  Message boards: {state['total_boards']}  "
         f"Posts: {state['total_posts']}  File areas: {state['total_areas']}  Files: {state['total_files']}"
     )
 
@@ -496,7 +496,7 @@ async def _draw_admin_menu(
         MenuEntry(
             label=menu_key("C", "ontent"),
             brief="Boards, areas, channels & more",
-            detailed="Manage boards, file areas, channels, and Communities -- including GC (storage garbage collection) under file areas.",
+            detailed="Manage message boards, file areas, chat channels, and Communities -- including GC (storage garbage collection) under file areas.",
         ),
         MenuEntry(
             label=menu_key("O", "perations"),
@@ -1905,7 +1905,7 @@ async def _delete_user_confirm(
             "keep their recorded author name; their entries in Last sessions also "
             "survive, keeping whatever name-visibility choice was in effect at the "
             "time (a prior opt-out stays hidden -- SysOps still see the real name "
-            "regardless); moderator grants, channel membership/invitations, "
+            "regardless); moderator grants, chat channel membership/invitations, "
             "preferences, and blocklist entries tied to this account are removed. "
             "This cannot be undone.",
             fg_color=MUTED_COLOR,
@@ -3541,14 +3541,14 @@ async def _content_menu(
 
 async def _draw_content_menu(session: Session) -> None:
     await session.write_line(
-        "\r\n" + screen_title("Manage boards/areas/channels", width=session.terminal_width)
+        "\r\n" + screen_title("Manage message boards/file areas/chat channels", width=session.terminal_width)
     )
     await session.write_line(
         action_bar(
             [
                 menu_key("M", "essage boards"),
                 menu_key("F", "ile areas"),
-                menu_key("N", "nels", prefix="Cha"),
+                menu_key("n", "nels", prefix="Chat cha"),
                 menu_key("C", "ategories"),
                 menu_key("O", "mmunities", prefix="C"),
                 menu_key("G", "rant moderator"),
@@ -3963,8 +3963,8 @@ def _community_field_specs() -> list[FieldSpec]:
             render=lambda d: _name_requirement_label(d.get("default_name_requirement")),
             prompt=_name_requirement_field("default_name_requirement"),
             step=_name_requirement_step("default_name_requirement"),
-            help=_NAME_REQUIREMENT_HELP + " Boards/areas/channels in this Community "
-            "inherit this unless they set their own.",
+            help=_NAME_REQUIREMENT_HELP + " Message boards/file areas/chat channels in this "
+            "Community inherit this unless they set their own.",
         ),
     ]
 
@@ -4116,7 +4116,7 @@ async def _delete_community_screen(session: Session, lane: DatabaseLane, actor: 
     board_count, channel_count, area_count, grant_count = await lane.run(_counts)
     await session.write_line(
         colored(
-            f"\r\nThis Community has {board_count} board(s), {channel_count} channel(s), "
+            f"\r\nThis Community has {board_count} message board(s), {channel_count} chat channel(s), "
             f"{area_count} file area(s), and {grant_count} moderator grant(s). Deleting will "
             "un-categorize its resources and revoke those grants. This cannot be undone.",
             fg_color=MUTED_COLOR,
@@ -4201,7 +4201,7 @@ def _board_field_specs() -> list[FieldSpec]:
             render=lambda d: d.get("category_id_label") or "(none)",
             prompt=_category_field(
                 list_top_level=list_top_level_board_categories, list_subcategories=list_board_subcategories,
-                title="Board category", list_resources=list_boards, get_by_id=get_board_category_by_id,
+                title="Message board category", list_resources=list_boards, get_by_id=get_board_category_by_id,
             ),
         ),
         FieldSpec(
@@ -4296,12 +4296,12 @@ async def _board_screen(
 
     board = await edit_resource_draft(
         session, lane,
-        title="Edit board" if existing is not None else "Create board",
+        title="Edit message board" if existing is not None else "Create message board",
         fields=_board_field_specs(), draft=draft, save=save, error_type=BoardError,
         save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
     )
     if board is not None:
-        verb = "Updated" if existing is not None else "Created board"
+        verb = "Updated" if existing is not None else "Created message board"
         await session.write_line(f"{verb} {board.name!r}.")
     return board
 
@@ -4315,8 +4315,8 @@ async def _list_boards_screen(
         name_of=lambda b: b.name,
         stable_id_of=lambda b: b.id,
         description_of=_board_description,
-        title="Boards",
-        empty_message="No boards yet.",
+        title="Message boards",
+        empty_message="No message boards yet.",
     )
     if selected is not None:
         await _board_detail_screen(session, lane, actor, selected, link_context=link_context)
@@ -4422,7 +4422,7 @@ async def _link_board_screen(session: Session, lane: DatabaseLane, board: Board,
     `link_board`'s own docstring for why that split matters: `LinkNode`
     mutation and `DatabaseLane` dispatch must never share a thread).
     """
-    await session.write_line(colored("\r\nLink this board", fg_color=HEADER_COLOR, bold=True))
+    await session.write_line(colored("\r\nLink this message board", fg_color=HEADER_COLOR, bold=True))
     default_min_read_level, ok = await _prompt_optional_int(
         session, "Recommended minimum read level", current=board.min_read_level
     )
@@ -4454,12 +4454,12 @@ async def _link_board_screen(session: Session, lane: DatabaseLane, board: Board,
         return
 
     forked_from: str | None = None
-    if await prompt_yes_no(session, "Is this a fork of an existing Linked board?", default=False):
+    if await prompt_yes_no(session, "Is this a fork of an existing Linked message board?", default=False):
         candidates = await lane.run(_linked_boards_excluding, board.id)
         chosen = await pick_item(
             session, candidates,
             name_of=lambda b: b.name, stable_id_of=lambda b: b.id,
-            title="Fork of which board?", empty_message="No other Linked boards to fork from.",
+            title="Fork of which message board?", empty_message="No other Linked message boards to fork from.",
         )
         if chosen is not None:
             forked_from = chosen.board_id
@@ -4478,7 +4478,7 @@ async def _link_board_screen(session: Session, lane: DatabaseLane, board: Board,
             forked_from=forked_from,
         )
     except LinkBoardsError as exc:
-        await session.write_line(colored(f"Could not Link board: {exc}", fg_color=MUTED_COLOR))
+        await session.write_line(colored(f"Could not Link message board: {exc}", fg_color=MUTED_COLOR))
         return
 
     link_context.link_node.boards[board.board_id] = genesis
@@ -4521,9 +4521,9 @@ async def _transfer_board_origin_screen(
     <fingerprint>` on this same screen).
     """
     peers = sorted(link_context.link_node.peers.keys())
-    await session.write_line(colored("\r\nTransfer board origin", fg_color=HEADER_COLOR, bold=True))
+    await session.write_line(colored("\r\nTransfer message board origin", fg_color=HEADER_COLOR, bold=True))
     if not peers:
-        await session.write_line(colored("No known peers to transfer this board to.", fg_color=MUTED_COLOR))
+        await session.write_line(colored("No known peers to transfer this message board to.", fg_color=MUTED_COLOR))
         return
     await session.write_line("Known peers:")
     for fingerprint in peers:
@@ -4569,7 +4569,7 @@ async def _close_board_screen(session: Session, lane: DatabaseLane, board: Board
     """
     await session.write_line(
         colored(
-            "\r\nClosing a board is permanent in this slice -- no new posts, network-wide, "
+            "\r\nClosing a message board is permanent in this slice -- no new posts, network-wide, "
             "and this cannot be reversed here.",
             fg_color=MUTED_COLOR,
         )
@@ -4585,7 +4585,7 @@ async def _close_board_screen(session: Session, lane: DatabaseLane, board: Board
             close_board_if_linked, board, node_identity=link_context.node_identity, reason=reason,
         )
     except LinkBoardsError as exc:
-        await session.write_line(colored(f"Could not close board: {exc}", fg_color=MUTED_COLOR))
+        await session.write_line(colored(f"Could not close message board: {exc}", fg_color=MUTED_COLOR))
         return
 
     link_context.link_node.board_closures[board.board_id] = closure
@@ -4611,11 +4611,11 @@ async def _accept_board_origin_transfer_screen(
     """
     offer = link_context.link_node.pending_origin_transfers.get(board.board_id)
     if offer is None or offer.payload.get("new_origin_fingerprint") != link_context.node_identity.fingerprint:
-        await session.write_line(colored("\r\nNo pending incoming offer for this board.", fg_color=MUTED_COLOR))
+        await session.write_line(colored("\r\nNo pending incoming offer for this message board.", fg_color=MUTED_COLOR))
         return
 
     old_origin = offer.payload.get("old_origin_fingerprint")
-    await session.write_line(colored("\r\nAccept board origin", fg_color=HEADER_COLOR, bold=True))
+    await session.write_line(colored("\r\nAccept message board origin", fg_color=HEADER_COLOR, bold=True))
     if not await prompt_yes_no(session, f"Accept origin of {board.name!r} from {old_origin}?", default=False):
         await session.write_line("Cancelled.")
         return
@@ -4734,13 +4734,13 @@ async def _draw_board_detail(
                     )
     options = [menu_key("E", "dit"), menu_key("D", "elete"), menu_key("P", "ending posts")]
     if link_context is not None and not linked:
-        options.append(menu_key("L", "ink this board"))
+        options.append(menu_key("L", "ink this message board"))
     if (
         link_context is not None and linked and is_origin and not is_closed
         and board.board_id not in link_context.link_node.pending_origin_transfers
     ):
         options.append(menu_key("T", "ransfer origin"))
-        options.append(menu_key("C", "lose board"))
+        options.append(menu_key("C", "lose message board"))
     if has_incoming_offer:
         options.append(menu_key("A", "ccept transfer"))
     options.append(menu_key("B", "ack"))
@@ -4752,12 +4752,12 @@ async def _draw_board_detail(
 async def _delete_board_screen(session: Session, lane: DatabaseLane, actor: User, board: Board) -> bool:
     await session.write_line(
         colored(
-            "\r\nThis permanently deletes the board, all of its posts, and any "
+            "\r\nThis permanently deletes the message board, all of its posts, and any "
             "moderator grants scoped to it. This cannot be undone.",
             fg_color=MUTED_COLOR,
         )
     )
-    await session.write(f"Type the board name {board.name!r} to confirm, or anything else to cancel: ")
+    await session.write(f"Type the message board name {board.name!r} to confirm, or anything else to cancel: ")
     confirmation = (await session.read_line()).strip()
     if confirmation != board.name:
         await session.write_line("Cancelled.")
@@ -5270,7 +5270,7 @@ async def _delete_area_screen(session: Session, lane: DatabaseLane, actor: User,
             fg_color=MUTED_COLOR,
         )
     )
-    await session.write(f"Type the area name {area.name!r} to confirm, or anything else to cancel: ")
+    await session.write(f"Type the file area name {area.name!r} to confirm, or anything else to cancel: ")
     confirmation = (await session.read_line()).strip()
     if confirmation != area.name:
         await session.write_line("Cancelled.")
@@ -5385,7 +5385,7 @@ async def _channel_menu(
 
 
 async def _draw_channel_menu(session: Session) -> None:
-    await session.write_line("\r\n" + screen_title("Channels", width=session.terminal_width))
+    await session.write_line("\r\n" + screen_title("Chat channels", width=session.terminal_width))
     await session.write_line(
         action_bar(
             [menu_key("C", "reate"), menu_key("L", "ist"), menu_key("B", "ack")], width=session.terminal_width
@@ -5423,7 +5423,7 @@ def _channel_field_specs() -> list[FieldSpec]:
             render=lambda d: d.get("category_id_label") or "(none)",
             prompt=_category_field(
                 list_top_level=list_top_level_channel_categories, list_subcategories=list_channel_subcategories,
-                title="Channel category", list_resources=list_channels, get_by_id=get_channel_category_by_id,
+                title="Chat channel category", list_resources=list_channels, get_by_id=get_channel_category_by_id,
             ),
         ),
         FieldSpec(
@@ -5516,12 +5516,12 @@ async def _channel_screen(
 
     channel = await edit_resource_draft(
         session, lane,
-        title="Edit channel" if existing is not None else "Create channel",
+        title="Edit chat channel" if existing is not None else "Create chat channel",
         fields=_channel_field_specs(), draft=draft, save=save, error_type=ChannelError,
         save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
     )
     if channel is not None:
-        verb = "Updated" if existing is not None else "Created channel"
+        verb = "Updated" if existing is not None else "Created chat channel"
         await session.write_line(f"{verb} {channel.name!r}.")
     return channel
 
@@ -5535,8 +5535,8 @@ async def _list_channels_screen(
         name_of=lambda c: c.name,
         stable_id_of=lambda c: c.id,
         description_of=_channel_description,
-        title="Channels",
-        empty_message="No channels yet.",
+        title="Chat channels",
+        empty_message="No chat channels yet.",
     )
     if selected is not None:
         await _channel_detail_screen(session, lane, actor, selected, link_context=link_context)
@@ -5618,7 +5618,7 @@ async def _draw_channel_detail(
         await session.write_line(f"Linked: {'yes' if linked else 'no'}")
     options = [menu_key("E", "dit"), menu_key("D", "elete"), menu_key("R", "estrictions")]
     if link_context is not None and not linked:
-        options.append(menu_key("L", "ink this channel"))
+        options.append(menu_key("L", "ink this chat channel"))
     options.append(menu_key("B", "ack"))
     await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
     await session.write("Choice: ")
@@ -5676,7 +5676,7 @@ async def _channel_restrictions_screen(session: Session, lane: DatabaseLane, act
             stable_id_of=lambda r: r.id,
             description_of=lambda r: _description_of(r, usernames, display_format, display_timezone),
             title=f"Restrictions on {channel.name!r}",
-            empty_message="No active mute/ban restrictions on this channel.",
+            empty_message="No active mute/ban restrictions on this chat channel.",
         )
         if selected is None:
             return
@@ -5716,7 +5716,7 @@ async def _link_channel_screen(session: Session, lane: DatabaseLane, channel: Ch
     channel origin succession is reused by reference only, not built,
     design doc §9.6).
     """
-    await session.write_line(colored("\r\nLink this channel", fg_color=HEADER_COLOR, bold=True))
+    await session.write_line(colored("\r\nLink this chat channel", fg_color=HEADER_COLOR, bold=True))
     default_min_level, ok = await _prompt_optional_int(
         session, "Recommended minimum level", current=channel.min_level
     )
@@ -5739,7 +5739,7 @@ async def _link_channel_screen(session: Session, lane: DatabaseLane, channel: Ch
             default_name_requirement=default_name_requirement,
         )
     except LinkChannelsError as exc:
-        await session.write_line(colored(f"Could not Link channel: {exc}", fg_color=MUTED_COLOR))
+        await session.write_line(colored(f"Could not Link chat channel: {exc}", fg_color=MUTED_COLOR))
         return
 
     link_context.link_node.channels[channel.channel_id] = genesis
@@ -5754,13 +5754,13 @@ async def _link_channel_screen(session: Session, lane: DatabaseLane, channel: Ch
 async def _delete_channel_screen(session: Session, lane: DatabaseLane, actor: User, channel: Channel) -> bool:
     await session.write_line(
         colored(
-            "\r\nThis permanently deletes the channel, its scrollback, mute/ban "
+            "\r\nThis permanently deletes the chat channel, its scrollback, mute/ban "
             "restrictions, membership/invitations, and any moderator grants "
             "scoped to it. This cannot be undone.",
             fg_color=MUTED_COLOR,
         )
     )
-    await session.write(f"Type the channel name {channel.name!r} to confirm, or anything else to cancel: ")
+    await session.write(f"Type the chat channel name {channel.name!r} to confirm, or anything else to cancel: ")
     confirmation = (await session.read_line()).strip()
     if confirmation != channel.name:
         await session.write_line("Cancelled.")
@@ -5787,7 +5787,7 @@ async def _category_menu(session: Session, lane: DatabaseLane, actor: User) -> N
                 session, lane, actor,
                 create=create_board_category, list_top_level=list_top_level_board_categories,
                 list_subcategories=list_board_subcategories, delete=delete_board_category,
-                error_type=CategoryError, title="Board categories",
+                error_type=CategoryError, title="Message board categories",
             )
             await _draw_category_menu(session)
         elif choice == "f":
@@ -5805,7 +5805,7 @@ async def _category_menu(session: Session, lane: DatabaseLane, actor: User) -> N
                 session, lane, actor,
                 create=create_channel_category, list_top_level=list_top_level_channel_categories,
                 list_subcategories=list_channel_subcategories, delete=delete_channel_category,
-                error_type=ChannelCategoryError, title="Channel categories",
+                error_type=ChannelCategoryError, title="Chat channel categories",
             )
             await _draw_category_menu(session)
         else:
@@ -5819,7 +5819,7 @@ async def _draw_category_menu(session: Session) -> None:
             [
                 menu_key("M", "essage board category"),
                 menu_key("F", "ile-area category"),
-                menu_key("C", "hannel category"),
+                menu_key("C", "hat channel category"),
                 menu_key("B", "ack"),
             ],
             width=session.terminal_width,
@@ -5918,8 +5918,8 @@ async def _list_categories_screen(
         return
     await session.write_line(
         colored(
-            "\r\nDeleting this category sets any boards/areas/channels assigned "
-            "to it (and any of its own sub-categories) back to uncategorized.",
+            "\r\nDeleting this category sets any message boards/file areas/chat channels "
+            "assigned to it (and any of its own sub-categories) back to uncategorized.",
             fg_color=MUTED_COLOR,
         )
     )
@@ -5941,13 +5941,18 @@ async def _pick_moderator_scope(session: Session, lane: DatabaseLane) -> tuple[s
     (design doc) -- `community_id` further narrows a blanket grant to
     one Community's membership (design doc §16's Community-blanket
     tier) instead of the whole node;
-    `community_id` is always `None` for a per-object grant (`[B]oard`/
-    `[A]rea`/`Cha[N]nel`), since a specific object's own `community_id`
+    `community_id` is always `None` for a per-object grant (board/file
+    area/chat channel), since a specific object's own `community_id`
     already answers that question without needing it duplicated on the
     grant."""
     await session.write(
-        "Scope: [B]oard, [A]rea, Cha[N]nel, blanket across all boards [X], "
-        "blanket across all areas [Y], blanket across all channels [Z]: "
+        "Scope: "
+        + menu_key("b", "oard", prefix="message ") + ", "
+        + menu_key("a", "rea", prefix="file ") + ", "
+        + menu_key("n", "nel", prefix="chat cha") + ", "
+        + menu_key("x", "", prefix="blanket across all boards ") + ", "
+        + menu_key("y", "", prefix="blanket across all areas ") + ", "
+        + menu_key("z", "", prefix="blanket across all channels ") + ": "
     )
     scope_key = (await session.read_key()).lower()
     await session.write_line("")
@@ -5955,11 +5960,11 @@ async def _pick_moderator_scope(session: Session, lane: DatabaseLane) -> tuple[s
         board = await pick_item(
             session, await lane.run(list_boards, order_by="alphabetical"),
             name_of=lambda b: b.name, stable_id_of=lambda b: b.id,
-            title="Which board?", empty_message="No boards yet.",
+            title="Which message board?", empty_message="No message boards yet.",
         )
         if board is None:
             return None
-        return "board", board.id, f"board {board.name!r}", None
+        return "board", board.id, f"message board {board.name!r}", None
     elif scope_key == "a":
         area = await pick_item(
             session, await lane.run(list_file_areas, order_by="alphabetical"),
@@ -5973,17 +5978,17 @@ async def _pick_moderator_scope(session: Session, lane: DatabaseLane) -> tuple[s
         channel = await pick_item(
             session, await lane.run(list_channels),
             name_of=lambda c: c.name, stable_id_of=lambda c: c.id,
-            title="Which channel?", empty_message="No channels yet.",
+            title="Which chat channel?", empty_message="No chat channels yet.",
         )
         if channel is None:
             return None
-        return "channel", channel.id, f"channel {channel.name!r}", None
+        return "channel", channel.id, f"chat channel {channel.name!r}", None
     elif scope_key == "x":
-        object_type, label = "board", "all boards (blanket)"
+        object_type, label = "board", "all message boards (blanket)"
     elif scope_key == "y":
         object_type, label = "file_area", "all file areas (blanket)"
     elif scope_key == "z":
-        object_type, label = "channel", "all channels (blanket)"
+        object_type, label = "channel", "all chat channels (blanket)"
     else:
         await session.write_line(colored("Not a valid scope -- cancelled.", fg_color=MUTED_COLOR))
         return None

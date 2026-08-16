@@ -98,7 +98,7 @@ def test_global_preference_is_listed_and_can_be_cleared(db, alice):
     session = FakeSession(["0", "1", "y"])
     asyncio.run(login_flow._sort_preferences_screen(session, db, alice))
     text = _written_text(session)
-    assert "Boards" in text
+    assert "Message boards" in text
     assert "Global default" in text
     assert get_effective_sort_mode(db, alice, "board") == "activity"  # cleared, back to default
 

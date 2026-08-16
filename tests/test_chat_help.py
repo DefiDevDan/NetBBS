@@ -113,7 +113,7 @@ def test_help_with_command_shows_detail_regardless_of_visibility(db, lane, hub, 
     session = asyncio.run(_run(lane, hub, presence, channel, alice, ["/help mute", "/quit"]))
     output = _written_text(session)
     assert "/mute <user> [duration] [reason]" in output
-    assert "Silence a user's messages in this channel." in output
+    assert "Silence a user's messages in this chat channel." in output
 
 
 def test_help_with_leading_slash_on_the_argument_also_works(db, lane, hub, presence, alice, channel):
