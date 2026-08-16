@@ -3928,34 +3928,40 @@ def _community_field_specs() -> list[FieldSpec]:
             key="name", hotkey="n", menu_text=menu_key("N", "ame"), label="Name",
             render=lambda d: d.get("name") or "(blank)",
             prompt=text_field("name", required=True),
+            brief="The community's display name",
         ),
         FieldSpec(
             key="description", hotkey="d", menu_text=menu_key("D", "escription"), label="Description",
             render=lambda d: d.get("description") or "(none)",
             prompt=text_field("description"),
+            brief="Shown in the community directory",
         ),
         FieldSpec(
             key="hidden", hotkey="h", menu_text=menu_key("H", "idden"), label="Hidden",
             render=lambda d: "yes" if d.get("hidden") else "no",
             prompt=bool_field("hidden", "Hidden?"),
+            brief="Hide from the communities list",
         ),
         FieldSpec(
             key="default_min_read_level", hotkey="r", menu_text=menu_key("R", "ead level"),
             label="Default read level",
             render=lambda d: _optional_int_label(d.get("default_min_read_level")),
             prompt=_optional_int_field("default_min_read_level", "Default minimum read level"),
+            brief="Default read level, inherited",
         ),
         FieldSpec(
             key="default_min_write_level", hotkey="w", menu_text=menu_key("W", "rite level"),
             label="Default write level",
             render=lambda d: _optional_int_label(d.get("default_min_write_level")),
             prompt=_optional_int_field("default_min_write_level", "Default minimum write level"),
+            brief="Default write level, inherited",
         ),
         FieldSpec(
             key="default_min_age", hotkey="g", menu_text=menu_key("G", "e", prefix="Min a"),
             label="Default min age",
             render=lambda d: _optional_int_label(d.get("default_min_age")),
             prompt=_min_age_field("default_min_age"),
+            brief="Default min. age, inherited",
         ),
         FieldSpec(
             key="default_name_requirement", hotkey="q", menu_text=menu_key("Q", "uirement", prefix="Name req"),
@@ -3965,6 +3971,7 @@ def _community_field_specs() -> list[FieldSpec]:
             step=_name_requirement_step("default_name_requirement"),
             help=_NAME_REQUIREMENT_HELP + " Message boards/file areas/chat channels in this "
             "Community inherit this unless they set their own.",
+            brief="Default name rule, inherited",
         ),
     ]
 
@@ -4026,6 +4033,7 @@ async def _community_screen(
         title="Edit Community" if existing is not None else "Create Community",
         fields=_community_field_specs(), draft=draft, save=save, error_type=CommunityError,
         save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        description_level=await lane.run(menu_description_level, actor),
     )
     if community is not None:
         verb = "Updated" if existing is not None else "Created Community"
@@ -4175,26 +4183,31 @@ def _board_field_specs() -> list[FieldSpec]:
             key="name", hotkey="n", menu_text=menu_key("N", "ame"), label="Name",
             render=lambda d: d.get("name") or "(blank)",
             prompt=text_field("name", required=True),
+            brief="The board's display name",
         ),
         FieldSpec(
             key="description", hotkey="d", menu_text=menu_key("D", "escription"), label="Description",
             render=lambda d: d.get("description") or "(none)",
             prompt=text_field("description"),
+            brief="Shown when browsing the board",
         ),
         FieldSpec(
             key="min_read_level", hotkey="r", menu_text=menu_key("R", "ead level"), label="Min read level",
             render=lambda d: _optional_int_label(d.get("min_read_level")),
             prompt=_optional_int_field("min_read_level", "Minimum read level"),
+            brief="Level required to read it",
         ),
         FieldSpec(
             key="min_write_level", hotkey="w", menu_text=menu_key("W", "rite level"), label="Min write level",
             render=lambda d: _optional_int_label(d.get("min_write_level")),
             prompt=_optional_int_field("min_write_level", "Minimum write level"),
+            brief="Level required to post",
         ),
         FieldSpec(
             key="community_id", hotkey="u", menu_text=menu_key("U", "nity", prefix="Comm"), label="Community",
             render=lambda d: d.get("community_id_label") or "(none)",
             prompt=_community_field(),
+            brief="Parent community, if any",
         ),
         FieldSpec(
             key="category_id", hotkey="c", menu_text=menu_key("C", "ategory"), label="Category",
@@ -4203,27 +4216,32 @@ def _board_field_specs() -> list[FieldSpec]:
                 list_top_level=list_top_level_board_categories, list_subcategories=list_board_subcategories,
                 title="Message board category", list_resources=list_boards, get_by_id=get_board_category_by_id,
             ),
+            brief="Where it's grouped in listings",
         ),
         FieldSpec(
             key="pinned", hotkey="p", menu_text=menu_key("P", "inned"), label="Pinned",
             render=lambda d: "yes" if d.get("pinned") else "no",
             prompt=bool_field("pinned", "Pinned?"),
+            brief="Shown at the top of listings",
         ),
         FieldSpec(
             key="moderated", hotkey="m", menu_text=menu_key("M", "oderated"), label="Moderated",
             render=lambda d: "yes" if d.get("moderated") else "no",
             prompt=bool_field("moderated", "Moderated (posts need approval)?"),
+            brief="New posts need approval first",
         ),
         FieldSpec(
             key="max_post_age_days", hotkey="x", menu_text=menu_key("X", " post age", prefix="Ma"),
             label="Max post age (days)",
             render=lambda d: _optional_int_label(d.get("max_post_age_days"), none_word="unlimited"),
             prompt=_optional_int_field("max_post_age_days", "Max post age in days"),
+            brief="Auto-purge posts after N days",
         ),
         FieldSpec(
             key="min_age", hotkey="g", menu_text=menu_key("G", "e", prefix="Min a"), label="Min age",
             render=lambda d: _optional_int_label(d.get("min_age")),
             prompt=_min_age_field(),
+            brief="Minimum caller age required",
         ),
         FieldSpec(
             key="name_requirement", hotkey="q", menu_text=menu_key("Q", "uirement", prefix="Name req"),
@@ -4232,6 +4250,7 @@ def _board_field_specs() -> list[FieldSpec]:
             prompt=_name_requirement_field(),
             step=_name_requirement_step(),
             help=_NAME_REQUIREMENT_HELP,
+            brief="How posters must be identified",
         ),
     ]
 
@@ -4299,6 +4318,7 @@ async def _board_screen(
         title="Edit message board" if existing is not None else "Create message board",
         fields=_board_field_specs(), draft=draft, save=save, error_type=BoardError,
         save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        description_level=await lane.run(menu_description_level, actor),
     )
     if board is not None:
         verb = "Updated" if existing is not None else "Created message board"
@@ -4971,26 +4991,31 @@ def _area_field_specs() -> list[FieldSpec]:
             key="name", hotkey="n", menu_text=menu_key("N", "ame"), label="Name",
             render=lambda d: d.get("name") or "(blank)",
             prompt=text_field("name", required=True),
+            brief="The area's display name",
         ),
         FieldSpec(
             key="description", hotkey="d", menu_text=menu_key("D", "escription"), label="Description",
             render=lambda d: d.get("description") or "(none)",
             prompt=text_field("description"),
+            brief="Shown when browsing the area",
         ),
         FieldSpec(
             key="min_read_level", hotkey="r", menu_text=menu_key("R", "ead level"), label="Min read level",
             render=lambda d: _optional_int_label(d.get("min_read_level")),
             prompt=_optional_int_field("min_read_level", "Minimum read level"),
+            brief="Level required to browse it",
         ),
         FieldSpec(
             key="min_write_level", hotkey="w", menu_text=menu_key("W", "rite level"), label="Min write level",
             render=lambda d: _optional_int_label(d.get("min_write_level")),
             prompt=_optional_int_field("min_write_level", "Minimum write level"),
+            brief="Level required to upload",
         ),
         FieldSpec(
             key="community_id", hotkey="u", menu_text=menu_key("U", "nity", prefix="Comm"), label="Community",
             render=lambda d: d.get("community_id_label") or "(none)",
             prompt=_community_field(),
+            brief="Parent community, if any",
         ),
         FieldSpec(
             key="category_id", hotkey="c", menu_text=menu_key("C", "ategory"), label="Category",
@@ -4999,27 +5024,32 @@ def _area_field_specs() -> list[FieldSpec]:
                 list_top_level=list_top_level_file_categories, list_subcategories=list_file_subcategories,
                 title="File-area category", list_resources=list_file_areas, get_by_id=get_file_area_category_by_id,
             ),
+            brief="Where it's grouped in listings",
         ),
         FieldSpec(
             key="pinned", hotkey="p", menu_text=menu_key("P", "inned"), label="Pinned",
             render=lambda d: "yes" if d.get("pinned") else "no",
             prompt=bool_field("pinned", "Pinned?"),
+            brief="Shown at the top of listings",
         ),
         FieldSpec(
             key="moderated", hotkey="m", menu_text=menu_key("M", "oderated"), label="Moderated",
             render=lambda d: "yes" if d.get("moderated") else "no",
             prompt=bool_field("moderated", "Moderated (uploads need approval)?"),
+            brief="New uploads need approval first",
         ),
         FieldSpec(
             key="max_file_age_days", hotkey="x", menu_text=menu_key("X", " file age", prefix="Ma"),
             label="Max file age (days)",
             render=lambda d: _optional_int_label(d.get("max_file_age_days"), none_word="unlimited"),
             prompt=_optional_int_field("max_file_age_days", "Max file age in days"),
+            brief="Auto-purge files after N days",
         ),
         FieldSpec(
             key="min_age", hotkey="g", menu_text=menu_key("G", "e", prefix="Min a"), label="Min age",
             render=lambda d: _optional_int_label(d.get("min_age")),
             prompt=_min_age_field(),
+            brief="Minimum caller age required",
         ),
         FieldSpec(
             key="name_requirement", hotkey="q", menu_text=menu_key("Q", "uirement", prefix="Name req"),
@@ -5028,6 +5058,7 @@ def _area_field_specs() -> list[FieldSpec]:
             prompt=_name_requirement_field(),
             step=_name_requirement_step(),
             help=_NAME_REQUIREMENT_HELP,
+            brief="How uploaders must be identified",
         ),
     ]
 
@@ -5088,6 +5119,7 @@ async def _area_screen(
         title="Edit file area" if existing is not None else "Create file area",
         fields=_area_field_specs(), draft=draft, save=save, error_type=FileAreaError,
         save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        description_level=await lane.run(menu_description_level, actor),
     )
     if area is not None:
         verb = "Updated" if existing is not None else "Created file area"
@@ -5402,21 +5434,25 @@ def _channel_field_specs() -> list[FieldSpec]:
             key="name", hotkey="n", menu_text=menu_key("N", "ame"), label="Name",
             render=lambda d: d.get("name") or "(blank)",
             prompt=text_field("name", required=True),
+            brief="The channel's display name",
         ),
         FieldSpec(
             key="description", hotkey="d", menu_text=menu_key("D", "escription"), label="Description",
             render=lambda d: d.get("description") or "(none)",
             prompt=text_field("description"),
+            brief="Shown when browsing channels",
         ),
         FieldSpec(
             key="min_level", hotkey="l", menu_text=menu_key("L", "evel"), label="Min level",
             render=lambda d: str(d.get("min_level")),
             prompt=_int_field("min_level", "Minimum level"),
+            brief="Level required to join",
         ),
         FieldSpec(
             key="community_id", hotkey="u", menu_text=menu_key("U", "nity", prefix="Comm"), label="Community",
             render=lambda d: d.get("community_id_label") or "(none)",
             prompt=_community_field(),
+            brief="Parent community, if any",
         ),
         FieldSpec(
             key="category_id", hotkey="c", menu_text=menu_key("C", "ategory"), label="Category",
@@ -5425,32 +5461,38 @@ def _channel_field_specs() -> list[FieldSpec]:
                 list_top_level=list_top_level_channel_categories, list_subcategories=list_channel_subcategories,
                 title="Chat channel category", list_resources=list_channels, get_by_id=get_channel_category_by_id,
             ),
+            brief="Where it's grouped in listings",
         ),
         FieldSpec(
             key="pinned", hotkey="p", menu_text=menu_key("P", "inned"), label="Pinned",
             render=lambda d: "yes" if d.get("pinned") else "no",
             prompt=bool_field("pinned", "Pinned?"),
+            brief="Shown at the top of listings",
         ),
         FieldSpec(
             key="hidden", hotkey="h", menu_text=menu_key("H", "idden"), label="Hidden",
             render=lambda d: "yes" if d.get("hidden") else "no",
             prompt=bool_field("hidden", "Hidden (omitted from listings)?"),
+            brief="Omitted from channel listings",
         ),
         FieldSpec(
             key="members_only", hotkey="m", menu_text=menu_key("M", "embers-only"), label="Members-only",
             render=lambda d: "yes" if d.get("members_only") else "no",
             prompt=bool_field("members_only", "Members-only (invite-only access)?"),
+            brief="Only invited members may join",
         ),
         FieldSpec(
             key="allow_member_invites", hotkey="i", menu_text=menu_key("I", "nvites"),
             label="Allow member invites",
             render=lambda d: "yes" if d.get("allow_member_invites") else "no",
             prompt=bool_field("allow_member_invites", "Allow members to invite others?"),
+            brief="Members can invite others too",
         ),
         FieldSpec(
             key="min_age", hotkey="g", menu_text=menu_key("G", "e", prefix="Min a"), label="Min age",
             render=lambda d: _optional_int_label(d.get("min_age")),
             prompt=_min_age_field(),
+            brief="Minimum caller age required",
         ),
         FieldSpec(
             key="name_requirement", hotkey="q", menu_text=menu_key("Q", "uirement", prefix="Name req"),
@@ -5459,6 +5501,7 @@ def _channel_field_specs() -> list[FieldSpec]:
             prompt=_name_requirement_field(),
             step=_name_requirement_step(),
             help=_NAME_REQUIREMENT_HELP,
+            brief="How chatters must be identified",
         ),
     ]
 
@@ -5519,6 +5562,7 @@ async def _channel_screen(
         title="Edit chat channel" if existing is not None else "Create chat channel",
         fields=_channel_field_specs(), draft=draft, save=save, error_type=ChannelError,
         save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        description_level=await lane.run(menu_description_level, actor),
     )
     if channel is not None:
         verb = "Updated" if existing is not None else "Created chat channel"

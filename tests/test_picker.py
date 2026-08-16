@@ -823,6 +823,84 @@ def test_pagination_adapts_to_negotiated_terminal_height():
     assert result["value"] == "item08"
 
 
+def test_description_level_brief_shows_nav_descriptions():
+    """Issue #160's rollout to this screen: the nav row renders through
+    `menu_grid` when `description_level="brief"` is passed, showing each
+    nav command's own short description underneath its hotkey."""
+    result = {}
+    items = ["item1", "item2"]
+
+    async def handler(session: Session):
+        result["value"] = await pick_item(
+            session, items, name_of=lambda x: x, stable_id_of=lambda x: items.index(x) + 1,
+            title="Items", empty_message="none", description_level="brief",
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await skip_initial_negotiation(reader)
+            text = (await _read_until_quiet(reader)).decode()
+            assert "Next page" in text
+            assert "Return without picking" in text
+            writer.write(b"b")
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert result["value"] is None
+
+
+def test_description_level_brief_reserves_extra_lines_for_the_taller_nav_block():
+    """The nav row grows from 1 line to 2 lines/entry (5 entries: Next/
+    Prev/Search/Goto/Back) once descriptions are on, so `_page_size`
+    must reserve more lines than the `description_level="off"` case --
+    otherwise the item list plus the now-taller nav block would overflow
+    a real terminal of this height. At a negotiated 80x20 terminal:
+    off reserves 6 lines (page size 14), brief reserves 15 lines (page
+    size 5) -- verified here by checking exactly 5 of 20 items appear on
+    page 1."""
+    result = {}
+    items = [f"item{i:02d}" for i in range(1, 21)]
+
+    async def handler(session: Session):
+        await session.read_line()
+        result["value"] = await pick_item(
+            session, items, name_of=lambda x: x, stable_id_of=lambda x: items.index(x) + 1,
+            title="Items", empty_message="none", description_level="brief",
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await skip_initial_negotiation(reader)
+            writer.write(bytes([IAC, WILL, NAWS]))
+            writer.write(_naws_subneg(80, 20))
+            writer.write(b"x\r\n")
+            await writer.drain()
+
+            text = (await _read_until_quiet(reader)).decode()
+            assert "item01" in text and "item05" in text
+            assert "item06" not in text
+
+            writer.write(b"b")
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert result["value"] is None
+
+
 def test_prev_on_first_page_sounds_bell_and_stays_in_picker():
     result = {}
     items = ["a", "b"]

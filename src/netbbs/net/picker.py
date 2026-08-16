@@ -49,9 +49,11 @@ from netbbs.rendering import (
     ERROR_COLOR,
     MENU_KEY_COLOR,
     MUTED_COLOR,
+    MenuEntry,
     action_bar,
     colored,
     colored_truncate,
+    menu_grid,
     menu_key,
     reject_keystroke,
     sanitize_text,
@@ -87,6 +89,7 @@ async def pick_item(
     refresh: Callable[[], Awaitable[Sequence[T]]] | None = None,
     on_sort: Callable[[], Awaitable[Sequence[T] | None]] | None = None,
     sort_label: Callable[[], str] | None = None,
+    description_level: str = "off",
 ) -> T | None:
     """
     Let the user browse/search/jump through `items` and pick one, or
@@ -163,6 +166,21 @@ async def pick_item(
     "Sort: Activity") so the current mode is never a mystery -- exactly
     the ambiguity the dogfood report behind this feature complained
     about.
+
+    `description_level` (issue #160's own rollout to this screen) is
+    the caller's already-resolved `menu_description_level` preference
+    ("off"/"brief"/"detailed") -- fetched once by the caller, same
+    caching rule as `netbbs.net.resource_editor.edit_resource_draft`'s
+    own `description_level` parameter. The nav row (Next/Prev/Search/
+    Goto/Order/Back) renders through `menu_grid`; the per-item list
+    itself is unaffected -- items already show their own description
+    via `description_of`. Unlike `edit_resource_draft`'s single fixed-
+    size menu row, this nav block's *rendered height* now varies with
+    `description_level` (1 line/entry when off, 2 when brief/detailed)
+    and directly affects how many items fit on a page -- `_page_size`
+    accounts for the nav block's actual line count instead of assuming
+    the old constant 1-line nav that `_RESERVED_LINES` was calibrated
+    against, so paging math and the real on-screen nav never disagree.
     """
     if not items and refresh is None:
         await session.write_line(colored(f"\r\n{empty_message}", fg_color=MUTED_COLOR))
@@ -172,7 +190,7 @@ async def pick_item(
     page_index = 0
 
     def _total_pages() -> int:
-        return max(1, math.ceil(len(working_set) / _page_size(session)))
+        return max(1, math.ceil(len(working_set) / _page_size(session, on_sort, description_level)))
 
     async def _render() -> Sequence[T]:
         nonlocal page_index
@@ -186,7 +204,7 @@ async def pick_item(
             await session.write("Choice: ")
             return []
 
-        page_size = _page_size(session)
+        page_size = _page_size(session, on_sort, description_level)
         total_pages = _total_pages()
         page_index = max(0, min(page_index, total_pages - 1))
         start = page_index * page_size
@@ -225,16 +243,7 @@ async def pick_item(
                 segments.append((f" - {sanitize_text(description)}", MUTED_COLOR))
             await session.write_line(colored_truncate(segments, session.terminal_width))
 
-        nav_keys = [
-            menu_key("N", "ext"),
-            menu_key("P", "rev"),
-            menu_key("S", "earch"),
-            menu_key("G", "oto #"),
-        ]
-        if on_sort is not None:
-            nav_keys.append(menu_key("O", "rder"))
-        nav_keys.append(menu_key("B", "ack"))
-        nav = action_bar(nav_keys, width=session.terminal_width)
+        nav = _render_nav(session, on_sort, description_level)
         # Folded into this same trailing line, not a line of its own
         # (issue #102's own "document it somewhere discoverable"
         # criterion) -- a permanent extra row here would shift every
@@ -434,6 +443,37 @@ def _search_completer(candidates: Sequence[str]) -> Completer:
     return completer
 
 
-def _page_size(session: Session) -> int:
-    available = session.terminal_height - _RESERVED_LINES
+def _render_nav(session: Session, on_sort: Callable | None, description_level: str) -> str:
+    entries = [
+        MenuEntry(label=menu_key("N", "ext"), brief="Next page"),
+        MenuEntry(label=menu_key("P", "rev"), brief="Previous page"),
+        MenuEntry(label=menu_key("S", "earch"), brief="Search by name"),
+        MenuEntry(label=menu_key("G", "oto #"), brief="Jump to an item's #"),
+    ]
+    if on_sort is not None:
+        entries.append(MenuEntry(label=menu_key("O", "rder"), brief="Change sort order"))
+    entries.append(MenuEntry(label=menu_key("B", "ack"), brief="Return without picking"))
+    if description_level == "off":
+        # `menu_grid` always renders one entry per line, even with
+        # descriptions off -- unlike `action_bar`'s packed single-line
+        # row, that's not a byte-for-byte-compatible substitute at this
+        # level. Keep `action_bar` for the (default, still most common)
+        # off case so every existing picker screen's height is
+        # completely unaffected; `menu_grid` only takes over once the
+        # caller has actually opted into descriptions.
+        return action_bar([e.label for e in entries], width=session.terminal_width)
+    return menu_grid(
+        [("", entries)], width=session.terminal_width, height=session.terminal_height,
+        description_level=description_level,
+    )
+
+
+def _page_size(session: Session, on_sort: Callable | None, description_level: str) -> int:
+    # `_RESERVED_LINES` was calibrated against the nav row always being
+    # exactly 1 line -- still true for `description_level="off"`
+    # (`action_bar`), so the reserved budget only needs to grow past
+    # that constant once "brief"/"detailed" switches the nav row to
+    # `menu_grid`'s taller, one-entry-per-line rendering.
+    nav_lines = _render_nav(session, on_sort, description_level).count("\r\n") + 1
+    available = session.terminal_height - (_RESERVED_LINES - 1 + nav_lines)
     return max(1, min(_MAX_PAGE_SIZE, available))

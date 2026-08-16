@@ -33,7 +33,17 @@ from netbbs.net.char_input import CANCEL_KEY, HELP_KEY, EditorKey, EditorKeyKind
 from netbbs.net.confirm import prompt_yes_no
 from netbbs.net.help_overlay import show_help
 from netbbs.net.session import Session
-from netbbs.rendering import ACCENT_COLOR, HEADER_COLOR, MUTED_COLOR, action_bar, colored, sanitize_text, screen_title
+from netbbs.rendering import (
+    ACCENT_COLOR,
+    HEADER_COLOR,
+    MUTED_COLOR,
+    MenuEntry,
+    action_bar,
+    colored,
+    menu_grid,
+    sanitize_text,
+    screen_title,
+)
 from netbbs.storage.execution import DatabaseLane
 
 # A draft is a plain, freely-mutable dict of field values -- for
@@ -71,6 +81,19 @@ class FieldSpec:
     on day one isn't required (issue's own scope note); a field with no
     `help` is simply omitted from that screen.
 
+    `brief` (issue #160's own rollout to this screen), if given, is a
+    short (~30 char) one-line description shown indented under this
+    field's hotkey when the caller's menu-description preference
+    (`netbbs.net.menu_description_preference`) is `"brief"` or
+    `"detailed"` -- see `MenuEntry`. The screen's own title already
+    names the resource kind in full ("Edit message board"/"file
+    area"/"chat channel"), so `brief` text may use the short noun
+    ("the board", "the area") rather than repeating the full term on
+    every field and blowing the width budget. At the `"detailed"`
+    level, `help` is shown instead of `brief` when a field has both --
+    the existing Ctrl-H writeup doubles as the richer description for
+    free, no separate text required.
+
     `step` (dogfood feature request, issue #160's own cursor-navigation
     follow-up), if given, is a synchronous, no-I/O `(draft, direction)
     -> None` mutator that Left/Right act on when this field is the
@@ -90,6 +113,11 @@ class FieldSpec:
     prompt: FieldPrompt
     help: str | None = None
     step: Callable[[Draft, int], None] | None = None
+    brief: str | None = None
+
+
+_SAVE_BRIEF = "Write this draft to the database"
+_BACK_BRIEF = "Discard the draft, nothing saved"
 
 
 async def edit_resource_draft(
@@ -105,6 +133,7 @@ async def edit_resource_draft(
     back_menu_text: str,
     save_hotkey: str = "s",
     back_hotkey: str = "b",
+    description_level: str = "off",
 ) -> Any | None:
     """
     Drives one draft-based create/edit screen: renders `title` plus
@@ -146,6 +175,16 @@ async def edit_resource_draft(
     end rather than stopping. Left/Right step a highlighted field's own
     `step`, if it defines one (see `FieldSpec.step`/`choice_step`);
     silently do nothing otherwise.
+
+    `description_level` (issue #160's own rollout to this screen) is
+    the caller's already-resolved `menu_description_level` preference
+    ("off"/"brief"/"detailed") -- fetched once by the caller before
+    entering this screen, not by this function on every redraw of its
+    own loop (a per-redraw lookup here previously perturbed async
+    cancellation timing elsewhere in this rollout). Field rows render
+    through `menu_grid` with each `FieldSpec.brief`/`.help` as the
+    description text; a field with neither shows only its hotkey label,
+    identical to `description_level="off"`.
     """
     initial_draft = dict(draft)
     selected: int | None = None
@@ -159,9 +198,26 @@ async def edit_resource_draft(
             # highlighted run.
             prefix = colored(f"> {f.label}", fg_color=ACCENT_COLOR, bold=True) if i == selected else f"  {f.label}"
             await session.write_line(f"{prefix}: {colored(value, fg_color=MUTED_COLOR)}")
-        menu_line = action_bar(
-            [f.menu_text for f in fields] + [save_menu_text, back_menu_text], width=session.terminal_width
-        )
+        menu_entries = [MenuEntry(label=f.menu_text, brief=f.brief, detailed=f.help) for f in fields] + [
+            MenuEntry(label=save_menu_text, brief=_SAVE_BRIEF),
+            MenuEntry(label=back_menu_text, brief=_BACK_BRIEF),
+        ]
+        if description_level == "off":
+            # `menu_grid` always renders one entry per line, even with
+            # descriptions off -- unlike `action_bar`'s packed single-
+            # line row, that's not a byte-for-byte-compatible
+            # substitute at this level. Keep `action_bar` for the
+            # (default, still most common) off case so this screen's
+            # height is completely unaffected; `menu_grid` only takes
+            # over once the caller has actually opted into descriptions.
+            menu_line = action_bar([e.label for e in menu_entries], width=session.terminal_width)
+        else:
+            menu_line = menu_grid(
+                [("", menu_entries)],
+                width=session.terminal_width,
+                height=session.terminal_height,
+                description_level=description_level,
+            )
         await session.write_line(f"\r\n{menu_line}")
         if any(f.help for f in fields):
             # Only hinted when at least one field actually has help

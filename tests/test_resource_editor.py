@@ -834,3 +834,121 @@ def test_ctrl_h_with_nothing_highlighted_still_shows_the_full_list():
     )
     assert result == "lobby"
     assert "Keeps this item at the top of every listing." in _written_text(session)
+
+
+# -- menu_grid descriptions (issue #160's rollout to this screen) -----------
+
+
+def _pinned_field_with_brief() -> FieldSpec:
+    return FieldSpec(
+        key="pinned",
+        hotkey="p",
+        menu_text=menu_key("P", "inned"),
+        label="Pinned",
+        render=lambda draft: "yes" if draft.get("pinned") else "no",
+        prompt=bool_field("pinned", "Pinned?"),
+        brief="Shown at the top of listings",
+    )
+
+
+def test_description_level_off_hides_brief_text_by_default():
+    async def save(draft):
+        return draft["name"]
+
+    session = FakeSession(["x", "s"])
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Edit thing", fields=[_name_field(), _pinned_field_with_brief()], draft={"name": "lobby"},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        )
+    )
+    assert result == "lobby"
+    assert "Shown at the top of listings" not in _written_text(session)
+
+
+def test_description_level_brief_shows_field_brief_text():
+    async def save(draft):
+        return draft["name"]
+
+    session = FakeSession(["x", "s"])
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Edit thing", fields=[_name_field(), _pinned_field_with_brief()], draft={"name": "lobby"},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+            description_level="brief",
+        )
+    )
+    assert result == "lobby"
+    assert "Shown at the top of listings" in _written_text(session)
+
+
+def test_description_level_detailed_prefers_help_over_brief():
+    async def save(draft):
+        return draft["name"]
+
+    field = FieldSpec(
+        key="pinned",
+        hotkey="p",
+        menu_text=menu_key("P", "inned"),
+        label="Pinned",
+        render=lambda draft: "yes" if draft.get("pinned") else "no",
+        prompt=bool_field("pinned", "Pinned?"),
+        brief="Shown at the top of listings",
+        help="Keeps this item at the top of every listing, above everything else.",
+    )
+    session = FakeSession(["x", "s"])
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Edit thing", fields=[_name_field(), field], draft={"name": "lobby"},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+            description_level="detailed",
+        )
+    )
+    assert result == "lobby"
+    text = _written_text(session)
+    assert "Keeps this item at the top of every listing, above everything else." in text
+    assert "Shown at the top of listings" not in text
+
+
+def test_description_level_detailed_falls_back_to_brief_without_help():
+    async def save(draft):
+        return draft["name"]
+
+    session = FakeSession(["x", "s"])
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Edit thing", fields=[_name_field(), _pinned_field_with_brief()], draft={"name": "lobby"},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+            description_level="detailed",
+        )
+    )
+    assert result == "lobby"
+    assert "Shown at the top of listings" in _written_text(session)
+
+
+def test_description_level_brief_also_describes_save_and_back():
+    async def save(draft):
+        return draft["name"]
+
+    session = FakeSession(["s"])
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Edit thing", fields=[_name_field()], draft={"name": "lobby"},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+            description_level="brief",
+        )
+    )
+    assert result == "lobby"
+    text = _written_text(session)
+    assert "Write this draft to the database" in text
+    assert "Discard the draft, nothing saved" in text
