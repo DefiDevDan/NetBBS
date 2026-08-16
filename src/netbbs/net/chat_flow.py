@@ -166,6 +166,7 @@ from netbbs.rendering import (
     colored,
     menu_key,
     move_cursor,
+    reflow,
     reset_scroll_region,
     restore_cursor,
     sanitize_text,
@@ -1596,16 +1597,26 @@ async def _write_vcard_detail(session: Session, lane: DatabaseLane, vcard: VCard
     await session.write_line(colored(f"\r\n{sanitize_text(vcard.username)}", fg_color=ACCENT_COLOR, bold=True))
     await session.write_line(f"Member since: {when}")
     if vcard.bio is not None:
-        await session.write_line(sanitize_text(vcard.bio, allow_newlines=True))
+        # Dogfood follow-up: this used to write the sanitized bio
+        # straight to the terminal with no `reflow()` call, unlike the
+        # Directory/Profile screens' identical field
+        # (`login_flow._show_vcard`/`_render_profile`) -- the same bio
+        # rendered inconsistently depending on whether it was looked up
+        # here or there (a deliberate line break collapsed into one
+        # paragraph in one place; a long unbroken line never wrapped to
+        # terminal width in the other).
+        bio = reflow(sanitize_text(vcard.bio, allow_newlines=True), width=session.terminal_width)
+        await session.write_line(bio)
     else:
         await session.write_line(colored("(no public bio)", fg_color=MUTED_COLOR))
 
 
 async def _handle_finger(ctx: ChatCommandContext, args: str) -> None:
     """
-    `/finger <user>` (design doc §13: "accessible from the directory,
-    main menu, and chat" — this is the chat entry point). Shown only
-    to the requester, not broadcast — a lookup, not a channel event.
+    `/finger <user>` (design doc: the vCard/finger lookup is
+    accessible from the directory, main menu, and chat -- this is the
+    chat entry point). Shown only to the requester, not broadcast — a
+    lookup, not a channel event.
     """
     target_name = args.split(maxsplit=1)[0] if args.split() else ""
     if not target_name:

@@ -23,6 +23,7 @@ from netbbs.chat.mailbox import MessageMailbox
 from netbbs.chat.nick import get_nick, set_nick
 from netbbs.chat.presence import PresenceRegistry
 from netbbs.chat.scrollback import get_scrollback
+from netbbs.directory import set_bio, set_bio_visible
 from netbbs.net import chat_flow
 from netbbs.net.char_input import InputHistory
 from netbbs.storage.database import Database
@@ -265,6 +266,33 @@ def test_whois_identity_header_is_canonical_only(db, lane, hub, presence, alice,
     session = asyncio.run(_run(lane, hub, presence, channel, alice, ["/whois bob", "/quit"]))
     assert "Bobby|bob" not in _written_text(session)
     assert "bob" in _written_text(session)
+
+
+def test_finger_reflows_a_bio_the_same_way_the_directory_and_profile_screens_do(
+    db, lane, hub, presence, alice, bob, channel
+):
+    # Dogfood follow-up: `/finger`/`/whois` wrote the sanitized bio
+    # straight to the terminal with no `reflow()` call at all, unlike
+    # `login_flow._show_vcard`/`_render_profile` -- the same bio
+    # rendered differently depending on where it was looked up. A
+    # single long unbroken line must wrap to terminal width here too,
+    # not just in the Directory/Profile screens.
+    long_bio = " ".join(f"word{i}" for i in range(30))  # ~200 chars, well past 80 columns
+    set_bio(db, bob, long_bio)
+    set_bio_visible(db, bob, True)
+
+    session = asyncio.run(_run(lane, hub, presence, channel, alice, ["/finger bob", "/quit"]))
+
+    # `write_line` is one call per logical write, not per screen row --
+    # a wrapped multi-line bio is still a single entry here, with the
+    # wrap points embedded as literal "\n"s.
+    bio_entry = next(entry for entry in session.written if "word0" in entry)
+    wrapped_lines = bio_entry.rstrip("\r\n").split("\n")
+    assert len(wrapped_lines) > 1, "the long bio was not wrapped onto multiple lines at all"
+    assert not any(len(line) > 80 for line in wrapped_lines), "a wrapped bio line exceeded terminal width"
+    # Every word survived, in order, just split across more lines --
+    # confirms this is real wrapping, not truncation.
+    assert " ".join(wrapped_lines) == long_bio
 
 
 def test_moderation_notices_stay_canonical_only(db, lane, hub, presence, alice, bob, channel):

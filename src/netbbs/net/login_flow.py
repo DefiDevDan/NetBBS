@@ -112,6 +112,7 @@ from netbbs.directory import (
     BioError,
     get_bio,
     get_vcard,
+    has_bio,
     is_bio_visible,
     set_bio,
     set_bio_visible,
@@ -3000,7 +3001,7 @@ async def _render_post_page(
         await session.write_line(reflow(body, width=session.terminal_width))
 
 
-# -- user directory & vCard/finger (design doc §13) ------
+# -- user directory & vCard/finger (design doc) ------
 
 
 async def _browse_directory(session: Session, db: Database, user: User) -> None:
@@ -3010,24 +3011,45 @@ async def _browse_directory(session: Session, db: Database, user: User) -> None:
     their full finger/vCard detail (`_show_vcard`) — bio visibility is
     per-target, not a directory-wide filter, so everyone appears in
     the listing regardless of whether their bio itself is public.
+
+    Loops back to the listing after each lookup, same "pick, view, pick
+    again" shape `_show_inbox`/`_show_sent` (`netbbs.net.mail_flow`)
+    already use -- a directory's whole purpose is looking people up,
+    which a one-shot "view one, then dumped back to the main menu"
+    flow made needlessly costly to do for more than one person in a
+    row (dogfood follow-up).
     """
-    users = list_users(db)
-    selected = await pick_item(
-        session,
-        users,
-        name_of=lambda u: u.username,
-        stable_id_of=lambda u: u.id,
-        description_of=lambda u: _directory_description(db, u),
-        title="User directory",
-        empty_message="No registered users yet.",
-    )
-    if selected is not None:
+    while True:
+        users = list_users(db)
+        selected = await pick_item(
+            session,
+            users,
+            name_of=lambda u: u.username,
+            stable_id_of=lambda u: u.id,
+            description_of=lambda u: _directory_description(db, u),
+            title="User directory",
+            empty_message="No registered users yet.",
+        )
+        if selected is None:
+            return
         await _show_vcard(session, db, selected, user)
 
 
 def _directory_description(db: Database, target: User) -> str:
     when = format_for_display(target.created_at, db)
-    bio_state = "PUBLIC BIO" if is_bio_visible(db, target) else "PRIVATE BIO"
+    if not has_bio(db, target):
+        # Dogfood follow-up: this used to derive the badge purely from
+        # visibility, defaulting every account that has never written a
+        # bio at all to "PRIVATE BIO" -- identical to an account that
+        # deliberately wrote one and hid it. On a directory full of
+        # members who just haven't gotten around to writing a bio yet,
+        # that reads as "everyone's guarding a secret," which isn't
+        # true and isn't what the flag means.
+        bio_state = "NO BIO"
+    elif is_bio_visible(db, target):
+        bio_state = "PUBLIC BIO"
+    else:
+        bio_state = "PRIVATE BIO"
     return f"[{bio_state}] member since {when}"
 
 
@@ -3521,12 +3543,31 @@ async def _edit_profile(session: Session, db: Database, user: User) -> None:
 async def _edit_bio(session: Session, db: Database, user: User) -> None:
     """
     Edits the bio via the fullscreen prose editor if `user` has opted
-    in (`netbbs.net.editor_preference`), otherwise the original
-    repeated-`read_line`-until-blank-line flow every account still sees
-    by default. Either way, `set_bio`'s own `MAX_BIO_LINES` validation
-    is the single place the line cap is actually enforced — the
-    fullscreen editor doesn't duplicate that check, it just gets the
-    same rejection message back if exceeded.
+    in (`netbbs.net.editor_preference`), otherwise `netbbs.net.
+    composition.edit_line_body` -- the same shared plain-line editor
+    `netbbs.net.mail_flow` already uses for message bodies.
+
+    Dogfood follow-up: this used to be a bespoke
+    `for _ in range(MAX_BIO_LINES): read_line()` loop with one
+    `try/except BioError` at the very end -- a byte-cap overrun was
+    only ever discovered after every line had already been typed, and
+    the *entire* draft was then discarded with no indication which
+    line(s) to trim. `edit_line_body` validates each candidate as it's
+    submitted and rejects only the addition that broke a limit,
+    keeping everything already accepted -- plus `/cancel`, `/done`,
+    and (via `draft_path`) the same crash-recovery offer the fullscreen
+    path above already has. `set_bio`'s own `BioError` check below is
+    still the final word either way -- belt-and-suspenders, not the
+    only check anymore.
+
+    One behavior change worth calling out: `edit_line_body` refuses to
+    submit a genuinely blank body ("Body cannot be blank.", by design --
+    it's shared with mail/post composition, which have no legitimate
+    reason to be empty). The bespoke loop it replaces treated an
+    immediate blank first line as "clear the bio," a real, if easy to
+    trigger by accident, capability -- restored below as an explicit,
+    confirmed step instead, only offered when there's an existing bio
+    to lose.
     """
     if fullscreen_editor_enabled(db, user):
         current = get_bio(db, user) or ""
@@ -3537,16 +3578,21 @@ async def _edit_bio(session: Session, db: Database, user: User) -> None:
             return
         text = result
     else:
-        await session.write_line(
-            f"\r\nEnter your bio, up to {MAX_BIO_LINES} lines. Blank line to finish."
+        current = get_bio(db, user)
+        if current and await prompt_yes_no(session, "Clear your bio instead of editing it?", default=False):
+            set_bio(db, user, "")
+            await session.write_line("Bio cleared.")
+            return
+        result = await edit_line_body(
+            session,
+            initial_text=current,
+            max_bytes=MAX_BIO_BYTES,
+            max_lines=MAX_BIO_LINES,
+            draft_path=_bio_draft_path(db, user),
         )
-        lines: list[str] = []
-        for _ in range(MAX_BIO_LINES):
-            line = (await session.read_line()).strip()
-            if not line:
-                break
-            lines.append(line)
-        text = "\n".join(lines)
+        if result is None:
+            return
+        text = result
 
     try:
         set_bio(db, user, text)

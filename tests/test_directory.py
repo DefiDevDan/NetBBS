@@ -1,12 +1,21 @@
 """Tests for netbbs.directory — vCard bio/visibility and finger-style
-lookup (design doc §13)."""
+lookup (design doc)."""
 
 from __future__ import annotations
 
 import pytest
 
 from netbbs.auth.users import create_user, list_users
-from netbbs.directory import MAX_BIO_BYTES, BioError, get_bio, get_vcard, is_bio_visible, set_bio, set_bio_visible
+from netbbs.directory import (
+    MAX_BIO_BYTES,
+    BioError,
+    get_bio,
+    get_vcard,
+    has_bio,
+    is_bio_visible,
+    set_bio,
+    set_bio_visible,
+)
 from netbbs.storage.database import Database
 
 
@@ -112,6 +121,40 @@ def test_vcard_bio_none_when_never_set_even_if_visible(db, alice, bob):
     set_bio_visible(db, alice, True)
     vcard = get_vcard(db, alice, requesting_user=bob)
     assert vcard.bio is None
+
+
+def test_vcard_treats_an_empty_bio_the_same_as_no_bio(db, alice, bob):
+    # Dogfood follow-up: `set_bio(db, alice, "")` (submitting a blank
+    # line via the line editor) stores a literal empty string, not
+    # `None` -- get_vcard's own `bio is not None` check used to treat
+    # that as "bio present," producing a broken blank "Bio" section
+    # instead of the friendly "no bio" empty state, even though the
+    # bio is public.
+    set_bio(db, alice, "")
+    set_bio_visible(db, alice, True)
+    vcard = get_vcard(db, alice, requesting_user=bob)
+    assert vcard.bio is None
+
+
+def test_vcard_treats_a_whitespace_only_bio_the_same_as_no_bio(db, alice, bob):
+    set_bio(db, alice, "   \n  ")
+    set_bio_visible(db, alice, True)
+    vcard = get_vcard(db, alice, requesting_user=bob)
+    assert vcard.bio is None
+
+
+def test_has_bio_false_when_never_set(db, alice):
+    assert has_bio(db, alice) is False
+
+
+def test_has_bio_false_for_an_empty_bio(db, alice):
+    set_bio(db, alice, "")
+    assert has_bio(db, alice) is False
+
+
+def test_has_bio_true_once_real_content_is_set(db, alice):
+    set_bio(db, alice, "Hi there")
+    assert has_bio(db, alice) is True
 
 
 def test_vcard_includes_username_and_created_at(db, alice, bob):

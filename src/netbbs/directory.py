@@ -1,5 +1,5 @@
 """
-User directory & vCard/finger system (design doc §13): a short
+User directory & vCard/finger system (design doc): a short
 free-text bio per account, independently toggleable
 visibility, and a finger-style lookup.
 
@@ -10,10 +10,10 @@ already used to keep those two separate (see
 `netbbs.user_preferences`'s generic per-user store rather than its own
 dedicated table.
 
-Only one vCard field exists (`bio`) — matching what §13 concretely
-names, not inventing real-name/location/contact fields it doesn't ask
-for. Cheap to add more later: each is just another preference key,
-no schema change.
+Only one vCard field exists (`bio`) — matching what the design doc
+concretely names, not inventing real-name/location/contact fields it
+doesn't ask for. Cheap to add more later: each is just another
+preference key, no schema change.
 """
 
 from __future__ import annotations
@@ -59,6 +59,18 @@ def get_bio(db: Database, user: User) -> str | None:
     return get_user_preference(db, user, _BIO_KEY)
 
 
+def has_bio(db: Database, user: User) -> bool:
+    """Whether `user` has ever written non-empty bio content -- distinct
+    from `is_bio_visible` (whether they've chosen to show it). A blank
+    or whitespace-only bio counts the same as no bio at all: `set_bio`
+    stores it as a literal empty string (no separate "cleared" state),
+    and treating that as "present" produced a broken blank "Bio"
+    section instead of the friendly empty state everywhere it was
+    checked with a bare `is not None`."""
+    bio = get_bio(db, user)
+    return bool(bio and bio.strip())
+
+
 def set_bio_visible(db: Database, user: User, visible: bool) -> None:
     set_user_preference(db, user, _BIO_VISIBLE_KEY, "1" if visible else "0")
 
@@ -80,8 +92,8 @@ class VCard:
 
 def get_vcard(db: Database, target: User, *, requesting_user: User) -> VCard:
     """
-    finger-style lookup of `target`'s vCard (design doc §13:
-    "accessible from the directory, main menu, and chat").
+    finger-style lookup of `target`'s vCard (design doc: accessible
+    from the directory, main menu, and chat).
 
     `requesting_user` always sees their own bio regardless of
     visibility — a privacy setting hiding your own profile from
@@ -90,7 +102,7 @@ def get_vcard(db: Database, target: User, *, requesting_user: User) -> VCard:
     """
     visible = is_bio_visible(db, target)
     bio = get_bio(db, target)
-    show_bio = bio is not None and (visible or requesting_user.id == target.id)
+    show_bio = bool(bio and bio.strip()) and (visible or requesting_user.id == target.id)
     return VCard(
         username=target.username,
         created_at=target.created_at,

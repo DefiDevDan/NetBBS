@@ -69,7 +69,23 @@ def test_browse_directory_lists_all_users(tmp_path):
     db.close()
 
 
-def test_browse_directory_shows_private_bio_state_by_default(tmp_path):
+def test_browse_directory_shows_private_bio_state_once_bio_is_written_but_hidden(tmp_path):
+    db = Database(tmp_path / "node.db")
+    viewer = create_user(db, "alice", password="hunter2", user_level=10)
+    bob = create_user(db, "bob", password="hunter2", user_level=10)
+    set_bio(db, bob, "Secret hobby list")  # visibility left at its default (hidden)
+    session = FakeSession(keys=["b"])
+
+    asyncio.run(_browse_directory(session, db, viewer))
+
+    assert "[PRIVATE BIO]" in session.output
+    db.close()
+
+
+def test_browse_directory_shows_no_bio_state_for_an_account_that_never_wrote_one(tmp_path):
+    # Dogfood follow-up: an account that has simply never touched the
+    # bio field used to be indistinguishable from one that deliberately
+    # wrote a bio and hid it -- both showed [PRIVATE BIO].
     db = Database(tmp_path / "node.db")
     viewer = create_user(db, "alice", password="hunter2", user_level=10)
     create_user(db, "bob", password="hunter2", user_level=10)
@@ -77,7 +93,8 @@ def test_browse_directory_shows_private_bio_state_by_default(tmp_path):
 
     asyncio.run(_browse_directory(session, db, viewer))
 
-    assert "[PRIVATE BIO]" in session.output
+    assert "[NO BIO]" in session.output
+    assert "[PRIVATE BIO]" not in session.output
     db.close()
 
 
@@ -95,6 +112,28 @@ def test_browse_directory_shows_public_bio_state_once_visible(tmp_path):
     db.close()
 
 
+def test_browse_directory_loops_back_to_the_listing_after_viewing_someone(tmp_path):
+    # Dogfood follow-up: viewing one entry's vcard used to return
+    # straight to the caller (dumped back to the main menu); a
+    # directory's whole purpose is looking people up, so it should
+    # loop back to the listing instead -- proven here by looking up a
+    # *second* person in the same visit, with no second `_browse_
+    # directory` call in between.
+    db = Database(tmp_path / "node.db")
+    viewer = create_user(db, "alice", password="hunter2", user_level=10)
+    bob = create_user(db, "bob", password="hunter2", user_level=10)
+    set_bio(db, bob, "Retro computing enthusiast")
+    set_bio_visible(db, bob, True)
+    # alice sorts before bob -> "01" is alice, "02" is bob.
+    session = FakeSession(keys=["0", "2", "0", "1", "b"])
+
+    asyncio.run(_browse_directory(session, db, viewer))
+
+    assert "NetBBS / Directory / bob" in session.output
+    assert "NetBBS / Directory / alice" in session.output
+    db.close()
+
+
 def test_selecting_a_directory_entry_shows_their_vcard(tmp_path):
     db = Database(tmp_path / "node.db")
     viewer = create_user(db, "alice", password="hunter2", user_level=10)
@@ -102,7 +141,10 @@ def test_selecting_a_directory_entry_shows_their_vcard(tmp_path):
     set_bio(db, bob, "Retro computing enthusiast")
     set_bio_visible(db, bob, True)
     # alice sorts before bob alphabetically -> bob is item "02" on the page.
-    session = FakeSession(keys=["0", "2"])
+    # Trailing "b": viewing a vcard now loops back to the listing
+    # (dogfood follow-up) instead of returning straight to the caller,
+    # so a second "back" is needed to actually leave.
+    session = FakeSession(keys=["0", "2", "b"])
 
     asyncio.run(_browse_directory(session, db, viewer))
 
@@ -118,7 +160,8 @@ def test_selecting_a_directory_entry_hides_private_bio(tmp_path):
     viewer = create_user(db, "alice", password="hunter2", user_level=10)
     bob = create_user(db, "bob", password="hunter2", user_level=10)
     set_bio(db, bob, "Secret hobby list")
-    session = FakeSession(keys=["0", "2"])
+    # Trailing "b": see the loop-back comment in the sibling test above.
+    session = FakeSession(keys=["0", "2", "b"])
 
     asyncio.run(_browse_directory(session, db, viewer))
 
@@ -168,15 +211,55 @@ def test_edit_profile_bio_updates_stored_bio(tmp_path):
     assert get_bio(db, user) == "Hi, I'm Alice.\nI collect old modems."
 
 
-def test_edit_profile_bio_blank_first_line_clears_it(tmp_path):
+def test_edit_profile_bio_confirming_the_clear_prompt_clears_it(tmp_path):
+    # Dogfood follow-up: the plain bio editor moved to
+    # `netbbs.net.composition.edit_line_body`, which refuses to submit
+    # a genuinely blank body by design -- clearing an existing bio is
+    # now this explicit, confirmed step instead of an accidental blank
+    # first line.
     db = Database(tmp_path / "node.db")
     user = create_user(db, "alice", password="hunter2", user_level=10)
     set_bio(db, user, "Old bio")
-    session = FakeSession(keys=["e", "b"], lines=[""])
+    session = FakeSession(keys=["e", "b"], lines=["y"])
 
     asyncio.run(_edit_profile(session, db, user))
 
     assert get_bio(db, user) == ""
+    assert "Bio cleared." in session.output
+
+
+def test_edit_profile_bio_declining_the_clear_prompt_proceeds_to_edit(tmp_path):
+    db = Database(tmp_path / "node.db")
+    user = create_user(db, "alice", password="hunter2", user_level=10)
+    set_bio(db, user, "Old bio")
+    # Bare Enter at the clear prompt selects its default (No, per
+    # `prompt_yes_no(..., default=False)`) and falls through into
+    # edit_line_body, which then needs its own blank line to finish
+    # (unchanged) -- keeping the existing bio, not clearing it.
+    session = FakeSession(keys=["e", "b"], lines=["", ""])
+
+    asyncio.run(_edit_profile(session, db, user))
+
+    assert get_bio(db, user) == "Old bio"
+
+
+def test_edit_profile_bio_keeps_accepted_lines_when_a_later_one_exceeds_the_byte_cap(tmp_path):
+    # Dogfood follow-up: the old bespoke read-loop only checked the
+    # byte cap in one `try/except` after every line was already typed,
+    # discarding the entire draft on overrun. `edit_line_body` checks
+    # each line as it's submitted, keeping what was already accepted
+    # and rejecting only the addition that broke the cap.
+    from netbbs.directory import MAX_BIO_BYTES
+
+    db = Database(tmp_path / "node.db")
+    user = create_user(db, "alice", password="hunter2", user_level=10)
+    too_long = "B" * MAX_BIO_BYTES
+    session = FakeSession(keys=["e", "b"], lines=["A short first line.", too_long, ""])
+
+    asyncio.run(_edit_profile(session, db, user))
+
+    assert get_bio(db, user) == "A short first line."
+    assert "cannot exceed" in session.output
 
 
 def test_edit_profile_visibility_toggles_from_private_to_public(tmp_path):
