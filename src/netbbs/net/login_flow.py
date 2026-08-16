@@ -2136,6 +2136,17 @@ def _has_uncategorized_resources(db: Database, user: User) -> bool:
     )
 
 
+def _menu_row(entries: list[MenuEntry], *, width: int, height: int, description_level: str) -> str:
+    """Compact `action_bar` packing when descriptions are off, `menu_grid`'s
+    taller one-entry-per-line layout once the caller has opted into "brief"/
+    "detailed" (issue #160's rollout) -- see `netbbs.net.resource_editor.
+    edit_resource_draft`'s identical branch for why `menu_grid` alone isn't a
+    byte-for-byte substitute for `action_bar`'s packed row at the off level."""
+    if description_level == "off":
+        return action_bar([e.label for e in entries], width=width)
+    return menu_grid([("", entries)], width=width, height=height, description_level=description_level)
+
+
 async def _resource_type_menu(
     session: Session,
     db: Database,
@@ -2176,6 +2187,7 @@ async def _resource_type_menu(
     Jump's) context across several resource-type visits without
     re-entering the Community picker each time.
     """
+    description_level = menu_description_level(db, user)
     while True:
         show_boards = not community_scoped or _has_visible_boards(
             db, user, community_id=community_id, community_scoped=community_scoped
@@ -2189,12 +2201,12 @@ async def _resource_type_menu(
 
         option_list = []
         if show_boards:
-            option_list.append(menu_key("M", "essage Boards"))
+            option_list.append(MenuEntry(label=menu_key("M", "essage Boards"), brief="Browse message boards"))
         if show_channels:
-            option_list.append(menu_key("C", "hat"))
+            option_list.append(MenuEntry(label=menu_key("C", "hat"), brief="Browse chat channels"))
         if show_areas:
-            option_list.append(menu_key("F", "ile areas"))
-        option_list.append(menu_key("B", "ack"))
+            option_list.append(MenuEntry(label=menu_key("F", "ile areas"), brief="Browse file areas"))
+        option_list.append(MenuEntry(label=menu_key("B", "ack"), brief="Return to the previous menu"))
         heading = screen_title(
             menu_header,
             breadcrumb=("NetBBS", "Communities") if community_scoped else ("NetBBS",),
@@ -2202,7 +2214,9 @@ async def _resource_type_menu(
             width=session.terminal_width,
         )
         await session.write_line(f"\r\n{heading}")
-        await session.write_line(f"\r\n{action_bar(option_list, width=session.terminal_width)}")
+        await session.write_line(
+            f"\r\n{_menu_row(option_list, width=session.terminal_width, height=session.terminal_height, description_level=description_level)}"
+        )
         await session.write("Choice: ")
 
         choice = (await session.read_key()).lower()
@@ -2599,6 +2613,7 @@ async def _render_board_page(
     *,
     can_post: bool,
     name_requirement: str | None,
+    description_level: str,
 ) -> None:
     """Renders one page of posts plus its navigation options — the unit
     that should be redrawn on an actual page change (initial entry,
@@ -2607,18 +2622,20 @@ async def _render_board_page(
     await _render_post_page(session, db, board_name, page, name_requirement=name_requirement)
     options = []
     if page.has_older:
-        options.append(menu_key("O", "lder"))
+        options.append(MenuEntry(label=menu_key("O", "lder"), brief="Show older posts"))
     if page.has_newer:
-        options.append(menu_key("N", "ewer"))
-        options.append(menu_key("R", "ecent"))
+        options.append(MenuEntry(label=menu_key("N", "ewer"), brief="Show newer posts"))
+        options.append(MenuEntry(label=menu_key("R", "ecent"), brief="Jump to the newest page"))
     if any(_can_edit_post(db, post, user) for post in page.posts):
-        options.append(menu_key("E", "dit"))
+        options.append(MenuEntry(label=menu_key("E", "dit"), brief="Edit one of your posts"))
     if any(_can_tombstone_post(db, post, user) for post in page.posts):
-        options.append(menu_key("T", "ombstone"))
+        options.append(MenuEntry(label=menu_key("T", "ombstone"), brief="Remove a post, leave a marker"))
     if can_post:
-        options.append(menu_key("P", "ost"))
-    options.append(menu_key("B", "ack"))
-    await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
+        options.append(MenuEntry(label=menu_key("P", "ost"), brief="Write a new post"))
+    options.append(MenuEntry(label=menu_key("B", "ack"), brief="Return to the previous menu"))
+    await session.write_line(
+        f"\r\n{_menu_row(options, width=session.terminal_width, height=session.terminal_height, description_level=description_level)}"
+    )
     await session.write("Choice: ")
 
 
@@ -2662,6 +2679,7 @@ async def _show_board(
         and meets_age(db, user, get_effective_min_age(db, board))
         and meets_name_requirement(db, user, get_effective_name_requirement(db, board))
     )
+    description_level = menu_description_level(db, user)
 
     def _refetch_current_page() -> PostPage:
         """Re-fetches whichever page is currently on screen, using the
@@ -2685,6 +2703,7 @@ async def _show_board(
         await _render_board_page(
             session, db, board_name, current_page, user, can_post=can_post,
             name_requirement=get_effective_name_requirement(db, board),
+            description_level=description_level,
         )
         if current_page.posts:
             record_board_seen(db, user, board, current_page.posts[-1])
@@ -2717,6 +2736,8 @@ async def _show_board(
                 body=body,
                 commit_key="p",
                 commit_label="ost",
+                commit_brief="Publish this post",
+                description_level=description_level,
             )
             if action is ReviewAction.CANCEL:
                 await session.write_line(colored("Post cancelled.", fg_color=MUTED_COLOR))
@@ -2831,8 +2852,16 @@ async def _show_board(
         if not can_post:
             return
         while True:
-            options = [menu_key("P", "ost"), menu_key("B", "ack")]
-            await session.write_line("\r\n" + action_bar(options, width=session.terminal_width))
+            options = [
+                MenuEntry(label=menu_key("P", "ost"), brief="Write the first post"),
+                MenuEntry(label=menu_key("B", "ack"), brief="Return to the previous menu"),
+            ]
+            await session.write_line(
+                "\r\n" + _menu_row(
+                    options, width=session.terminal_width, height=session.terminal_height,
+                    description_level=description_level,
+                )
+            )
             await session.write("Choice: ")
             choice = (await session.read_key()).lower()
             if choice == "b":
@@ -3296,6 +3325,7 @@ async def _caller_who_screen(
         # you're looking at it" case Ctrl-R exists for -- who's
         # connected changes independently of anything this screen does.
         refresh=_load_entries,
+        description_level=menu_description_level(db, user),
     )
     if selected is None:
         return
@@ -3322,11 +3352,16 @@ async def _caller_who_screen(
             width=session.terminal_width,
         )
     )
-    options = [menu_key("M", "essage")]
+    options = [MenuEntry(label=menu_key("M", "essage"), brief="Send a one-off message")]
     if offer_invite:
-        options.append(menu_key("I", "nvite to chat"))
-    options.append(menu_key("B", "ack"))
-    await session.write_line(action_bar(options, width=session.terminal_width))
+        options.append(MenuEntry(label=menu_key("I", "nvite to chat"), brief="Invite them to a direct chat"))
+    options.append(MenuEntry(label=menu_key("B", "ack"), brief="Return to Who's online"))
+    await session.write_line(
+        _menu_row(
+            options, width=session.terminal_width, height=session.terminal_height,
+            description_level=menu_description_level(db, user),
+        )
+    )
     await session.write("Choice: ")
     action = (await session.read_key()).lower()
     await session.write_line("")
@@ -3598,21 +3633,27 @@ async def _render_profile(session: Session, db: Database, user: User) -> bool:
     # GitHub issue #160: one setting, three states -- off/brief/detailed
     # -- controlling whether menu_grid shows each entry's short
     # description underneath it.
-    await session.write_line(_profile_field("Menu descriptions", menu_description_level(db, user)))
+    description_level = menu_description_level(db, user)
+    await session.write_line(_profile_field("Menu descriptions", description_level))
 
     options = [
-            menu_key("E", "dit bio"),
-            menu_key("V", "isibility"),
-            menu_key("F", "ullscreen editor"),
-            menu_key("M", "essages"),
-            menu_key("H", "istory visibility"),
-            menu_key("C", "olor depth"),
-            menu_key("D", "escriptions"),
-            menu_key("N", "ame & details"),
-            menu_key("S", "ort preferences"),
-            menu_key("B", "ack"),
+            MenuEntry(label=menu_key("E", "dit bio"), brief="Change your public bio text"),
+            MenuEntry(label=menu_key("V", "isibility"), brief="Toggle bio public/private"),
+            MenuEntry(label=menu_key("F", "ullscreen editor"), brief="Toggle the fullscreen editor"),
+            MenuEntry(label=menu_key("M", "essages"), brief="Direct-message preferences"),
+            MenuEntry(label=menu_key("H", "istory visibility"), brief="Show your name in Last sessions"),
+            MenuEntry(label=menu_key("C", "olor depth"), brief="Force a terminal color depth"),
+            MenuEntry(label=menu_key("D", "escriptions"), brief="Off/brief/detailed menu text"),
+            MenuEntry(label=menu_key("N", "ame & details"), brief="Display name, location, age"),
+            MenuEntry(label=menu_key("S", "ort preferences"), brief="Manage saved sort orders"),
+            MenuEntry(label=menu_key("B", "ack"), brief="Return to the main menu"),
         ]
-    await session.write_line("\r\n" + action_bar(options, width=session.terminal_width))
+    await session.write_line(
+        "\r\n" + _menu_row(
+            options, width=session.terminal_width, height=session.terminal_height,
+            description_level=description_level,
+        )
+    )
     await session.write("Choice: ")
     return visible
 
@@ -3866,16 +3907,17 @@ async def _render_identity_details(session: Session, db: Database, user: User) -
         f"Link attestation sharing: {', '.join(shared) if shared else 'off'}"
     )
 
-    options = action_bar(
+    options = _menu_row(
         [
-            menu_key("D", "isplay name"),
-            menu_key("L", "ocation"),
-            menu_key("A", "ge/birthdate"),
-            menu_key("V", "erified badge visibility"),
-            menu_key("R", "emote Link sharing"),
-            menu_key("B", "ack"),
+            MenuEntry(label=menu_key("D", "isplay name"), brief="Set your shown display name"),
+            MenuEntry(label=menu_key("L", "ocation"), brief="Set your shown location"),
+            MenuEntry(label=menu_key("A", "ge/birthdate"), brief="Set your birthdate"),
+            MenuEntry(label=menu_key("V", "erified badge visibility"), brief="Show/hide your verified badge"),
+            MenuEntry(label=menu_key("R", "emote Link sharing"), brief="Share attestations over Link"),
+            MenuEntry(label=menu_key("B", "ack"), brief="Return to the previous menu"),
         ],
-        width=session.terminal_width,
+        width=session.terminal_width, height=session.terminal_height,
+        description_level=menu_description_level(db, user),
     )
     await session.write_line(f"\r\n{options}")
     await session.write("Choice: ")

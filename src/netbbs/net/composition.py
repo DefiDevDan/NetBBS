@@ -20,13 +20,26 @@ from netbbs.rendering import (
     HEADER_COLOR,
     LABEL_COLOR,
     MUTED_COLOR,
+    MenuEntry,
     action_bar,
     colored,
+    menu_grid,
     menu_key,
     reflow,
     sanitize_text,
     screen_title,
 )
+
+
+def _menu_row(entries: list[MenuEntry], *, width: int, height: int, description_level: str) -> str:
+    """Compact `action_bar` packing when descriptions are off, `menu_grid`'s
+    taller one-entry-per-line layout once the caller has opted into "brief"/
+    "detailed" (issue #160's rollout) -- see `netbbs.net.resource_editor.
+    edit_resource_draft`'s identical branch for why `menu_grid` alone isn't a
+    byte-for-byte substitute for `action_bar`'s packed row at the off level."""
+    if description_level == "off":
+        return action_bar([e.label for e in entries], width=width)
+    return menu_grid([("", entries)], width=width, height=height, description_level=description_level)
 
 
 class ReviewAction(Enum):
@@ -241,8 +254,18 @@ async def review_composition(
     recipient: str | None,
     commit_key: str,
     commit_label: str,
+    commit_brief: str | None = None,
+    description_level: str = "off",
 ) -> ReviewAction:
-    """Render a complete draft and return one explicit review action."""
+    """Render a complete draft and return one explicit review action.
+
+    `commit_brief` and `description_level` (issue #160's rollout to this
+    screen) describe the caller-supplied commit action for `menu_grid`'s
+    description text -- this module has no domain knowledge of its own
+    (posting a board message, sending mail, etc.) to describe it with,
+    unlike the other fixed T/U/B/C options below. `description_level`
+    should be the caller's already-resolved `menu_description_level`
+    preference, same caching rule as every other screen in this rollout."""
     heading = screen_title(
         "Review composition",
         breadcrumb=("NetBBS", "Compose"),
@@ -262,11 +285,17 @@ async def review_composition(
     await session.write_line(colored("Body", fg_color=MUTED_COLOR, bold=True))
     await session.write_line(_preview_body(body, session.terminal_width))
 
-    options = [menu_key(commit_key.upper(), commit_label)]
+    options = [MenuEntry(label=menu_key(commit_key.upper(), commit_label), brief=commit_brief)]
     if recipient is not None:
-        options.append(menu_key("T", "o"))
-    options.extend([menu_key("U", "pdate subject"), menu_key("B", "ody"), menu_key("C", "ancel")])
-    await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
+        options.append(MenuEntry(label=menu_key("T", "o"), brief="Change the recipient"))
+    options.extend([
+        MenuEntry(label=menu_key("U", "pdate subject"), brief="Change the subject"),
+        MenuEntry(label=menu_key("B", "ody"), brief="Edit the body text"),
+        MenuEntry(label=menu_key("C", "ancel"), brief="Discard this draft"),
+    ])
+    await session.write_line(
+        f"\r\n{_menu_row(options, width=session.terminal_width, height=session.terminal_height, description_level=description_level)}"
+    )
     await session.write("Choice: ")
 
     actions = {

@@ -7,11 +7,12 @@ from netbbs.net.composition import ReviewAction, edit_line_body, review_composit
 
 
 class FakeSession:
-    def __init__(self, *, lines=(), keys=(), width=80):
+    def __init__(self, *, lines=(), keys=(), width=80, height=24):
         self._lines = iter(lines)
         self._keys = iter(keys)
         self.written: list[str] = []
         self.terminal_width = width
+        self.terminal_height = height
 
     async def write(self, text: str) -> None:
         self.written.append(text)

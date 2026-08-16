@@ -61,6 +61,7 @@ from netbbs.net.char_input import reject_unhandled_key
 from netbbs.net.composition import ReviewAction, edit_line_body, review_composition
 from netbbs.net.confirm import prompt_yes_no
 from netbbs.net.editor_preference import fullscreen_editor_enabled
+from netbbs.net.menu_description_preference import menu_description_level
 from netbbs.net.picker import pick_item
 from netbbs.net.prose_editor import edit_prose
 from netbbs.net.session import Session
@@ -72,8 +73,10 @@ from netbbs.rendering import (
     MUTED_COLOR,
     SUCCESS_COLOR,
     VALUE_COLOR,
+    MenuEntry,
     action_bar,
     colored,
+    menu_grid,
     menu_key,
     reflow,
     sanitize_text,
@@ -92,6 +95,17 @@ from netbbs.timeutil import format_for_display, resolve_display_preferences
 _MAX_PLAIN_MAIL_LINES = 200
 
 
+def _menu_row(entries: list[MenuEntry], *, width: int, height: int, description_level: str) -> str:
+    """Compact `action_bar` packing when descriptions are off, `menu_grid`'s
+    taller one-entry-per-line layout once the caller has opted into "brief"/
+    "detailed" (issue #160's rollout) -- see `netbbs.net.resource_editor.
+    edit_resource_draft`'s identical branch for why `menu_grid` alone isn't a
+    byte-for-byte substitute for `action_bar`'s packed row at the off level."""
+    if description_level == "off":
+        return action_bar([e.label for e in entries], width=width)
+    return menu_grid([("", entries)], width=width, height=height, description_level=description_level)
+
+
 async def browse_mail(
     session: Session, lane: DatabaseLane, user: User, *, link_context: LinkContext | None = None
 ) -> None:
@@ -102,7 +116,8 @@ async def browse_mail(
     instead of ordinary local mail -- `None` whenever this node has Link
     disabled, the same convention `netbbs.link.boards.LinkContext`
     itself already establishes for boards."""
-    await _render_mail_menu(session, lane, user)
+    description_level = await lane.run(menu_description_level, user)
+    await _render_mail_menu(session, lane, user, description_level)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -112,20 +127,20 @@ async def browse_mail(
         elif choice == "i":
             await session.write_line("")
             await _show_inbox(session, lane, user)
-            await _render_mail_menu(session, lane, user)
+            await _render_mail_menu(session, lane, user, description_level)
         elif choice == "s":
             await session.write_line("")
             await _show_sent(session, lane, user)
-            await _render_mail_menu(session, lane, user)
+            await _render_mail_menu(session, lane, user, description_level)
         elif choice == "c":
             await session.write_line("")
             await _compose_mail(session, lane, user, link_context=link_context)
-            await _render_mail_menu(session, lane, user)
+            await _render_mail_menu(session, lane, user, description_level)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
-async def _render_mail_menu(session: Session, lane: DatabaseLane, user: User) -> None:
+async def _render_mail_menu(session: Session, lane: DatabaseLane, user: User, description_level: str) -> None:
     unread = await lane.run(unread_count, user)
     subtitle = (
         f"{unread} unread message{'s' if unread != 1 else ''}"
@@ -136,16 +151,19 @@ async def _render_mail_menu(session: Session, lane: DatabaseLane, user: User) ->
     await session.write_line(f"\r\n{header}")
 
     options = [
-        menu_key("I", "nbox"),
-        menu_key("S", "ent"),
-        menu_key("C", "ompose"),
-        menu_key("B", "ack"),
+        MenuEntry(label=menu_key("I", "nbox"), brief="Read your received mail"),
+        MenuEntry(label=menu_key("S", "ent"), brief="Review mail you've sent"),
+        MenuEntry(label=menu_key("C", "ompose"), brief="Write a new message"),
+        MenuEntry(label=menu_key("B", "ack"), brief="Return to the main menu"),
     ]
-    await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
+    await session.write_line(
+        f"\r\n{_menu_row(options, width=session.terminal_width, height=session.terminal_height, description_level=description_level)}"
+    )
     await session.write("Choice: ")
 
 
 async def _show_inbox(session: Session, lane: DatabaseLane, user: User) -> None:
+    description_level = await lane.run(menu_description_level, user)
     while True:
         messages = await lane.run(list_inbox, user)
         display_format, display_timezone = await lane.run(resolve_display_preferences)
@@ -166,6 +184,7 @@ async def _show_inbox(session: Session, lane: DatabaseLane, user: User) -> None:
             stable_id_of=lambda m: m.id,
             title="Inbox",
             empty_message="Your inbox is empty. New mail will appear here.",
+            description_level=description_level,
         )
         if message is None:
             return
@@ -173,6 +192,7 @@ async def _show_inbox(session: Session, lane: DatabaseLane, user: User) -> None:
 
 
 async def _show_sent(session: Session, lane: DatabaseLane, user: User) -> None:
+    description_level = await lane.run(menu_description_level, user)
     while True:
         messages = await lane.run(list_sent, user)
         display_format, display_timezone = await lane.run(resolve_display_preferences)
@@ -202,6 +222,7 @@ async def _show_sent(session: Session, lane: DatabaseLane, user: User) -> None:
             stable_id_of=lambda m: m.id,
             title="Sent Mail",
             empty_message="You haven't sent any mail. Compose one from the Mail menu.",
+            description_level=description_level,
         )
         if message is None:
             return
@@ -244,10 +265,17 @@ async def _render_message(
 async def _show_inbox_message(session: Session, lane: DatabaseLane, user: User, message: MailMessage) -> None:
     message = await lane.run(mark_read, user, message)
     await _render_message(session, lane, message=message, to_label=None)
+    description_level = await lane.run(menu_description_level, user)
 
     while True:
-        options = [menu_key("R", "eply"), menu_key("D", "elete"), menu_key("B", "ack")]
-        await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
+        options = [
+            MenuEntry(label=menu_key("R", "eply"), brief="Reply to the sender"),
+            MenuEntry(label=menu_key("D", "elete"), brief="Delete this message"),
+            MenuEntry(label=menu_key("B", "ack"), brief="Return to the inbox"),
+        ]
+        await session.write_line(
+            f"\r\n{_menu_row(options, width=session.terminal_width, height=session.terminal_height, description_level=description_level)}"
+        )
         await session.write("Choice: ")
         choice = (await session.read_key()).lower()
 
@@ -283,10 +311,16 @@ async def _show_sent_message(session: Session, lane: DatabaseLane, user: User, m
     recipient = await lane.run(get_user_by_id, message.recipient_user_id)
     to_label = recipient.username if recipient is not None else "(deleted account)"
     await _render_message(session, lane, message=message, to_label=to_label)
+    description_level = await lane.run(menu_description_level, user)
 
     while True:
-        options = [menu_key("D", "elete"), menu_key("B", "ack")]
-        await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
+        options = [
+            MenuEntry(label=menu_key("D", "elete"), brief="Delete this message"),
+            MenuEntry(label=menu_key("B", "ack"), brief="Return to sent mail"),
+        ]
+        await session.write_line(
+            f"\r\n{_menu_row(options, width=session.terminal_width, height=session.terminal_height, description_level=description_level)}"
+        )
         await session.write("Choice: ")
         choice = (await session.read_key()).lower()
 
@@ -378,6 +412,7 @@ async def _compose_mail(
         await session.write_line(colored("Message cancelled.", fg_color=MUTED_COLOR))
         return
 
+    review_description_level = await lane.run(menu_description_level, user)
     while True:
         action = await review_composition(
             session,
@@ -386,6 +421,8 @@ async def _compose_mail(
             body=body,
             commit_key="s",
             commit_label="end",
+            commit_brief="Send this message",
+            description_level=review_description_level,
         )
         if action is ReviewAction.CANCEL:
             await session.write_line(colored("Message cancelled.", fg_color=MUTED_COLOR))

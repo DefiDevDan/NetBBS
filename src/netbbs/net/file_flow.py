@@ -85,16 +85,19 @@ from netbbs.net.picker import pick_item
 from netbbs.net.session import Session
 from netbbs.net.sort_ui import SORT_MODE_LABELS, prompt_sort_change
 from netbbs.permissions import meets_level
+from netbbs.net.menu_description_preference import menu_description_level
 from netbbs.rendering import (
     ACCENT_COLOR,
     ERROR_COLOR,
     METADATA_COLOR,
     MUTED_COLOR,
     SUCCESS_COLOR,
+    MenuEntry,
     action_bar,
     badge,
     colored,
     empty_state,
+    menu_grid,
     menu_key,
     sanitize_text,
     screen_title,
@@ -103,6 +106,17 @@ from netbbs.sort_preferences import get_effective_sort_mode, set_sort_preference
 from netbbs.storage.database import Database
 from netbbs.storage.execution import DatabaseLane
 from netbbs.timeutil import format_for_display, resolve_display_preferences
+
+
+def _menu_row(entries: list[MenuEntry], *, width: int, height: int, description_level: str) -> str:
+    """Compact `action_bar` packing when descriptions are off, `menu_grid`'s
+    taller one-entry-per-line layout once the caller has opted into "brief"/
+    "detailed" (issue #160's rollout) -- see `netbbs.net.resource_editor.
+    edit_resource_draft`'s identical branch for why `menu_grid` alone isn't a
+    byte-for-byte substitute for `action_bar`'s packed row at the off level."""
+    if description_level == "off":
+        return action_bar([e.label for e in entries], width=width)
+    return menu_grid([("", entries)], width=width, height=height, description_level=description_level)
 
 
 async def enter_file_area(
@@ -239,6 +253,7 @@ async def _browse_areas_in_category(
         get_effective_sort_mode, user, "file_area", community_id=effective_community_id, category_id=category_id
     )
     areas_here, categories_here, category_name, community_name = await lane.run(_load, current_mode)
+    description_level = await lane.run(menu_description_level, user)
     mode_box = {"mode": current_mode}
 
     async def _persist_sort_choice(mode: str, scope_kwargs: dict) -> None:
@@ -275,6 +290,7 @@ async def _browse_areas_in_category(
             empty_message="No file areas are available to you yet.",
             on_sort=on_sort_flat,
             sort_label=_sort_label,
+            description_level=description_level,
         )
         if area is not None:
             await _show_area(session, lane, area, user, link_context=link_context)
@@ -311,6 +327,7 @@ async def _browse_areas_in_category(
         description_of=render_description,
         title=title,
         empty_message="No file areas are available to you yet.",
+        description_level=description_level,
     )
     if selected is None:
         return
@@ -349,6 +366,7 @@ async def _render_area_page(
     can_write: bool,
     name_requirement: str | None,
     show_remote_hint: bool = False,
+    description_level: str = "off",
 ) -> None:
     """Renders one page of files plus its navigation options and command
     hints — the unit that should be redrawn on an actual page change
@@ -357,24 +375,33 @@ async def _render_area_page(
     await _render_file_page(session, lane, area_name, page, name_requirement=name_requirement)
     options = []
     if page.has_older:
-        options.append(menu_key("O", "lder"))
+        options.append(MenuEntry(label=menu_key("O", "lder"), brief="Show older files"))
     if page.has_newer:
-        options.append(menu_key("N", "ewer"))
-        options.append(menu_key("R", "ecent"))
-    options.append(menu_key("B", "ack"))
-    await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
+        options.append(MenuEntry(label=menu_key("N", "ewer"), brief="Show newer files"))
+        options.append(MenuEntry(label=menu_key("R", "ecent"), brief="Jump to the newest page"))
+    options.append(MenuEntry(label=menu_key("B", "ack"), brief="Return to the previous menu"))
+    await session.write_line(
+        f"\r\n{_menu_row(options, width=session.terminal_width, height=session.terminal_height, description_level=description_level)}"
+    )
 
-    hints = [menu_key("/download <filename>", " — receive via Zmodem")]
+    # These command hints already carry their own inline explanation
+    # (the `rest` text after each), unlike a bare hotkey label -- so no
+    # separate `brief` is authored per entry, it would just repeat what
+    # is already on screen. Still routed through `_menu_row` so the
+    # "off" case stays byte-for-byte the old packed `action_bar` row.
+    hints = [MenuEntry(label=menu_key("/download <filename>", " — receive via Zmodem"))]
     if can_write:
-        hints.append(menu_key("/upload", " — send via Zmodem"))
+        hints.append(MenuEntry(label=menu_key("/upload", " — send via Zmodem")))
     # Design doc, issue #92: shown whenever this node has Link available
     # at all, regardless of whether this specific area turns out to have
     # any remote catalogue entries yet -- /remote itself reports "no
     # remote files" rather than needing a second lane round trip here
     # just to decide whether to print the hint.
     if show_remote_hint:
-        hints.append(menu_key("/remote", " — browse/fetch this file area's remote catalogue"))
-    await session.write_line(action_bar(hints, width=session.terminal_width))
+        hints.append(MenuEntry(label=menu_key("/remote", " — browse/fetch this file area's remote catalogue")))
+    await session.write_line(
+        _menu_row(hints, width=session.terminal_width, height=session.terminal_height, description_level=description_level)
+    )
 
 
 async def _show_area(
@@ -433,11 +460,11 @@ async def _show_area(
     """
     area_name = sanitize_text(area.name)
 
-    def _load(db: Database) -> tuple[FileEntryPage, str | None, bool, bool]:
+    def _load(db: Database) -> tuple[FileEntryPage, str | None, bool, bool, str]:
         # Bundled into one lane call: the page, the effective
-        # name_requirement, the can_write gate, and whether this area is
-        # actually Linked all come from the same worker-thread pass
-        # rather than four round trips.
+        # name_requirement, the can_write gate, whether this area is
+        # actually Linked, and the menu-description preference all come
+        # from the same worker-thread pass rather than five round trips.
         page = list_files_page(db, area, user, after=initial_cursor) if initial_cursor else list_files_page(db, area, user)
         if initial_cursor and not page.entries:
             # Nothing newer than the cursor -- caught up, not a
@@ -449,9 +476,9 @@ async def _show_area(
             and meets_age(db, user, get_effective_min_age(db, area))
             and meets_name_requirement(db, user, effective_name_requirement)
         )
-        return page, effective_name_requirement, can_write, is_area_linked(db, area)
+        return page, effective_name_requirement, can_write, is_area_linked(db, area), menu_description_level(db, user)
 
-    page, effective_name_requirement, can_write, area_linked = await lane.run(_load)
+    page, effective_name_requirement, can_write, area_linked, description_level = await lane.run(_load)
 
     show_remote_hint = link_context is not None and area_linked
 
@@ -461,7 +488,7 @@ async def _show_area(
         whatever is now newest on screen."""
         await _render_area_page(
             session, lane, area_name, current_page, can_write=can_write, name_requirement=effective_name_requirement,
-            show_remote_hint=show_remote_hint,
+            show_remote_hint=show_remote_hint, description_level=description_level,
         )
         if current_page.entries:
             await lane.run(record_file_area_seen, user, area, current_page.entries[-1])
@@ -517,10 +544,12 @@ async def _show_area(
 
     hints = []
     if can_write:
-        hints.append(menu_key("/upload", " — send via Zmodem"))
+        hints.append(MenuEntry(label=menu_key("/upload", " — send via Zmodem")))
     if show_remote_hint:
-        hints.append(menu_key("/remote", " — browse/fetch this file area's remote catalogue"))
-    await session.write_line(f"\r\n{action_bar(hints, width=session.terminal_width)}")
+        hints.append(MenuEntry(label=menu_key("/remote", " — browse/fetch this file area's remote catalogue")))
+    await session.write_line(
+        f"\r\n{_menu_row(hints, width=session.terminal_width, height=session.terminal_height, description_level=description_level)}"
+    )
     await session.write("Command (or press Enter to go back): ")
     command = (await session.read_line()).strip()
 
@@ -579,6 +608,7 @@ async def _browse_remote_files(
         description_of=render_description,
         title=f"Remote catalogue: {sanitize_text(area.name)}",
         empty_message="No remote catalogue entries.",
+        description_level=await lane.run(menu_description_level, user),
     )
     if selected is None:
         return
