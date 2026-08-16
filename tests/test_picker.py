@@ -97,6 +97,62 @@ def test_empty_list_shows_message_and_returns_none():
     assert result["value"] is None
 
 
+def test_search_and_goto_are_rejected_when_the_list_is_empty_but_refreshable():
+    """
+    Dogfood report, issue #155: an empty list with a `refresh` callback
+    (Who's Online's own use, so Ctrl-R can revive a list that goes
+    stale while you're looking at it) stays in the interactive loop
+    instead of the plain early-return a refresh-less empty list gets --
+    [S]earch and [G]oto # must not be silently functional there just
+    because that loop is still running, when neither is even shown on
+    the empty-state prompt.
+    """
+    result = {}
+
+    async def _refresh():
+        return []
+
+    async def handler(session: Session):
+        result["value"] = await pick_item(
+            session, [], name_of=lambda x: x, stable_id_of=lambda x: 0,
+            title="Who's online", empty_message="No one else is online right now.",
+            refresh=_refresh,
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await skip_initial_negotiation(reader)
+            first = await _read_until_quiet(reader)
+            assert b"No one else is online right now." in first
+            assert b"Search" not in first
+            assert b"Goto" not in first
+
+            writer.write(b"s")
+            await writer.drain()
+            after_search = await _read_until_quiet(reader)
+            assert b"\a" in after_search
+            assert b"Search:" not in after_search
+
+            writer.write(b"g")
+            await writer.drain()
+            after_goto = await _read_until_quiet(reader)
+            assert b"\a" in after_goto
+            assert b"Go to #:" not in after_goto
+
+            writer.write(b"b")
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert result["value"] is None
+
+
 def test_select_by_two_digit_number():
     result = {}
     items = ["alpha", "beta", "gamma"]

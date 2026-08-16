@@ -291,6 +291,20 @@ async def pick_item(
             continue
 
         if key_lower == "s":
+            if not items:
+                # Dogfood report, issue #155: reachable at all only
+                # because `refresh` (Who's Online's own use) keeps this
+                # loop interactive instead of the plain empty_message
+                # early-return above -- `_render`'s own empty-state
+                # trailer already omits [S]earch (there's nothing to
+                # search for), but without this the key still worked
+                # anyway, silently available despite not being
+                # advertised. Gated on `items` (the full unfiltered
+                # set search always searches, not the possibly already-
+                # narrowed `working_set`) -- the same set whose
+                # emptiness the trailer's own message is about.
+                await session.write(reject_keystroke())
+                continue
             await session.write_line("")
             await session.write("Search: ")
             search_completer = _search_completer([name_of(item) for item in working_set])
@@ -330,6 +344,11 @@ async def pick_item(
             continue
 
         if key_lower == "g":
+            if not items:
+                # Same reasoning as [S]earch's own guard above -- issue
+                # #155.
+                await session.write(reject_keystroke())
+                continue
             await session.write_line("")
             await session.write("Go to #: ")
             raw = (await session.read_line()).strip()
