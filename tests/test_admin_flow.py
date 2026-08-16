@@ -3866,3 +3866,63 @@ def test_link_status_screen_lists_and_shows_peer_detail(db, lane, sysop):
     assert "Last contact: never" in text
     assert "Addresses:" in text
     assert "203.0.113.5" in text
+
+
+# -- redraw-in-place (dogfood feature request, issue #160's rollout follow-up) --
+
+
+def test_redraw_in_place_off_by_default_never_clears(db, lane, sysop):
+    """Off by default -- every screen this session touches (console,
+    Users, Operations) renders byte-for-byte as before, no clear_screen()
+    anywhere, exactly matching the pilot's own default behavior."""
+    from netbbs.rendering import clear_screen
+
+    session = FakeSession(["u", "b", "o", "b", "b"])
+    _run(session, lane, sysop)
+    assert clear_screen() not in _written_text(session)
+
+
+def test_redraw_in_place_clears_the_dict_based_dashboard(db, lane, sysop):
+    """The SysOp console itself uses a `state` dict, not the plain
+    `description_level`-style parameter threading every other screen in
+    this file uses -- verified separately since it's a different code
+    shape. `[R]efresh` redraws the same screen in place."""
+    from netbbs.net.redraw_preference import set_redraw_in_place_enabled
+    from netbbs.rendering import clear_screen
+
+    set_redraw_in_place_enabled(db, sysop, True)
+    session = FakeSession(["r", "b"])
+    _run(session, lane, sysop)
+    # Entered once (first draw) + redrawn once more after [R]efresh.
+    assert _written_text(session).count(clear_screen()) == 2
+
+
+def test_redraw_in_place_clears_a_dispatcher_and_draw_function_screen(db, lane, sysop):
+    """Most screens in this file follow the "top-level entry resolves
+    once, a separate _draw_X function renders" shape (e.g. Users) --
+    verified here since it's the majority pattern across this sweep."""
+    from netbbs.net.redraw_preference import set_redraw_in_place_enabled
+    from netbbs.rendering import clear_screen
+
+    set_redraw_in_place_enabled(db, sysop, True)
+    session = FakeSession(["u", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "Users" in text
+    assert clear_screen() in text
+
+
+def test_redraw_in_place_clears_a_direct_render_loop_screen(db, lane, sysop):
+    """A minority of screens in this file render directly inside their
+    own `while True:` loop instead of delegating to a separate _draw_X
+    function (e.g. Operations) -- verified here as the other distinct
+    shape this sweep had to handle."""
+    from netbbs.net.redraw_preference import set_redraw_in_place_enabled
+    from netbbs.rendering import clear_screen
+
+    set_redraw_in_place_enabled(db, sysop, True)
+    session = FakeSession(["o", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "Operations" in text
+    assert clear_screen() in text
