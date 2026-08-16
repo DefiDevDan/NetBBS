@@ -176,7 +176,18 @@ async def edit_ansi_art(
                 if outcome == "discard":
                     _delete_draft(draft_path)
                     return None
-                previous = await _redraw(session, state, previous)
+                # Cancel: _confirm_quit's prompt is a plain,
+                # non-cursor-addressed write, and cancelling leaves the
+                # canvas itself unchanged -- so the diff-based
+                # `_redraw()` below (which only touches cells that
+                # actually differ from `previous`) computes an empty
+                # diff and writes nothing, leaving the prompt sitting
+                # on screen. Same bug shape already found and fixed in
+                # the prose editor's own Ctrl+X handling; a real full
+                # clear-and-repaint is the only redraw that erases it.
+                previous = state.buffer.snapshot()
+                await session.write(full_render_ansi(previous))
+                await _flush(session, state)
                 continue
 
             if key.kind == EditorKeyKind.CTRL and key.char == "o":

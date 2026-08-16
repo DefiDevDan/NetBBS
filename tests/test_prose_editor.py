@@ -233,6 +233,70 @@ def test_quit_after_editing_cancel_choice_returns_to_the_editor(tmp_path):
     assert result == "hi!"
 
 
+def test_status_line_advertises_help_and_says_exit_not_quit(tmp_path):
+    # Dogfood follow-up: the status line -- the one hint visible on
+    # every screen while editing -- never mentioned Ctrl+G at all
+    # (only Ctrl+O save / Ctrl+X quit), so users didn't know the help
+    # screen existed. "quit" also didn't match the X in Ctrl+X the way
+    # "exit" does.
+    async def scenario():
+        session = FakeSession(_type("hi") + ["CTRL+O"])
+        await edit_prose(session, initial_text=None, draft_path=tmp_path / "d.draft", max_bytes=100_000)
+        return session
+
+    session = asyncio.run(scenario())
+    text = _written_text(session)
+    assert "Ctrl+G help" in text
+    assert "Ctrl+X exit" in text
+    assert "Ctrl+X quit" not in text
+
+
+def test_ctrl_g_clears_the_screen_before_showing_help(tmp_path):
+    # Real dogfood report: invoking help mangled whatever text was
+    # already on screen. help_overlay's own docstring documents the
+    # contract: "a cursor-addressed caller clears first" -- this proves
+    # the clear actually happens, and happens *before* the help text
+    # is written, not just at some point during the whole interaction.
+    async def scenario():
+        session = FakeSession(_type("ab") + ["CTRL+G", " "] + ["CTRL+O"])
+        await edit_prose(session, initial_text=None, draft_path=tmp_path / "d.draft", max_bytes=100_000)
+        return session
+
+    session = asyncio.run(scenario())
+    joined = list(session.written)
+    help_index = next(i for i, chunk in enumerate(joined) if "Fullscreen editor keys" in chunk)
+    # The write immediately preceding the help text must be the clear
+    # -- not just "a clear happened somewhere earlier." edit_prose's
+    # own entry redraw (before any typing) already writes a
+    # clear_screen() of its own for unrelated reasons (and, for a
+    # blank starting buffer, full_render_ansi's degenerate "nothing to
+    # draw" case even happens to write a second one back-to-back), so
+    # a looser "was there a clear at all" check would pass without
+    # this fix too.
+    assert joined[help_index - 1] == clear_screen()
+
+
+def test_quit_cancel_clears_the_screen_so_the_prompt_does_not_linger(tmp_path):
+    # Real dogfood report: cancelling out of the quit dialog left the
+    # "Unsaved changes..." prompt (and the caller's answered choice)
+    # sitting on screen -- _confirm_quit's prompt is a plain write, not
+    # tracked by the cursor-addressed diff machinery an incremental
+    # redraw relies on, so only a full clear-and-repaint actually
+    # erases it.
+    async def scenario():
+        session = FakeSession(_type("hi") + ["CTRL+X", "c"] + ["CTRL+O"])
+        await edit_prose(session, initial_text=None, draft_path=tmp_path / "d.draft", max_bytes=100_000)
+        return session
+
+    session = asyncio.run(scenario())
+    joined = list(session.written)
+    prompt_index = next(i for i, chunk in enumerate(joined) if "Unsaved changes" in chunk)
+    # The very next write after the prompt must be the clear -- not
+    # just "a clear happened somewhere later," which the final exit's
+    # own unrelated screen-clear-on-return would also satisfy.
+    assert joined[prompt_index + 1] == clear_screen()
+
+
 # -- GitHub issue #38: no leftover status line after exit -------------------
 
 

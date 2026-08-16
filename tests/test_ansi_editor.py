@@ -421,6 +421,27 @@ def test_quit_after_editing_cancel_choice_returns_to_the_editor(tmp_path):
     assert buf.get_cell(0, 0).char == "A"
 
 
+def test_quit_cancel_clears_the_screen_so_the_prompt_does_not_linger(tmp_path):
+    # Same bug shape as the prose editor's own Ctrl+X handling:
+    # _confirm_quit's prompt is a plain write, and cancelling leaves
+    # the canvas unchanged, so a diff-based redraw computes an empty
+    # diff and writes nothing -- the prompt stays on screen.
+    async def scenario():
+        session = FakeSession(["A", "CTRL+X", "c", "CTRL+O"])
+        await edit_ansi_art(
+            session, initial_bytes=None, draft_path=tmp_path / "d.draft", autosave_interval_seconds=9999
+        )
+        return session
+
+    session = asyncio.run(scenario())
+    joined = list(session.written)
+    prompt_index = next(i for i, chunk in enumerate(joined) if "Unsaved changes" in chunk)
+    # full_render_ansi's own returned string starts with clear_screen()
+    # but also includes the actual canvas content (the painted "A"),
+    # so it's a prefix here, not an exact match.
+    assert joined[prompt_index + 1].startswith(clear_screen())
+
+
 def test_quit_confirmation_acts_on_a_single_keystroke_without_enter(tmp_path):
     """The Save/Discard/Cancel prompt must dispatch on the keystroke
     itself, like every other editor command -- not wait for a line +

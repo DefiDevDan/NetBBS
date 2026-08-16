@@ -73,6 +73,36 @@ def test_wrap_lines_wraps_cjk_text_at_display_column_boundaries():
     assert "".join(row.text for row in rows) == line
 
 
+def test_wrap_lines_does_not_crash_on_a_double_space_between_words():
+    # Real crash reproduced live (ValueError: substring not found):
+    # wrap_to_width rejoins wrapped words with a single normalized
+    # space, so a segment spanning two+ words that had a double space
+    # (or any other multi-character whitespace run) between them in
+    # the original line is nowhere a literal substring of that line --
+    # the old `line.index(segment, col)` full-segment search raised.
+    line = "hello  world this is a test line"
+    rows = wrap_lines([line], width=80)
+    assert rows == [VisualRow(line_index=0, start_col=0, text="hello world this is a test line")]
+
+
+def test_wrap_lines_does_not_crash_on_a_tab_between_words():
+    line = "a\tb\tc word here"
+    rows = wrap_lines([line], width=80)
+    assert rows == [VisualRow(line_index=0, start_col=0, text="a b c word here")]
+
+
+def test_wrap_lines_start_col_is_correct_after_a_double_space_forces_a_wrap():
+    # The double space must not just avoid crashing -- start_col still
+    # has to land on each row's real first word so cursor placement
+    # stays correct.
+    line = "multiple   spaces   everywhere and a long tail of more words to force wrapping"
+    rows = wrap_lines([line], width=20)
+    assert len(rows) > 1
+    for row in rows:
+        first_word = row.text.split(" ", 1)[0]
+        assert line[row.start_col : row.start_col + len(first_word)] == first_word
+
+
 # -- visual_position / logical_position round-trip -------------------------
 
 

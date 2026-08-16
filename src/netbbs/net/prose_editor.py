@@ -150,6 +150,18 @@ async def edit_prose(
                 # reserved for this and left unused elsewhere in both
                 # fullscreen editors (see netbbs.net.ansi_editor's own
                 # module docstring).
+                #
+                # netbbs.net.help_overlay's own docstring documents the
+                # contract every cursor-addressed caller must follow:
+                # "clears first and redraws its own previous state
+                # afterward". This clear was missing -- show_help's
+                # plain session.write_line calls started printing from
+                # wherever the cursor-addressed editor last left the
+                # real terminal cursor (mid-document, not the top),
+                # scrolling the help text in on top of/interleaved with
+                # the editor's own already-painted content instead of
+                # onto a clean screen.
+                await session.write(clear_screen())
                 await show_help(
                     session,
                     "Fullscreen editor keys",
@@ -160,7 +172,7 @@ async def edit_prose(
                         "  Enter          new line",
                         "  Backspace/Del  delete before / at the cursor",
                         "  Ctrl+O         save and finish",
-                        "  Ctrl+X         quit -- Save, Keep draft & exit, Discard, or Cancel",
+                        "  Ctrl+X         exit -- Save, Keep draft & exit, Discard, or Cancel",
                         "  Ctrl+G         this help",
                         "",
                         '"Keep draft & exit" saves what you have typed so far without',
@@ -196,7 +208,14 @@ async def edit_prose(
                     # most recent edit.
                     save_draft(draft_path, state.buffer.to_text())
                     return None
-                previous = await _redraw(session, state, previous, width, height)
+                # Cancel: same reasoning as Ctrl+G's own clear-first
+                # fix above -- _confirm_quit's prompt is a plain
+                # session.write, not tracked by the cursor-addressed
+                # diff machinery, so an incremental _redraw() has no
+                # record of it and leaves it sitting on screen. A full
+                # clear-and-repaint is the only redraw that actually
+                # erases it.
+                previous = await _full_redraw()
                 continue
 
             if key.kind == EditorKeyKind.CTRL and key.char == "o":
@@ -377,7 +396,7 @@ async def _flush(session: Session, state: _EditorState, width: int, height: int)
     screen_row = pos.row_index - state.scroll_row
     status = (
         f"Line {state.buffer.cursor_line + 1}  Col {state.buffer.cursor_col + 1}  "
-        f"Ctrl+O save  Ctrl+X quit"
+        f"Ctrl+O save  Ctrl+X exit  Ctrl+G help"
     )
     # GitHub issue #32: visible even outside the instant a keystroke
     # gets rejected at the ceiling, not just a flash-on-reject bell --

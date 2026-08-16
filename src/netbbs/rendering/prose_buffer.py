@@ -55,10 +55,21 @@ def wrap_lines(lines: list[str], width: int) -> list[VisualRow]:
             # original line rather than assuming `len(segment)`-sized
             # steps -- wrap_to_width collapses runs of whitespace
             # between words, so segment lengths don't sum back to
-            # len(line). This is a character offset (for indexing back
-            # into `line`), not a display column -- unaffected by the
-            # width-aware wrapper swap.
-            col = line.index(segment, col) if segment else col
+            # len(line). Search for just the segment's *first* word,
+            # not the whole segment: a multi-word segment is rejoined
+            # with a single normalized space, which is only guaranteed
+            # to equal the original text when every original gap was
+            # already exactly one ASCII space. A line with a double
+            # space, a tab, or any other run of whitespace between two
+            # words that land on the same wrapped row produces a
+            # segment that is nowhere a literal substring of `line` at
+            # all -- `line.index(segment, col)` used to raise
+            # ValueError in exactly that case. A single word (whitespace
+            # never occurs inside one, by construction of
+            # `wrap_to_width`'s own `text.split()`) is always an exact
+            # substring of `line`, so anchoring on it alone can't fail.
+            first_word = segment.split(" ", 1)[0]
+            col = line.index(first_word, col) if first_word else col
             rows.append(VisualRow(line_index=line_index, start_col=col, text=segment))
             col += len(segment)
     return rows
