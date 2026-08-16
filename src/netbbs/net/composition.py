@@ -10,8 +10,10 @@ for validation and persistence; finishing an editor only returns a draft.
 from __future__ import annotations
 
 from enum import Enum, auto
+from pathlib import Path
 
 from netbbs.net.char_input import reject_unhandled_key
+from netbbs.net.draft_storage import delete_draft, load_draft, offer_draft_recovery, save_draft
 from netbbs.net.session import Session
 from netbbs.rendering import (
     ACCENT_COLOR,
@@ -39,7 +41,7 @@ def _body_bytes(lines: list[str]) -> int:
     return len("\n".join(lines).encode("utf-8"))
 
 
-async def _show_line_editor_help(session: Session) -> None:
+async def _show_line_editor_help(session: Session, *, can_save_draft: bool) -> None:
     await session.write_line(colored("Line editor commands:", fg_color=HEADER_COLOR, bold=True))
     await session.write_line("  /done       finish editing and review the draft")
     await session.write_line("  /list       show all submitted lines")
@@ -47,6 +49,11 @@ async def _show_line_editor_help(session: Session) -> None:
     await session.write_line("  /edit N     replace line N")
     await session.write_line("  /delete N   delete line N")
     await session.write_line("  /cancel     discard the composition")
+    if can_save_draft:
+        # Dogfood feature request, issue #149: distinct from /cancel --
+        # only offered when the caller passed a `draft_path` (persisted
+        # posts, not e.g. mail, which has no resume mechanism to offer).
+        await session.write_line("  /exit, /quit  save as a draft and leave -- resume it later")
     await session.write_line("  /help, /?   show these commands")
     await session.write_line("  //text      add a line beginning with /")
 
@@ -79,6 +86,7 @@ async def edit_line_body(
     initial_text: str | None,
     max_bytes: int,
     max_lines: int,
+    draft_path: Path | None = None,
 ) -> str | None:
     """Edit a logical-line body without cursor-addressed terminal UI.
 
@@ -86,11 +94,34 @@ async def edit_line_body(
     finishes into review. Blank paragraph lines remain expressible through
     ``/insert N``. Slash commands operate on the retained buffer; command
     follow-up prompts use ordinary ``read_line`` too, so behavior is identical
-    on Telnet, SSH, and web sessions. ``None`` means explicit ``/cancel``.
+    on Telnet, SSH, and web sessions. ``None`` means either ``/cancel``
+    (draft discarded) or ``/exit``/``/quit`` (draft saved) -- callers that
+    need to tell the two apart check whether `draft_path` still exists.
+
+    `draft_path` (dogfood feature request, issue #149), if given, is the
+    same kind of caller-owned persistence target
+    `netbbs.net.prose_editor.edit_prose` already uses for its own
+    crash-recovery autosave -- see `netbbs.net.draft_storage`. A
+    pre-existing draft there is offered for recovery on entry, same
+    wording as the fullscreen editor; declining deletes it. `/cancel`
+    always deletes it (nothing to keep). `/exit`/`/quit` are only
+    recognized as commands at all when `draft_path` is given -- a
+    caller with no resume mechanism to offer (e.g. mail composition)
+    simply doesn't gain these two commands, same as before this
+    parameter existed. Finishing normally (`/done`/blank line) deletes
+    the draft too: the body is being handed back for real persistence,
+    so the temporary autosave has nothing left to recover.
     """
+    if draft_path is not None and draft_path.exists():
+        if await offer_draft_recovery(session):
+            initial_text = load_draft(draft_path)
+        else:
+            delete_draft(draft_path)
     lines = initial_text.split("\n") if initial_text is not None else []
+    exit_hint = " /exit or /quit saves it as a draft;" if draft_path is not None else ""
     await session.write_line(
-        "Enter message text. Blank line or /done reviews the draft; /help or /? shows editing commands."
+        f"Enter message text. Blank line or /done reviews the draft;{exit_hint} "
+        "/help or /? shows editing commands."
     )
     if lines:
         await _show_lines(session, lines)
@@ -121,11 +152,24 @@ async def edit_line_body(
             if not body.strip():
                 await session.write_line(colored("Body cannot be blank.", fg_color=MUTED_COLOR))
                 continue
+            if draft_path is not None:
+                delete_draft(draft_path)
             return body
         if lowered == "/cancel":
+            if draft_path is not None:
+                delete_draft(draft_path)
+            return None
+        if draft_path is not None and lowered in ("/exit", "/quit"):
+            # No confirmation printed here on purpose -- the caller
+            # (the only one who knows *where* this draft becomes
+            # resumable, e.g. "next time you visit this board") owns
+            # that message, the same way it already owns "Post
+            # cancelled." Checking `draft_path.exists()` after a `None`
+            # return is how a caller tells this apart from `/cancel`.
+            save_draft(draft_path, "\n".join(lines))
             return None
         if lowered in ("/help", "/?"):
-            await _show_line_editor_help(session)
+            await _show_line_editor_help(session, can_save_draft=draft_path is not None)
             continue
         if lowered == "/list":
             await _show_lines(session, lines)

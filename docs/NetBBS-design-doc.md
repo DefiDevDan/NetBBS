@@ -245,6 +245,19 @@ as applicable, commit explicitly, or cancel; leaving either editor never sends
 or posts by itself. Fullscreen-editor output passes through the same review
 boundary so editor preference cannot change send/commit safety.
 
+Board post composition (new posts and edits) additionally distinguishes
+discarding from saving: `/cancel` (line editor) or discarding (fullscreen
+editor) always deletes any in-progress draft; `/exit`/`/quit` (line editor)
+or "Keep draft & exit" (fullscreen editor) instead save it to the same
+per-caller autosave target the fullscreen editor already used for crash
+recovery, and return without committing. Board entry proactively offers to
+edit, delete, or ignore a saved new-post draft for that board before the
+ordinary post list/navigation flow; re-opening a specific post for edit
+offers to resume its own saved draft the same way the pre-existing
+crash-recovery prompt already did. Mail composition and other callers that
+never opt into a draft target keep exactly the old discard-only behavior --
+`/exit`/`/quit` are not recognized there at all.
+
 Conventional yes/no prompts act on one key: `Y`/`N` immediately, or Enter for
 the displayed default/current value. This uses a confirmation-specific input
 primitive; generic single-key menus retain their deliberate rule that Enter is

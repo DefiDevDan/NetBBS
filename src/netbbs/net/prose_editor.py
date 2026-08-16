@@ -28,12 +28,11 @@ uses (design doc) rather than inventing a fixed default.
 from __future__ import annotations
 
 import asyncio
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 from netbbs.net.char_input import EditorKey, EditorKeyKind
-from netbbs.net.confirm import prompt_yes_no
+from netbbs.net.draft_storage import delete_draft, offer_draft_recovery, save_draft
 from netbbs.net.session import Session, SessionClosedError
 from netbbs.rendering import (
     MUTED_COLOR,
@@ -49,8 +48,6 @@ from netbbs.rendering import (
 )
 from netbbs.rendering.prose_buffer import ProseBuffer, logical_position, visual_position, wrap_lines
 from netbbs.rendering.width import char_width, display_width
-
-_logger = logging.getLogger(__name__)
 
 DEFAULT_AUTOSAVE_INTERVAL_SECONDS = 30.0
 
@@ -95,7 +92,12 @@ async def edit_prose(
     as `netbbs.net.ansi_editor.edit_ansi_art`: a pre-existing draft
     there is offered for recovery on entry instead of `initial_text`;
     saving or explicitly discarding deletes it; a genuine disconnect
-    leaves it in place for next time.
+    leaves it in place for next time. Ctrl-X's "Keep draft & exit"
+    outcome (dogfood feature request, issue #149) does the same thing
+    on purpose, without needing an actual disconnect: forces a fresh
+    write of the current buffer and returns `None`, leaving the draft
+    for a caller like `netbbs.net.login_flow`'s board-entry screen to
+    offer resuming later.
 
     `max_bytes` (GitHub issue #32) is a required content ceiling, not
     given a generic default -- this module stays deliberately unaware
@@ -114,7 +116,7 @@ async def edit_prose(
     height = max(_MIN_HEIGHT, session.terminal_height) - _STATUS_ROW_OFFSET - 1
 
     loaded_text: str | None
-    if draft_path.exists() and await _offer_draft_recovery(session):
+    if draft_path.exists() and await offer_draft_recovery(session):
         loaded_text = draft_path.read_text(encoding="utf-8")
     else:
         if draft_path.exists():
@@ -138,17 +140,29 @@ async def edit_prose(
                 outcome = await _confirm_quit(session)
                 if outcome == "save":
                     result = state.buffer.to_text()
-                    _delete_draft(draft_path)
+                    delete_draft(draft_path)
                     return result
                 if outcome == "discard":
-                    _delete_draft(draft_path)
+                    delete_draft(draft_path)
+                    return None
+                if outcome == "keep":
+                    # Dogfood feature request, issue #149: unlike
+                    # "discard," this leaves the draft on disk on
+                    # purpose -- the same file a genuine disconnect
+                    # already leaves behind for next time (see this
+                    # function's own docstring), just reachable without
+                    # actually dropping the connection. Force a fresh
+                    # write here rather than relying on the periodic
+                    # autosave loop, which may not have run since the
+                    # most recent edit.
+                    save_draft(draft_path, state.buffer.to_text())
                     return None
                 previous = await _redraw(session, state, previous, width, height)
                 continue
 
             if key.kind == EditorKeyKind.CTRL and key.char == "o":
                 result = state.buffer.to_text()
-                _delete_draft(draft_path)
+                delete_draft(draft_path)
                 return result
 
             rejected = _dispatch(state, key, width, height)
@@ -339,24 +353,19 @@ async def _flush(session: Session, state: _EditorState, width: int, height: int)
     await session.write(move_cursor(max(1, screen_row + 1), display_col + 1))
 
 
-async def _offer_draft_recovery(session: Session) -> bool:
-    await session.write_line(
-        colored(
-            "\r\nA draft from a previous session was found here (likely left behind by a "
-            "dropped connection).",
-            fg_color=MUTED_COLOR,
-        )
-    )
-    return await prompt_yes_no(session, "Resume it?", default=False)
-
-
 async def _confirm_quit(session: Session) -> str:
-    """Returns `"save"`, `"discard"`, or `"cancel"` -- single keystroke,
-    same shape as `netbbs.net.ansi_editor._confirm_quit`."""
-    await session.write("\r\nUnsaved changes. [S]ave, [D]iscard, or [C]ancel? ")
+    """Returns `"save"`, `"keep"`, `"discard"`, or `"cancel"` -- single
+    keystroke, same shape as `netbbs.net.ansi_editor._confirm_quit`
+    plus one addition: `"keep"` (dogfood feature request, issue #149)
+    leaves the in-progress draft on disk and exits without submitting
+    it, instead of forcing a choice between finishing now or losing the
+    work."""
+    await session.write("\r\nUnsaved changes. [S]ave, [K]eep draft & exit, [D]iscard, or [C]ancel? ")
     answer = (await session.read_key()).lower()
     if answer == "s":
         return "save"
+    if answer == "k":
+        return "keep"
     if answer == "d":
         return "discard"
     return "cancel"
@@ -371,14 +380,4 @@ async def _autosave_loop(state: _EditorState, draft_path: Path, interval_seconds
         await asyncio.sleep(interval_seconds)
         if not state.dirty:
             continue
-        try:
-            draft_path.write_text(state.buffer.to_text(), encoding="utf-8")
-        except OSError:
-            _logger.warning("could not write prose editor autosave draft to %s", draft_path, exc_info=True)
-
-
-def _delete_draft(draft_path: Path) -> None:
-    try:
-        draft_path.unlink(missing_ok=True)
-    except OSError:
-        _logger.warning("could not delete prose editor draft at %s", draft_path, exc_info=True)
+        save_draft(draft_path, state.buffer.to_text())

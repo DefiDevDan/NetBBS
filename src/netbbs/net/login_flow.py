@@ -143,6 +143,7 @@ from netbbs.net.chat_flow import (
 )
 from netbbs.net.color_depth_preference import color_depth_override, set_color_depth_override
 from netbbs.net.composition import ReviewAction, edit_line_body, review_composition
+from netbbs.net.draft_storage import delete_draft, load_draft
 from netbbs.net.editor_preference import fullscreen_editor_enabled, set_fullscreen_editor_enabled
 from netbbs.net.file_flow import browse_file_areas, enter_file_area, has_visible_areas
 from netbbs.net.mail_flow import browse_mail
@@ -2481,17 +2482,25 @@ async def _show_board(
         if current_page.posts:
             record_board_seen(db, user, board, current_page.posts[-1])
 
-    async def _compose_new_post() -> None:
+    async def _compose_new_post(*, initial_body: str | None = None) -> None:
         await session.write("\r\nSubject (or press Enter to cancel): ")
         subject = (await session.read_line()).strip()
         if not subject:
             await session.write_line(colored("Post cancelled.", fg_color=MUTED_COLOR))
             return
-        body = await _compose_body(
-            session, db, user, draft_path=_post_draft_path(db, kind="new", board=board, user=user)
-        )
+        draft_path = _post_draft_path(db, kind="new", board=board, user=user)
+        body = await _compose_body(session, db, user, initial_text=initial_body, draft_path=draft_path)
         if body is None:
-            await session.write_line(colored("Post cancelled.", fg_color=MUTED_COLOR))
+            # Issue #149: /exit or /quit (either editor) leaves the
+            # draft on disk instead of deleting it -- that's the one
+            # thing distinguishing this from an explicit /cancel here,
+            # since both return `None` the same way.
+            if draft_path.exists():
+                await session.write_line(
+                    colored("Draft saved -- you'll be offered it next time you visit this board.", fg_color=MUTED_COLOR)
+                )
+            else:
+                await session.write_line(colored("Post cancelled.", fg_color=MUTED_COLOR))
             return
         while True:
             action = await review_composition(
@@ -2510,15 +2519,21 @@ async def _show_board(
                 subject = (await session.read_line()).strip() or subject
                 continue
             if action is ReviewAction.EDIT_BODY:
-                revised = await _compose_body(
-                    session,
-                    db,
-                    user,
-                    initial_text=body,
-                    draft_path=_post_draft_path(db, kind="new", board=board, user=user),
-                )
+                revised = await _compose_body(session, db, user, initial_text=body, draft_path=draft_path)
                 if revised is not None:
                     body = revised
+                elif draft_path.exists():
+                    # /exit or /quit while revising -- issue #149: this
+                    # leaves the whole in-progress post as a saved
+                    # draft, not just "keep the previous body and stay
+                    # in review."
+                    await session.write_line(
+                        colored(
+                            "Draft saved -- you'll be offered it next time you visit this board.",
+                            fg_color=MUTED_COLOR,
+                        )
+                    )
+                    return
                 else:
                     await session.write_line(colored("Body unchanged.", fg_color=MUTED_COLOR))
                 continue
@@ -2531,6 +2546,56 @@ async def _show_board(
                 queue_board_post_if_linked(db, post, board, node_identity=link_context.node_identity)
             await session.write_line(f"Posted (id {post.post_id[:12]}...).")
             return
+
+    async def _offer_saved_draft_if_any() -> None:
+        """Issue #149's other half: proactively surfaces a saved new-
+        post draft for this exact (user, board) the moment the board is
+        entered, rather than only ever resurfacing it if/when the
+        caller happens to pick [P]ost again on their own (the existing
+        crash-recovery prompt inside `_compose_body` still does that,
+        unchanged, for whichever draft this one doesn't consume).
+        Scoped to `kind="new"` only -- an in-progress *edit* of a
+        specific existing post has no equally natural "board entry"
+        moment to announce itself at, so it stays exclusively behind
+        the existing recovery-on-reopen path."""
+        draft_path = _post_draft_path(db, kind="new", board=board, user=user)
+        if not draft_path.exists():
+            return
+        await session.write_line(
+            colored(
+                "\r\nYou have a saved post draft for this board from an earlier session.",
+                fg_color=MUTED_COLOR,
+            )
+        )
+        await session.write("[E]dit it, [D]elete it, or [I]gnore for now? ")
+        choice = (await session.read_key()).lower()
+        if choice == "d":
+            delete_draft(draft_path)
+            await session.write_line(colored("\r\nDraft deleted.", fg_color=MUTED_COLOR))
+            return
+        if choice == "e":
+            await session.write_line("")
+            saved_text = load_draft(draft_path)
+            # Consumed here, before _compose_new_post ever opens an
+            # editor against the same draft_path -- otherwise that
+            # editor's own crash-recovery check would immediately offer
+            # to "resume" the very draft this prompt just handed off,
+            # a redundant second prompt for the same file.
+            delete_draft(draft_path)
+            await _compose_new_post(initial_body=saved_text)
+            return
+        # Anything else (including "i") leaves the draft in place,
+        # unread -- same permissive "everything but the named choices
+        # is a no-op" convention netbbs.net.prose_editor._confirm_quit
+        # already uses.
+
+    if can_post:
+        # Runs once, before any post list is shown -- issue #149's own
+        # "prompt before normal board interaction proceeds" acceptance
+        # criterion. Gated on `can_post` the same way [P]ost itself
+        # already is: no point resurfacing a draft the caller couldn't
+        # act on to post if they resumed it.
+        await _offer_saved_draft_if_any()
 
     page_anchor: tuple[str, tuple[str, str]] | None = ("after", initial_cursor) if initial_cursor else None
     page = list_posts_page(db, board, user, after=initial_cursor) if initial_cursor else list_posts_page(db, board, user)
@@ -2668,15 +2733,25 @@ async def _edit_existing_post(
     await session.write(f"Subject [{post.subject}] (Enter to keep): ")
     subject = (await session.read_line()).strip() or post.subject
 
-    body = await _compose_body(
-        session,
-        db,
-        user,
-        initial_text=post.body,
-        draft_path=_post_draft_path(db, kind="edit", board=board, user=user, root_post_id=post.root_post_id),
+    edit_draft_path = _post_draft_path(
+        db, kind="edit", board=board, user=user, root_post_id=post.root_post_id
     )
+    body = await _compose_body(session, db, user, initial_text=post.body, draft_path=edit_draft_path)
     if body is None:
-        await session.write_line(colored("Edit cancelled.", fg_color=MUTED_COLOR))
+        # Issue #149: /exit or /quit leaves this revision's draft on
+        # disk instead of deleting it -- same distinguishing check as
+        # _compose_new_post's own. There's no board-entry prompt for an
+        # in-progress *edit* (see _offer_saved_draft_if_any's own
+        # docstring for why), so it's only ever resurfaced by picking
+        # [E]dit on this same post again.
+        if edit_draft_path.exists():
+            await session.write_line(
+                colored(
+                    "Draft saved -- you'll be offered it next time you edit this post.", fg_color=MUTED_COLOR
+                )
+            )
+        else:
+            await session.write_line(colored("Edit cancelled.", fg_color=MUTED_COLOR))
         return
 
     try:
@@ -2745,13 +2820,20 @@ async def _tombstone_existing_post(
 
 
 def _post_draft_path(db: Database, *, kind: str, board: Board, user: User, root_post_id: str = "") -> Path:
-    """A stable per-(user, board, [post]) autosave draft location for
-    `netbbs.net.prose_editor.edit_prose`, colocated with the node's
-    database the same way `netbbs.net.welcome_banner.banner_path`
-    already colocates its own single global draft -- there just needs
-    to be more than one slot here, one per in-progress
+    """A stable per-(user, board, [post]) draft location, colocated
+    with the node's database the same way `netbbs.net.welcome_banner.
+    banner_path` already colocates its own single global draft --
+    there just needs to be more than one slot here, one per in-progress
     composition/edit, so this lives in its own subdirectory rather than
-    a single flat sibling file."""
+    a single flat sibling file.
+
+    Shared by both editors (`netbbs.net.prose_editor.edit_prose`'s
+    crash-recovery autosave, `netbbs.net.composition.edit_line_body`'s
+    `/exit`/`/quit`) and by two different recovery UIs at two different
+    moments (issue #149): `_offer_saved_draft_if_any`, proactively, at
+    board entry for `kind="new"`; each editor's own on-entry
+    `draft_path.exists()` check otherwise, for `kind="edit"` or for a
+    `kind="new"` draft the board-entry prompt didn't consume."""
     directory = db.path.parent / f"{db.path.name}_drafts"
     directory.mkdir(parents=True, exist_ok=True)
     suffix = f"_{root_post_id}" if root_post_id else ""
@@ -2764,8 +2846,12 @@ async def _compose_body(
     """The single place a post body (or an edit of one) is actually
     entered: the fullscreen prose editor if `user` has opted in,
     otherwise the shared logical-line editor. Both paths accept
-    `initial_text`, return a complete draft, and return `None` only for
-    an explicit cancel. Neither path persists anything itself."""
+    `initial_text`, return a complete draft, and return `None` for
+    either an explicit cancel (draft deleted) or an explicit save-and-
+    leave (draft kept -- issue #149, see `edit_line_body`'s/
+    `edit_prose`'s own docstrings) -- `draft_path.exists()` after a
+    `None` return tells the two apart. Neither path persists a real
+    post itself."""
     if fullscreen_editor_enabled(db, user):
         return await edit_prose(
             session, initial_text=initial_text, draft_path=draft_path, max_bytes=MAX_BODY_BYTES
@@ -2775,6 +2861,7 @@ async def _compose_body(
         initial_text=initial_text,
         max_bytes=MAX_BODY_BYTES,
         max_lines=_MAX_PLAIN_POST_LINES,
+        draft_path=draft_path,
     )
 
 

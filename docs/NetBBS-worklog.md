@@ -2545,6 +2545,31 @@ multi-node-per-host deployment pattern, not just validated in isolation --
 a cross-node collision when two instances of the same defaults run
 together.
 
+**A caller-facing "resume a saved draft?" prompt must consume (delete) the
+draft file before handing its text to the editor as `initial_text`, or the
+editor's own crash-recovery check double-prompts for the same file.**
+Issue #149's board-entry prompt (`login_flow._offer_saved_draft_if_any`) and
+both editors' pre-existing crash-recovery offer
+(`edit_line_body`/`edit_prose`'s own `draft_path.exists()` check, via
+`netbbs.net.draft_storage.offer_draft_recovery`) read the *same* file
+convention (`login_flow._post_draft_path`) for two genuinely different
+purposes -- proactively announcing an intentional `/exit`/"Keep draft &
+exit" the moment the board is entered, versus recovering from a connection
+that simply dropped mid-edit. Both fire from the identical trigger
+(`draft_path.exists()`), so if the board-entry prompt's own "[E]dit"
+choice left the file in place while also passing its contents through as
+`initial_text`, the editor it opens into would immediately re-offer
+"a draft was found, resume it?" for the very draft the outer prompt just
+handed over -- a redundant second prompt for the same content. The fix is
+ordering, not a flag: read the file, delete it, *then* call into the
+editor with the loaded text as `initial_text`. This also means the two
+recovery paths never overlap in practice for a `kind="new"` draft --
+whichever one reaches the file first (board entry, if `can_post`, else
+whatever later re-enters the editor) always consumes it -- while a
+`kind="edit"` draft (one specific existing post) has no board-entry
+counterpart at all and is only ever recoverable through the editor's own
+crash-recovery path when that exact post is reopened.
+
 **A manual `BLOCKED` trust verdict on `HELLO` doesn't just refuse the
 request -- `LinkServer._handle_hello` actively evicts the peer from
 `self._node.peers` (`self._node.peers.pop(peer.fingerprint, None)`) the

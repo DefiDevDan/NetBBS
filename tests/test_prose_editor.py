@@ -180,6 +180,21 @@ def test_quit_after_editing_prompts_and_discard_returns_none(tmp_path):
     assert not draft.exists()
 
 
+def test_quit_after_editing_keep_choice_leaves_the_draft_and_returns_none(tmp_path):
+    """Dogfood feature request, issue #149: "Keep draft & exit" -- an
+    intentional counterpart to what a genuine disconnect already leaves
+    behind, reachable without actually dropping the connection."""
+    draft = tmp_path / "d.draft"
+
+    async def scenario():
+        session = FakeSession(_type("x") + ["CTRL+X", "k"])
+        return await edit_prose(session, initial_text=None, draft_path=draft, max_bytes=100_000)
+
+    result = asyncio.run(scenario())
+    assert result is None
+    assert draft.read_text(encoding="utf-8") == "x"
+
+
 def test_quit_after_editing_save_choice_saves_and_returns_text(tmp_path):
     async def scenario():
         session = FakeSession(_type("hello") + ["CTRL+X", "s"])

@@ -64,6 +64,85 @@ def test_line_editor_cancel_is_distinct_from_an_empty_body():
     assert asyncio.run(edit_line_body(session, initial_text=None, max_bytes=1_000, max_lines=20)) is None
 
 
+def test_line_editor_exit_saves_a_draft_and_returns_none(tmp_path):
+    """Dogfood feature request, issue #149: /exit is distinct from
+    /cancel -- both return None, but /exit leaves the draft on disk."""
+    draft_path = tmp_path / "d.draft"
+    session = FakeSession(lines=("first line", "/exit"))
+    body = asyncio.run(
+        edit_line_body(session, initial_text=None, max_bytes=1_000, max_lines=20, draft_path=draft_path)
+    )
+    assert body is None
+    assert draft_path.read_text(encoding="utf-8") == "first line"
+
+
+def test_line_editor_quit_is_a_synonym_for_exit(tmp_path):
+    draft_path = tmp_path / "d.draft"
+    session = FakeSession(lines=("first line", "/quit"))
+    body = asyncio.run(
+        edit_line_body(session, initial_text=None, max_bytes=1_000, max_lines=20, draft_path=draft_path)
+    )
+    assert body is None
+    assert draft_path.read_text(encoding="utf-8") == "first line"
+
+
+def test_line_editor_exit_is_not_recognized_without_a_draft_path():
+    """mail_flow.py and other callers that never pass draft_path keep
+    their exact old behavior -- /exit stays an ordinary unknown
+    command there, same as before this parameter existed."""
+    session = FakeSession(lines=("/exit", "/cancel"))
+    body = asyncio.run(edit_line_body(session, initial_text=None, max_bytes=1_000, max_lines=20))
+    assert body is None
+    assert "Unknown editor command" in _text(session)
+
+
+def test_line_editor_cancel_deletes_an_existing_draft(tmp_path):
+    draft_path = tmp_path / "d.draft"
+    draft_path.write_text("stale", encoding="utf-8")
+    session = FakeSession(lines=("n", "/cancel"))  # "n" declines resuming the stale draft
+    body = asyncio.run(
+        edit_line_body(session, initial_text=None, max_bytes=1_000, max_lines=20, draft_path=draft_path)
+    )
+    assert body is None
+    assert not draft_path.exists()
+
+
+def test_line_editor_offers_recovery_and_done_deletes_the_resumed_draft(tmp_path):
+    draft_path = tmp_path / "d.draft"
+    draft_path.write_text("recovered text", encoding="utf-8")
+    session = FakeSession(lines=("y", "/done"))  # "y" accepts resuming
+    body = asyncio.run(
+        edit_line_body(session, initial_text=None, max_bytes=1_000, max_lines=20, draft_path=draft_path)
+    )
+    assert body == "recovered text"
+    assert not draft_path.exists()
+    assert "A draft from a previous session was found" in _text(session)
+
+
+def test_line_editor_declining_recovery_deletes_the_stale_draft(tmp_path):
+    draft_path = tmp_path / "d.draft"
+    draft_path.write_text("stale", encoding="utf-8")
+    session = FakeSession(lines=("n", "fresh line", "/done"))  # "n" declines, starts empty instead
+    body = asyncio.run(
+        edit_line_body(session, initial_text=None, max_bytes=1_000, max_lines=20, draft_path=draft_path)
+    )
+    assert body == "fresh line"
+
+
+def test_line_editor_help_mentions_exit_only_when_draft_path_is_given(tmp_path):
+    with_draft = FakeSession(lines=("/help", "/cancel"))
+    asyncio.run(
+        edit_line_body(
+            with_draft, initial_text=None, max_bytes=1_000, max_lines=20, draft_path=tmp_path / "d.draft"
+        )
+    )
+    assert "/exit" in _text(with_draft)
+
+    without_draft = FakeSession(lines=("/help", "/cancel"))
+    asyncio.run(edit_line_body(without_draft, initial_text=None, max_bytes=1_000, max_lines=20))
+    assert "/exit" not in _text(without_draft)
+
+
 def test_line_editor_rejects_byte_overflow_without_losing_the_draft():
     session = FakeSession(lines=("okay", "€€", "/done"))
     body = asyncio.run(edit_line_body(session, initial_text=None, max_bytes=6, max_lines=20))
