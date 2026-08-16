@@ -1857,6 +1857,19 @@ async def _register_new_account(
         return None
     if password != confirm:
         await session.write_line(colored("Passwords did not match.", fg_color=ERROR_COLOR))
+        # Dogfood report, issue #156: `None` here means "back to the
+        # normal login prompt" (see this function's own docstring), not
+        # "try signup again" -- a new caller reasonably assumed the
+        # latter and was confused to land at Username: instead. Said
+        # explicitly, matching the login prompt's own "Type 'new'"
+        # wording so the way back is obvious, not just the fact that
+        # they left signup.
+        await session.write_line(
+            colored(
+                "Returning you to the login prompt -- type 'new' again to retry signing up.",
+                fg_color=MUTED_COLOR,
+            )
+        )
         return None
 
     # Same node-wide budget _login's own password attempts consume

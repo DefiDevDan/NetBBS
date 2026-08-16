@@ -276,6 +276,11 @@ def test_registration_rejects_mismatched_passwords(db):
     asyncio.run(_run_login(session, db, _throttle_config(max_attempts_per_connection=2)))
 
     assert "did not match" in session.output
+    # Dogfood report, issue #156: a mismatch drops back to the normal
+    # login prompt, not another signup attempt -- this must be said
+    # explicitly, not left for the caller to infer from suddenly seeing
+    # "Username:" again.
+    assert "Returning you to the login prompt" in session.output
     with pytest.raises(AuthError):
         get_user_by_username(db, "alice")
 
