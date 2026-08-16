@@ -208,7 +208,14 @@ from netbbs.net.char_input import REDRAW_KEY, REFRESH_KEY, reject_unhandled_key
 from netbbs.net.confirm import prompt_yes_no, prompt_yes_no_or_keep
 from netbbs.net.draft_storage import DraftPruneReport, prune_stale_drafts
 from netbbs.net.picker import pick_item
-from netbbs.net.resource_editor import FieldSpec, bool_field, choice_field, edit_resource_draft, text_field
+from netbbs.net.resource_editor import (
+    FieldSpec,
+    bool_field,
+    choice_field,
+    choice_step,
+    edit_resource_draft,
+    text_field,
+)
 from netbbs.net.session import Session
 from netbbs.net.session_registry import SessionSummary
 from netbbs.net.shutdown import (
@@ -3794,6 +3801,9 @@ def _name_requirement_label(value: str | None) -> str:
     return (value or "none").replace("_", " ")
 
 
+_NAME_REQUIREMENT_VALUES = [None, "verified", "verified_and_displayed"]
+
+
 def _name_requirement_field(key: str = "name_requirement") -> Callable[[Session, DatabaseLane, dict], Awaitable[None]]:
     """Cycles none -> verified -> verified_and_displayed -> none on
     each hotkey press (dogfood feature request, issue #153) instead of
@@ -3802,7 +3812,15 @@ def _name_requirement_field(key: str = "name_requirement") -> Callable[[Session,
     `_prompt_name_requirement` itself stays typed-text for its other
     (non-draft-editor, "recommend a value for Link" wizard) callers,
     which weren't part of the reported complaint."""
-    return choice_field(key, [None, "verified", "verified_and_displayed"])
+    return choice_field(key, _NAME_REQUIREMENT_VALUES)
+
+
+def _name_requirement_step(key: str = "name_requirement") -> Callable[[dict, int], None]:
+    """`FieldSpec.step` counterpart to `_name_requirement_field`
+    (dogfood feature request, issue #160's cursor-navigation
+    follow-up) -- Left/Right cycle the same three values Space/Enter/
+    the hotkey letter already do, just in either direction."""
+    return choice_step(key, _NAME_REQUIREMENT_VALUES)
 
 
 # Dogfood feature request, issue #150's own concrete example ("new
@@ -3944,6 +3962,7 @@ def _community_field_specs() -> list[FieldSpec]:
             label="Default name requirement",
             render=lambda d: _name_requirement_label(d.get("default_name_requirement")),
             prompt=_name_requirement_field("default_name_requirement"),
+            step=_name_requirement_step("default_name_requirement"),
             help=_NAME_REQUIREMENT_HELP + " Boards/areas/channels in this Community "
             "inherit this unless they set their own.",
         ),
@@ -4211,6 +4230,7 @@ def _board_field_specs() -> list[FieldSpec]:
             label="Name requirement",
             render=lambda d: _name_requirement_label(d.get("name_requirement")),
             prompt=_name_requirement_field(),
+            step=_name_requirement_step(),
             help=_NAME_REQUIREMENT_HELP,
         ),
     ]
@@ -5006,6 +5026,7 @@ def _area_field_specs() -> list[FieldSpec]:
             label="Name requirement",
             render=lambda d: _name_requirement_label(d.get("name_requirement")),
             prompt=_name_requirement_field(),
+            step=_name_requirement_step(),
             help=_NAME_REQUIREMENT_HELP,
         ),
     ]
@@ -5436,6 +5457,7 @@ def _channel_field_specs() -> list[FieldSpec]:
             label="Name requirement",
             render=lambda d: _name_requirement_label(d.get("name_requirement")),
             prompt=_name_requirement_field(),
+            step=_name_requirement_step(),
             help=_NAME_REQUIREMENT_HELP,
         ),
     ]

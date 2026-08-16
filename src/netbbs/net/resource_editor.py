@@ -29,11 +29,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from netbbs.net.char_input import CANCEL_KEY, HELP_KEY, reject_unhandled_key
+from netbbs.net.char_input import CANCEL_KEY, HELP_KEY, EditorKey, EditorKeyKind, reject_unhandled_key
 from netbbs.net.confirm import prompt_yes_no
 from netbbs.net.help_overlay import show_help
 from netbbs.net.session import Session
-from netbbs.rendering import HEADER_COLOR, MUTED_COLOR, action_bar, colored, sanitize_text, screen_title
+from netbbs.rendering import ACCENT_COLOR, HEADER_COLOR, MUTED_COLOR, action_bar, colored, sanitize_text, screen_title
 from netbbs.storage.execution import DatabaseLane
 
 # A draft is a plain, freely-mutable dict of field values -- for
@@ -70,6 +70,16 @@ class FieldSpec:
     optional and `None` by default, since authoring it for every field
     on day one isn't required (issue's own scope note); a field with no
     `help` is simply omitted from that screen.
+
+    `step` (dogfood feature request, issue #160's own cursor-navigation
+    follow-up), if given, is a synchronous, no-I/O `(draft, direction)
+    -> None` mutator that Left/Right act on when this field is the
+    currently arrow-highlighted one -- `direction` is `+1`/`-1`. Only
+    meaningful for a field whose value is a cycle with a real "forward"/
+    "backward" (see `choice_step`); `None` by default, and Left/Right
+    are a silent no-op on a field that doesn't define one (deliberately
+    including `bool_field` -- see that function's own docstring for
+    why arrow-triggered instant toggling was left out on purpose).
     """
 
     key: str
@@ -79,6 +89,7 @@ class FieldSpec:
     render: Callable[[Draft], str]
     prompt: FieldPrompt
     help: str | None = None
+    step: Callable[[Draft, int], None] | None = None
 
 
 async def edit_resource_draft(
@@ -123,13 +134,31 @@ async def edit_resource_draft(
     asks" posture the fullscreen editors' own `_confirm_quit` already
     established for a different kind of content -- and can back out of
     the confirmation itself to keep editing.
+
+    Dogfood feature request, issue #160's own follow-up: every field is
+    also reachable by moving a `>` cursor with Up/Down and activating
+    the highlighted one with Space or Enter (delegating to that field's
+    own `prompt`, exactly what its hotkey letter already does) -- purely
+    additive, every hotkey keeps working exactly as before. Nothing is
+    highlighted until the first arrow press (the screen looks identical
+    to today until then); Up from that unselected state lands on the
+    last field, Down on the first, and the cursor then wraps at either
+    end rather than stopping. Left/Right step a highlighted field's own
+    `step`, if it defines one (see `FieldSpec.step`/`choice_step`);
+    silently do nothing otherwise.
     """
     initial_draft = dict(draft)
+    selected: int | None = None
     while True:
         await session.write_line("\r\n" + screen_title(title, width=session.terminal_width))
-        for f in fields:
+        for i, f in enumerate(fields):
             value = sanitize_text(f.render(draft))
-            await session.write_line(f"  {f.label}: {colored(value, fg_color=MUTED_COLOR)}")
+            # One colored() call, not marker/label separately -- two
+            # calls would insert an SGR reset between "> " and the
+            # label text, splitting what should read as one contiguous
+            # highlighted run.
+            prefix = colored(f"> {f.label}", fg_color=ACCENT_COLOR, bold=True) if i == selected else f"  {f.label}"
+            await session.write_line(f"{prefix}: {colored(value, fg_color=MUTED_COLOR)}")
         menu_line = action_bar(
             [f.menu_text for f in fields] + [save_menu_text, back_menu_text], width=session.terminal_width
         )
@@ -142,14 +171,62 @@ async def edit_resource_draft(
             # one" scope extends to which screens mention it at all).
             await session.write_line(colored("(Ctrl-H for help on these fields)", fg_color=MUTED_COLOR))
         await session.write("Choice: ")
-        choice = (await session.read_key()).lower()
+        key = await _read_navigable_key(session)
 
-        if choice == HELP_KEY:
-            await _show_field_help(session, fields)
+        if key.kind == EditorKeyKind.UP:
+            selected = len(fields) - 1 if selected is None else (selected - 1) % len(fields)
             continue
-        if choice == back_hotkey or choice == CANCEL_KEY:
+        if key.kind == EditorKeyKind.DOWN:
+            selected = 0 if selected is None else (selected + 1) % len(fields)
+            continue
+        if key.kind in (EditorKeyKind.LEFT, EditorKeyKind.RIGHT):
+            # Deliberately silent, not a bell-and-reject: pressing
+            # Left/Right while sitting on a field with nothing to step
+            # (or with no field highlighted at all) isn't a mistake the
+            # way an unrecognized hotkey letter is, just a no-op.
+            if selected is not None and fields[selected].step is not None:
+                fields[selected].step(draft, 1 if key.kind == EditorKeyKind.RIGHT else -1)
+            continue
+        if key.kind == EditorKeyKind.CTRL and key.char == "h":
+            await _show_field_help(session, fields, selected=selected)
+            continue
+        if key.kind == EditorKeyKind.CTRL and key.char == "c":
             # Issue #157: Ctrl-C as an incremental alias for [B]ack --
             # this screen's own "discard the draft" action.
+            await session.write_line("")
+            if draft != initial_draft:
+                if not await prompt_yes_no(session, "Discard unsaved changes?", default=False):
+                    continue
+            return None
+        if key.kind == EditorKeyKind.ENTER or (key.kind == EditorKeyKind.CHAR and key.char == " "):
+            if selected is None:
+                # No echo happened for this keystroke either way --
+                # same "just bell" reasoning `reject_unhandled_key`
+                # already documents for HELP_KEY/CANCEL_KEY, not the
+                # erase-last-echoed-character behavior an ordinary
+                # rejected hotkey gets.
+                await session.write("\a")
+                continue
+            await session.write_line("")
+            await fields[selected].prompt(session, lane, draft)
+            continue
+        if key.kind != EditorKeyKind.CHAR or key.char is None:
+            # Backspace/Delete/Tab/Escape/Home/End/Page Up/Page Down --
+            # nothing was echoed for these either.
+            await session.write("\a")
+            continue
+
+        choice = key.char.lower()
+        # The `_read_navigable_key` fallback path (a Session predating
+        # `read_editor_key`) surfaces HELP_KEY/CANCEL_KEY the same way
+        # `read_key()` always has -- as an ordinary character equal to
+        # that sentinel byte, not as EditorKeyKind.CTRL -- so both are
+        # still handled here too, matching pre-#160 behavior exactly
+        # for a session that can't decode arrows at all.
+        if choice == HELP_KEY:
+            await _show_field_help(session, fields, selected=selected)
+            continue
+        if choice == back_hotkey or choice == CANCEL_KEY:
             await session.write_line("")
             if draft != initial_draft:
                 if not await prompt_yes_no(session, "Discard unsaved changes?", default=False):
@@ -163,21 +240,55 @@ async def edit_resource_draft(
                 await session.write_line(colored(f"Could not save: {exc}", fg_color=MUTED_COLOR))
                 continue
 
-        field = next((f for f in fields if f.hotkey.lower() == choice), None)
-        if field is None:
+        field_index = next((i for i, f in enumerate(fields) if f.hotkey.lower() == choice), None)
+        if field_index is None:
             await session.write(reject_unhandled_key(choice))
             continue
+        selected = field_index
         await session.write_line("")
-        await field.prompt(session, lane, draft)
+        await fields[field_index].prompt(session, lane, draft)
 
 
-async def _show_field_help(session: Session, fields: list[FieldSpec]) -> None:
+async def _read_navigable_key(session: Session) -> EditorKey:
+    """Best-effort structured key read for `edit_resource_draft`'s
+    arrow navigation -- falls back to the plain single-keystroke
+    reader, wrapped as an `EditorKeyKind.CHAR`, for lightweight
+    `Session` test doubles that predate `read_editor_key` (mirrors
+    `netbbs.net.confirm.read_confirmation_choice`'s own identical
+    fallback for the exact same reason)."""
+    read_editor_key = getattr(session, "read_editor_key", None)
+    if read_editor_key is not None:
+        try:
+            return await read_editor_key()
+        except NotImplementedError:
+            pass
+    raw = await session.read_key()
+    return EditorKey(EditorKeyKind.CHAR, char=raw)
+
+
+async def _show_field_help(session: Session, fields: list[FieldSpec], *, selected: int | None = None) -> None:
     """Ctrl-H's own content (issue #150): every field with a `help`
-    string authored, one after another -- not "whichever field the
-    caller's cursor happens to be on," since this screen has no cursor
-    concept at all (every field is always independently addressable by
-    its own hotkey, see this module's own docstring). A reasonable
-    reading of "contextual" for a screen shaped like this one."""
+    string authored, one after another.
+
+    Issue #160's own cursor-navigation follow-up narrows this once a
+    field is arrow-highlighted: a caller already sitting on one
+    specific field almost certainly wants that field's own explanation,
+    not to go hunting for it in a wall of every other field's help too
+    -- `selected`, if given a valid index, shows just that field's help
+    (or a short "nothing written yet" note if it has none) instead of
+    the full list. `None` (nothing highlighted, or a session that can
+    never reach that state -- see `_read_navigable_key`'s fallback)
+    keeps the original whole-screen behavior unchanged."""
+    if selected is not None:
+        field = fields[selected]
+        if not field.help:
+            await show_help(session, "Field help", [f"No help is available for {field.label!r} yet."])
+            return
+        await show_help(
+            session, "Field help", [colored(field.label, fg_color=HEADER_COLOR, bold=True), f"  {field.help}"]
+        )
+        return
+
     documented = [f for f in fields if f.help]
     if not documented:
         await show_help(session, "Field help", ["No help is available for this screen yet."])
@@ -216,7 +327,19 @@ def bool_field(key: str, prompt_text: str) -> FieldPrompt:
     """A toggle field -- always offers "keep current" via a bare
     Enter (`netbbs.net.confirm.prompt_yes_no_or_keep`'s own shape),
     for both a freshly-defaulted create draft and an existing value on
-    edit alike."""
+    edit alike.
+
+    Deliberately has no `choice_step`-style counterpart for
+    `FieldSpec.step` (issue #160's cursor-navigation follow-up): unlike
+    `choice_field`, this always opens a confirming sub-prompt rather
+    than toggling silently on one keystroke. Wiring Left/Right to flip
+    it instantly would make the same field behave inconsistently
+    depending on which key reached it -- Space/Enter/the hotkey letter
+    asking first, arrows not. Left/Right are simply a no-op on a
+    `bool_field` for now; making it an instant, confirmation-free
+    toggle under arrow navigation would be a real, separate decision
+    a boolean field's own author should make on purpose, not a side
+    effect of adding `step` support in general."""
     from netbbs.net.confirm import prompt_yes_no_or_keep
 
     async def prompt(session: Session, lane: DatabaseLane, draft: Draft) -> None:
@@ -243,11 +366,34 @@ def choice_field(key: str, values: list[Any]) -> FieldPrompt:
     in practice)."""
 
     async def prompt(session: Session, lane: DatabaseLane, draft: Draft) -> None:
-        current = draft.get(key, values[0])
-        try:
-            index = values.index(current)
-        except ValueError:
-            index = -1
-        draft[key] = values[(index + 1) % len(values)]
+        _advance_choice(key, values, draft, 1)
 
     return prompt
+
+
+def _advance_choice(key: str, values: list[Any], draft: Draft, direction: int) -> None:
+    current = draft.get(key, values[0])
+    try:
+        index = values.index(current)
+    except ValueError:
+        index = -1
+    draft[key] = values[(index + direction) % len(values)]
+
+
+def choice_step(key: str, values: list[Any]) -> Callable[[Draft, int], None]:
+    """`FieldSpec.step` counterpart to `choice_field` (dogfood feature
+    request, issue #160's cursor-navigation follow-up): Left/Right on a
+    highlighted `choice_field`-backed field step it backward/forward
+    through the exact same `values` cycle its hotkey/Space/Enter
+    already advances one direction through -- same index math, just
+    parameterized by `direction` instead of always `+1`. A separate
+    function rather than folding into `choice_field` itself so a field
+    list can keep passing `prompt=choice_field(key, values)` unchanged
+    and opt into arrow support additively via `step=choice_step(key,
+    values)`, matching `FieldSpec.step`'s own optional, additive
+    contract."""
+
+    def step(draft: Draft, direction: int) -> None:
+        _advance_choice(key, values, draft, direction)
+
+    return step
