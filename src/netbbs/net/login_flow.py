@@ -1148,7 +1148,26 @@ async def _main_menu(
             # on the *next* keystroke instead of interrupting immediately
             # -- see that method's own docstring.
             invite_task = asyncio.create_task(direct_invites.arrival_event(session).wait())
-            done, _pending = await asyncio.wait({key_task, invite_task}, return_when=asyncio.FIRST_COMPLETED)
+            try:
+                done, _pending = await asyncio.wait({key_task, invite_task}, return_when=asyncio.FIRST_COMPLETED)
+            except asyncio.CancelledError:
+                # This session's own task was cancelled from outside
+                # (deliberate node shutdown/drain, an abrupt client
+                # disconnect noticed elsewhere -- design doc's
+                # ActiveSessionRegistry.disconnect_all()) while racing
+                # key_task against invite_task -- same gap
+                # netbbs.net.chat_flow's _chat_loop/_direct_chat_loop
+                # already hit and fixed: asyncio.wait() being cancelled
+                # does NOT cancel the tasks it was waiting on, so
+                # without this, key_task/invite_task are left orphaned
+                # and whichever one later finishes with an exception
+                # (e.g. SessionClosedError once the socket actually
+                # closes) has no one left to retrieve it, and asyncio
+                # logs "Task exception was never retrieved."
+                key_task.cancel()
+                invite_task.cancel()
+                await asyncio.gather(key_task, invite_task, return_exceptions=True)
+                raise
             if invite_task in done:
                 key_task.cancel()
                 await asyncio.gather(key_task, return_exceptions=True)
