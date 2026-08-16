@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from netbbs.net.char_input import CANCEL_KEY, HELP_KEY, reject_unhandled_key
+from netbbs.net.confirm import prompt_yes_no
 from netbbs.net.help_overlay import show_help
 from netbbs.net.session import Session
 from netbbs.rendering import HEADER_COLOR, MUTED_COLOR, action_bar, colored, sanitize_text, screen_title
@@ -111,7 +112,19 @@ async def edit_resource_draft(
     an invalid combination) shows a friendly message and returns to the
     field menu with the draft intact, rather than crashing the session
     or silently discarding work already entered.
+
+    Dogfood follow-up: `[B]ack` used to discard the draft unconditionally,
+    even after fields had already been changed -- a SysOp who'd been
+    filling in a new board/area/channel/Community for a while could lose
+    all of it with one misplaced keystroke. `[B]ack`/Ctrl-C now only
+    discards outright when the draft is still exactly what it started as;
+    once anything differs from the starting snapshot, they're asked to
+    confirm first, the same "leaving a screen with unsaved changes always
+    asks" posture the fullscreen editors' own `_confirm_quit` already
+    established for a different kind of content -- and can back out of
+    the confirmation itself to keep editing.
     """
+    initial_draft = dict(draft)
     while True:
         await session.write_line("\r\n" + screen_title(title, width=session.terminal_width))
         for f in fields:
@@ -138,6 +151,9 @@ async def edit_resource_draft(
             # Issue #157: Ctrl-C as an incremental alias for [B]ack --
             # this screen's own "discard the draft" action.
             await session.write_line("")
+            if draft != initial_draft:
+                if not await prompt_yes_no(session, "Discard unsaved changes?", default=False):
+                    continue
             return None
         if choice == save_hotkey:
             await session.write_line("")

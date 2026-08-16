@@ -3753,6 +3753,16 @@ def _min_age_field(key: str = "min_age") -> Callable[[Session, DatabaseLane, dic
     return prompt
 
 
+def _name_requirement_label(value: str | None) -> str:
+    """Dogfood follow-up: since issue #153 turned this from typed text
+    into a cycling toggle, showing the raw stored value verbatim
+    ('verified_and_displayed') means every render still displays the
+    field's internal string constant, underscores and all, rather than
+    words a SysOp would actually write. 'none'/'verified' already read
+    fine as-is; only the compound value needs it."""
+    return (value or "none").replace("_", " ")
+
+
 def _name_requirement_field(key: str = "name_requirement") -> Callable[[Session, DatabaseLane, dict], Awaitable[None]]:
     """Cycles none -> verified -> verified_and_displayed -> none on
     each hotkey press (dogfood feature request, issue #153) instead of
@@ -3901,7 +3911,7 @@ def _community_field_specs() -> list[FieldSpec]:
         FieldSpec(
             key="default_name_requirement", hotkey="q", menu_text=menu_key("Q", "uirement", prefix="Name req"),
             label="Default name requirement",
-            render=lambda d: d.get("default_name_requirement") or "none",
+            render=lambda d: _name_requirement_label(d.get("default_name_requirement")),
             prompt=_name_requirement_field("default_name_requirement"),
             help=_NAME_REQUIREMENT_HELP + " Boards/areas/channels in this Community "
             "inherit this unless they set their own.",
@@ -4168,7 +4178,7 @@ def _board_field_specs() -> list[FieldSpec]:
         FieldSpec(
             key="name_requirement", hotkey="q", menu_text=menu_key("Q", "uirement", prefix="Name req"),
             label="Name requirement",
-            render=lambda d: d.get("name_requirement") or "none",
+            render=lambda d: _name_requirement_label(d.get("name_requirement")),
             prompt=_name_requirement_field(),
             help=_NAME_REQUIREMENT_HELP,
         ),
@@ -4945,7 +4955,7 @@ def _area_field_specs() -> list[FieldSpec]:
         FieldSpec(
             key="name_requirement", hotkey="q", menu_text=menu_key("Q", "uirement", prefix="Name req"),
             label="Name requirement",
-            render=lambda d: d.get("name_requirement") or "none",
+            render=lambda d: _name_requirement_label(d.get("name_requirement")),
             prompt=_name_requirement_field(),
             help=_NAME_REQUIREMENT_HELP,
         ),
@@ -5375,7 +5385,7 @@ def _channel_field_specs() -> list[FieldSpec]:
         FieldSpec(
             key="name_requirement", hotkey="q", menu_text=menu_key("Q", "uirement", prefix="Name req"),
             label="Name requirement",
-            render=lambda d: d.get("name_requirement") or "none",
+            render=lambda d: _name_requirement_label(d.get("name_requirement")),
             prompt=_name_requirement_field(),
             help=_NAME_REQUIREMENT_HELP,
         ),

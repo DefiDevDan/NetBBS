@@ -148,6 +148,64 @@ def test_ctrl_c_is_an_alias_for_back():
     assert save_calls == []
 
 
+# -- dogfood follow-up: confirm before discarding a changed draft ----------
+
+
+def test_back_on_an_unmodified_draft_needs_no_confirmation():
+    # A draft that was never actually touched (the common "opened the
+    # wrong menu" case) must back out in one keystroke, same as before
+    # this fix -- the confirmation only exists to protect real,
+    # unsaved work.
+    session = FakeSession(["b"])
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Create thing", fields=[_name_field()], draft={"name": "lobby"},
+            save=lambda draft: None, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        )
+    )
+    assert result is None
+    assert "Discard unsaved changes?" not in _written_text(session)
+
+
+def test_back_on_a_changed_draft_asks_before_discarding():
+    session = FakeSession(["n", "Renamed", "b", "y"])
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Create thing", fields=[_name_field()], draft={"name": "lobby"},
+            save=lambda draft: None, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        )
+    )
+    assert result is None
+    assert "Discard unsaved changes?" in _written_text(session)
+
+
+def test_declining_the_discard_confirmation_returns_to_the_same_draft():
+    # A SysOp who already typed real changes must not lose them to one
+    # misplaced [B]ack keystroke -- declining keeps editing with the
+    # draft intact.
+    save_calls = []
+
+    async def save(draft):
+        save_calls.append(dict(draft))
+        return "saved"
+
+    session = FakeSession(["n", "Renamed", "b", "n", "s"])
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Create thing", fields=[_name_field()], draft={"name": "lobby"},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        )
+    )
+    assert result == "saved"
+    assert save_calls == [{"name": "Renamed"}]
+
+
 def test_selecting_a_field_hotkey_runs_its_prompt_and_updates_the_draft():
     async def save(draft):
         return draft["name"]

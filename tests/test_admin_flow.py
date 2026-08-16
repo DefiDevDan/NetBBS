@@ -1964,17 +1964,56 @@ def test_create_board_flow(db, lane, sysop):
     assert "Created board" in _written_text(session)
 
 
+def test_create_board_name_requirement_label_reads_as_words_not_a_field_name(db, lane, sysop):
+    # Dogfood follow-up: issue #153 turned this field from typed text
+    # into a cycling toggle, but the on-screen label still showed the
+    # raw stored value verbatim ("verified_and_displayed") instead of
+    # words a SysOp would actually write.
+    inputs = ["m", "m", "c", "q", "q", "q", "b", "b", "b", "b"]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+
+    text = _written_text(session)
+    assert "verified and displayed" in text
+    assert "verified_and_displayed" not in text
+
+
 def test_create_board_can_be_cancelled_without_creating_anything(db, lane, sysop):
     """Dogfood item 6: no way to cancel mid-creation used to mean
     finishing the wizard and deleting the result afterward -- [B]ack on
     the shared draft editor now discards the whole draft, even after
-    fields were already filled in, with nothing ever written."""
-    inputs = ["m", "m", "c", "n", "Abandoned", "b", "b", "b", "b"]
+    fields were already filled in, with nothing ever written. Confirms
+    the discard once asked (dogfood follow-up: [B]ack on a changed
+    draft now asks first -- see test_create_board_declining_the_discard_
+    confirmation_keeps_editing below)."""
+    inputs = ["m", "m", "c", "n", "Abandoned", "b", "y", "b", "b", "b"]
     session = FakeSession(inputs)
     _run(session, lane, sysop)
     from netbbs.boards.boards import list_boards
 
     assert list_boards(db) == []
+
+
+def test_create_board_back_with_no_changes_needs_no_confirmation(db, lane, sysop):
+    # The confirmation only exists to protect entered-but-unsaved work
+    # -- backing straight out of a still-untouched draft (the common
+    # "opened the wrong menu" case) must not gain an extra keystroke.
+    inputs = ["m", "m", "c", "b", "b", "b", "b"]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+    assert "Discard unsaved changes?" not in _written_text(session)
+
+
+def test_create_board_declining_the_discard_confirmation_keeps_editing(db, lane, sysop):
+    # Dogfood follow-up: a SysOp who'd already filled in fields could
+    # lose all of it with one misplaced [B]ack keystroke. Declining the
+    # new confirmation must return to the same draft, not lose it.
+    inputs = ["m", "m", "c", "n", "Abandoned", "b", "n", "s", "b", "b", "b"]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+    from netbbs.boards.boards import list_boards
+
+    assert [b.name for b in list_boards(db)] == ["Abandoned"]
 
 
 def test_edit_and_delete_board_flow(db, lane, sysop):
@@ -2497,8 +2536,10 @@ def test_create_and_delete_area_flow(db, lane, sysop):
 
 def test_create_area_can_be_cancelled_without_creating_anything(db, lane, sysop):
     """Dogfood item 6: [B]ack on the shared draft editor discards the
-    whole draft, even after fields were already filled in."""
-    inputs = ["m", "f", "c", "n", "Abandoned", "b", "b", "b", "b"]
+    whole draft, even after fields were already filled in. Confirms the
+    discard once asked (dogfood follow-up: a changed draft now asks
+    first)."""
+    inputs = ["m", "f", "c", "n", "Abandoned", "b", "y", "b", "b", "b"]
     session = FakeSession(inputs)
     _run(session, lane, sysop)
     from netbbs.files.areas import list_file_areas
@@ -2738,8 +2779,10 @@ def test_create_channel_flow(db, lane, sysop):
 
 def test_create_channel_can_be_cancelled_without_creating_anything(db, lane, sysop):
     """Dogfood item 6: [B]ack on the shared draft editor discards the
-    whole draft, even after fields were already filled in."""
-    inputs = ["m", "n", "c", "n", "Abandoned", "b", "b", "b", "b"]
+    whole draft, even after fields were already filled in. Confirms the
+    discard once asked (dogfood follow-up: a changed draft now asks
+    first)."""
+    inputs = ["m", "n", "c", "n", "Abandoned", "b", "y", "b", "b", "b"]
     session = FakeSession(inputs)
     _run(session, lane, sysop)
     from netbbs.chat.channels import list_channels
@@ -2855,8 +2898,10 @@ def test_create_community_flow(db, lane, sysop):
 
 def test_create_community_can_be_cancelled_without_creating_anything(db, lane, sysop):
     """Dogfood item 6: [B]ack on the shared draft editor discards the
-    whole draft, even after fields were already filled in."""
-    inputs = ["m", "o", "c", "n", "Abandoned", "b", "b", "b", "b"]
+    whole draft, even after fields were already filled in. Confirms the
+    discard once asked (dogfood follow-up: a changed draft now asks
+    first)."""
+    inputs = ["m", "o", "c", "n", "Abandoned", "b", "y", "b", "b", "b"]
     session = FakeSession(inputs)
     _run(session, lane, sysop)
     from netbbs.communities import list_communities
