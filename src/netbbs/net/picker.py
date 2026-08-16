@@ -443,7 +443,22 @@ def _search_completer(candidates: Sequence[str]) -> Completer:
     return completer
 
 
-def _render_nav(session: Session, on_sort: Callable | None, description_level: str) -> str:
+# `menu_description_level`'s own real default is "brief", not "off" --
+# descriptions are on for every caller who has never touched the
+# setting (see that module's docstring). `menu_grid` renders one line
+# per nav entry even once a short terminal collapses its *description
+# text*, so a caller sitting at the real default on a modest terminal
+# would otherwise see the item list itself shrink to almost nothing
+# just to make room for nav blurbs -- at 20 rows, page size drops from
+# 18 items (the old always-compact nav) to 5; below 15 rows, to exactly
+# 1. Below this floor, the nav falls back to the compact single-line
+# `action_bar` regardless of preference: descriptions are a nice-to-
+# have, being able to actually browse the list is the point of this
+# screen.
+_MIN_PAGE_SIZE_FOR_DESCRIPTIVE_NAV = 5
+
+
+def _nav_entries(on_sort: Callable | None) -> list[MenuEntry]:
     entries = [
         MenuEntry(label=menu_key("N", "ext"), brief="Next page"),
         MenuEntry(label=menu_key("P", "rev"), brief="Previous page"),
@@ -453,19 +468,27 @@ def _render_nav(session: Session, on_sort: Callable | None, description_level: s
     if on_sort is not None:
         entries.append(MenuEntry(label=menu_key("O", "rder"), brief="Change sort order"))
     entries.append(MenuEntry(label=menu_key("B", "ack"), brief="Return without picking"))
-    if description_level == "off":
-        # `menu_grid` always renders one entry per line, even with
-        # descriptions off -- unlike `action_bar`'s packed single-line
-        # row, that's not a byte-for-byte-compatible substitute at this
-        # level. Keep `action_bar` for the (default, still most common)
-        # off case so every existing picker screen's height is
-        # completely unaffected; `menu_grid` only takes over once the
-        # caller has actually opted into descriptions.
-        return action_bar([e.label for e in entries], width=session.terminal_width)
-    return menu_grid(
-        [("", entries)], width=session.terminal_width, height=session.terminal_height,
-        description_level=description_level,
-    )
+    return entries
+
+
+def _render_nav(session: Session, on_sort: Callable | None, description_level: str) -> str:
+    entries = _nav_entries(on_sort)
+    if description_level != "off":
+        descriptive = menu_grid(
+            [("", entries)], width=session.terminal_width, height=session.terminal_height,
+            description_level=description_level,
+        )
+        descriptive_lines = descriptive.count("\r\n") + 1
+        available = session.terminal_height - (_RESERVED_LINES - 1 + descriptive_lines)
+        if max(1, min(_MAX_PAGE_SIZE, available)) >= _MIN_PAGE_SIZE_FOR_DESCRIPTIVE_NAV:
+            return descriptive
+    # `menu_grid` always renders one entry per line, even with
+    # descriptions off -- unlike `action_bar`'s packed single-line row,
+    # that's not a byte-for-byte-compatible substitute at this level.
+    # Reached either because the caller's preference is "off", or
+    # because the descriptive form above didn't clear the page-size
+    # floor.
+    return action_bar([e.label for e in entries], width=session.terminal_width)
 
 
 def _page_size(session: Session, on_sort: Callable | None, description_level: str) -> int:

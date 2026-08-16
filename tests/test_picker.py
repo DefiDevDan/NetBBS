@@ -901,6 +901,54 @@ def test_description_level_brief_reserves_extra_lines_for_the_taller_nav_block()
     assert result["value"] is None
 
 
+def test_description_level_brief_falls_back_to_compact_nav_below_the_page_size_floor():
+    """`menu_description_level`'s real default is "brief", not "off" --
+    every caller who has never touched the setting gets it. Without a
+    floor, a short-but-real terminal (here: a negotiated 80x14) would
+    reserve so many lines for the now-multi-line nav that the item list
+    itself would collapse to almost nothing -- descriptions are a nice-
+    to-have, being able to actually browse the list is the point of
+    this screen. Below the floor, the nav silently reverts to the
+    compact single-line form regardless of preference: verified here by
+    checking more than 5 of 20 items appear on page 1 (the floor is 5;
+    the pre-fix collapse at 14 rows was down to 2)."""
+    result = {}
+    items = [f"item{i:02d}" for i in range(1, 21)]
+
+    async def handler(session: Session):
+        await session.read_line()
+        result["value"] = await pick_item(
+            session, items, name_of=lambda x: x, stable_id_of=lambda x: items.index(x) + 1,
+            title="Items", empty_message="none", description_level="brief",
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await skip_initial_negotiation(reader)
+            writer.write(bytes([IAC, WILL, NAWS]))
+            writer.write(_naws_subneg(80, 14))
+            writer.write(b"x\r\n")
+            await writer.drain()
+
+            text = (await _read_until_quiet(reader)).decode()
+            assert "item06" in text
+            # Compact form: nav descriptions are absent from this page.
+            assert "Next page" not in text
+
+            writer.write(b"b")
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert result["value"] is None
+
+
 def test_prev_on_first_page_sounds_bell_and_stays_in_picker():
     result = {}
     items = ["a", "b"]
