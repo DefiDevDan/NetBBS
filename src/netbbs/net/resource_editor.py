@@ -32,7 +32,7 @@ from typing import Any, Awaitable, Callable
 from netbbs.net.char_input import HELP_KEY, reject_unhandled_key
 from netbbs.net.help_overlay import show_help
 from netbbs.net.session import Session
-from netbbs.rendering import HEADER_COLOR, MUTED_COLOR, colored, sanitize_text
+from netbbs.rendering import HEADER_COLOR, MUTED_COLOR, action_bar, colored, sanitize_text, screen_title
 from netbbs.storage.execution import DatabaseLane
 
 # A draft is a plain, freely-mutable dict of field values -- for
@@ -113,11 +113,13 @@ async def edit_resource_draft(
     or silently discarding work already entered.
     """
     while True:
-        await session.write_line(colored(f"\r\n{title}", fg_color=HEADER_COLOR, bold=True))
+        await session.write_line("\r\n" + screen_title(title, width=session.terminal_width))
         for f in fields:
             value = sanitize_text(f.render(draft))
             await session.write_line(f"  {f.label}: {colored(value, fg_color=MUTED_COLOR)}")
-        menu_line = "  ".join([f.menu_text for f in fields] + [save_menu_text, back_menu_text])
+        menu_line = action_bar(
+            [f.menu_text for f in fields] + [save_menu_text, back_menu_text], width=session.terminal_width
+        )
         await session.write_line(f"\r\n{menu_line}")
         if any(f.help for f in fields):
             # Only hinted when at least one field actually has help

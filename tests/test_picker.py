@@ -213,7 +213,7 @@ def test_invalid_two_digit_selection_sounds_bell_and_stays_in_picker():
             # "no redraw on invalid single-keystroke menu input").
             assert b"\a" in data
             assert b"Invalid selection." not in data
-            assert b"(page " not in data  # the page/nav block wasn't redrawn
+            assert b"page " not in data  # the page/nav block wasn't redrawn
             writer.write(b"01")
             await writer.drain()
             await _read_until_quiet(reader)
@@ -247,7 +247,7 @@ def test_unknown_command_letter_sounds_bell_and_stays_in_picker():
             # No redraw, no error message -- just a bell.
             assert b"\a" in data
             assert b"Unknown command." not in data
-            assert b"(page " not in data
+            assert b"page " not in data
             writer.write(b"b")
             await writer.drain()
             await _read_until_quiet(reader)
@@ -760,7 +760,7 @@ def test_prev_on_first_page_sounds_bell_and_stays_in_picker():
             # the page actually changed).
             assert b"\a" in data
             assert b"Already on the first page." not in data
-            assert b"(page " not in data
+            assert b"page " not in data
             writer.write(b"b")
             await writer.drain()
             await _read_until_quiet(reader)
@@ -795,7 +795,7 @@ def test_next_on_last_page_sounds_bell_and_stays_in_picker():
             # the page actually changed).
             assert b"\a" in data
             assert b"Already on the last page." not in data
-            assert b"(page " not in data
+            assert b"page " not in data
             writer.write(b"b")
             await writer.drain()
             await _read_until_quiet(reader)
@@ -1239,14 +1239,14 @@ def test_ctrl_l_redraws_the_current_page():
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
             await skip_initial_negotiation(reader)
             first = await _read_until_quiet(reader)
-            assert first.count(b"(page ") == 1
+            assert first.count(b"page ") == 1
 
             writer.write(b"\x0c")
             await writer.drain()
             second = await _read_until_quiet(reader)
             # A second full page/nav block, not a bell -- Ctrl-L is a
             # deliberate redraw request, not a rejected keystroke.
-            assert second.count(b"(page ") == 1
+            assert second.count(b"page ") == 1
             assert b"\a" not in second
 
             writer.write(b"b")
@@ -1282,7 +1282,7 @@ def test_ctrl_r_without_a_refresh_callback_sounds_a_bell():
             await writer.drain()
             data = await _read_until_quiet(reader)
             assert b"\a" in data
-            assert data.count(b"(page ") == 0  # no redraw happened either
+            assert data.count(b"page ") == 0  # no redraw happened either
 
             writer.write(b"b")
             await writer.drain()

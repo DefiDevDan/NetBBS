@@ -3306,7 +3306,7 @@ def test_diagnostic_log_tail_screen_shows_seeded_entries_and_stops_on_any_key(db
     text = _written_text(session)
     assert "Diagnostic log (live)" in text
     assert "seeded entry" in text
-    assert "Settings:" in text  # back at Settings -- tail actually ended
+    assert "NetBBS / Settings" in text  # back at Settings -- tail actually ended
 
 
 def test_diagnostic_log_tail_screen_appends_entries_written_while_watching(db, lane, monkeypatch):

@@ -3562,7 +3562,7 @@ async def _render_identity_details(session: Session, db: Database, user: User) -
     age_attestation = get_attestation(db, user, "age")
     name_attestation = get_attestation(db, user, "name")
 
-    await session.write_line(colored("\r\nName & details:", fg_color=HEADER_COLOR, bold=True))
+    await session.write_line("\r\n" + screen_title("Name & details", width=session.terminal_width))
     await session.write_line(
         f"Display name: {sanitize_text(display_name) if display_name else '(not set)'} "
         f"({'public' if is_display_name_visible(db, user) else 'private'})"
@@ -3604,7 +3604,7 @@ async def _render_identity_details(session: Session, db: Database, user: User) -
         f"Link attestation sharing: {', '.join(shared) if shared else 'off'}"
     )
 
-    options = "  ".join(
+    options = action_bar(
         [
             menu_key("D", "isplay name"),
             menu_key("L", "ocation"),
@@ -3612,7 +3612,8 @@ async def _render_identity_details(session: Session, db: Database, user: User) -
             menu_key("V", "erified badge visibility"),
             menu_key("R", "emote Link sharing"),
             menu_key("B", "ack"),
-        ]
+        ],
+        width=session.terminal_width,
     )
     await session.write_line(f"\r\n{options}")
     await session.write("Choice: ")

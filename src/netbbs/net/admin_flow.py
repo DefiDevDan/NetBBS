@@ -517,19 +517,21 @@ async def _users_menu(
 
 
 async def _draw_users_menu(session: Session) -> None:
-    header = colored("\r\nUsers:", fg_color=HEADER_COLOR, bold=True)
-    options = "  ".join(
-        [
-            menu_key("C", "reate user"),
-            menu_key("L", "ist users"),
-            menu_key("R", "egistration"),
-            menu_key("P", "romote/demote"),
-            menu_key("E", "nable/disable"),
-            menu_key("D", "elete user"),
-            menu_key("B", "ack"),
-        ]
+    await session.write_line("\r\n" + screen_title("Users", width=session.terminal_width))
+    await session.write_line(
+        action_bar(
+            [
+                menu_key("C", "reate user"),
+                menu_key("L", "ist users"),
+                menu_key("R", "egistration"),
+                menu_key("P", "romote/demote"),
+                menu_key("E", "nable/disable"),
+                menu_key("D", "elete user"),
+                menu_key("B", "ack"),
+            ],
+            width=session.terminal_width,
+        )
     )
-    await session.write_line(f"{header} {options}")
     await session.write("Choice: ")
 
 
@@ -659,14 +661,13 @@ async def _system_menu(
 async def _draw_system_menu(
     session: Session, node_controls: NodeControls | None, link_context: LinkContext | None = None
 ) -> None:
-    header = colored("\r\nSettings:", fg_color=HEADER_COLOR, bold=True)
+    await session.write_line("\r\n" + screen_title("Settings", width=session.terminal_width))
     option_list = [
         menu_key("W", "elcome banner"), menu_key("U", "pdate"), menu_key("T", "imestamp format"),
         menu_key("P", "olicy trust"),
     ]
     option_list.append(menu_key("B", "ack"))
-    options = "  ".join(option_list)
-    await session.write_line(f"{header} {options}")
+    await session.write_line(action_bar(option_list, width=session.terminal_width))
     await session.write("Choice: ")
 
 
@@ -785,10 +786,11 @@ async def _trust_subjects_screen(session: Session, lane: DatabaseLane, actor: Us
                     )
                 )
         await session.write_line(
-            "  ".join(
+            action_bar(
                 [menu_key("O", "verride"), menu_key("C", "lear override"),
                  *([menu_key("I", "dentity attestation override")] if selected.kind == "user" else []),
-                 menu_key("H", "istory"), menu_key("B", "ack")]
+                 menu_key("H", "istory"), menu_key("B", "ack")],
+                width=session.terminal_width,
             )
         )
         await session.write("Choice: ")
@@ -1421,11 +1423,13 @@ async def _pick_target_user(session: Session, lane: DatabaseLane, *, title: str)
 
         label, _, _ = _USER_SORT_MODES[mode]
         arrow = "↓" if descending else "↑"
-        header = colored(
-            f"{title} (page {page_index + 1}/{total_pages}, {len(working_set)} total)",
-            fg_color=HEADER_COLOR, bold=True,
+        await session.write_line(
+            "\r\n" + screen_title(
+                title,
+                subtitle=f"page {page_index + 1}/{total_pages}, {len(working_set)} total",
+                width=session.terminal_width,
+            )
         )
-        await session.write_line(f"\r\n{header}")
         await session.write_line(colored(f"Sorted by: {label} {arrow}", fg_color=MUTED_COLOR))
         await session.write_line(
             colored(f"Showing: {_USER_VISIBILITY_LABELS[visibility]}", fg_color=MUTED_COLOR)
@@ -1434,7 +1438,7 @@ async def _pick_target_user(session: Session, lane: DatabaseLane, *, title: str)
             line = f"  {position:02d}. (#{user.id}) {sanitize_text(user.username)} - {_user_description(user)}"
             await session.write_line(truncate(line, session.terminal_width))
 
-        nav = "  ".join(
+        nav = action_bar(
             [
                 menu_key("A", "lphabetical"),
                 menu_key("R", "egistration"),
@@ -1445,7 +1449,8 @@ async def _pick_target_user(session: Session, lane: DatabaseLane, *, title: str)
                 menu_key("S", "earch"),
                 menu_key("G", "oto #"),
                 menu_key("B", "ack"),
-            ]
+            ],
+            width=session.terminal_width,
         )
         await session.write_line(f"\r\n{nav} — or type a 2-digit number to select")
         await session.write("Choice: ")
@@ -1605,8 +1610,9 @@ def _user_description(user: User) -> str:
 
 
 async def _draw_user_detail(session: Session, lane: DatabaseLane, target: User) -> None:
-    header = colored(sanitize_text(target.username), fg_color=HEADER_COLOR, bold=True)
-    await session.write_line(f"\r\n{header}")
+    await session.write_line(
+        "\r\n" + screen_title(sanitize_text(target.username), width=session.terminal_width)
+    )
     await session.write_line(f"Level: {target.user_level}")
     await session.write_line(f"Status: {_status_label(target)}")
     display_format, display_timezone = await lane.run(resolve_display_preferences)
@@ -1640,7 +1646,7 @@ async def _draw_user_detail(session: Session, lane: DatabaseLane, target: User) 
     options.append(menu_key("I", "dentity verification"))
     options.append(menu_key("D", "elete"))
     options.append(menu_key("B", "ack"))
-    await session.write_line(f"\r\n{'  '.join(options)}")
+    await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
     await session.write("Choice: ")
 
 
@@ -2521,14 +2527,16 @@ async def _draw_node_menu(session: Session, node_controls: NodeControls) -> None
     the node-management screen, not a place that needs restraint about
     operational detail) rather than only when something's active.
     """
-    header = colored("Node management:", fg_color=HEADER_COLOR, bold=True)
-    options = "  ".join(
-        [
-            menu_key("W", "ho"), menu_key("M", "aintenance mode"), menu_key("D", "rain"),
-            menu_key("L", "ock & drain"), menu_key("S", "hutdown"), menu_key("B", "ack"),
-        ]
+    await session.write_line("\r\n" + screen_title("Node management", width=session.terminal_width))
+    await session.write_line(
+        action_bar(
+            [
+                menu_key("W", "ho"), menu_key("M", "aintenance mode"), menu_key("D", "rain"),
+                menu_key("L", "ock & drain"), menu_key("S", "hutdown"), menu_key("B", "ack"),
+            ],
+            width=session.terminal_width,
+        )
     )
-    await session.write_line(f"\r\n{header} {options}")
     status_lines = [
         f"Maintenance mode: {'ON' if node_controls.maintenance.is_lockdown_active() else 'off'}"
     ]
@@ -3053,7 +3061,6 @@ async def _draw_welcome_banner_menu(session: Session, lane: DatabaseLane) -> Non
         file_state = f"{status.size_bytes} bytes"
     else:
         file_state = "missing"
-    header = colored("Welcome banner:", fg_color=HEADER_COLOR, bold=True)
     state_color = SUCCESS_COLOR if status.enabled else MUTED_COLOR
     file_color = METADATA_COLOR if status.exists else ERROR_COLOR
     detail = (
@@ -3062,16 +3069,20 @@ async def _draw_welcome_banner_menu(session: Session, lane: DatabaseLane) -> Non
         + colored(str(status.path), fg_color=METADATA_COLOR)
         + colored(f" ({file_state})", fg_color=file_color)
     )
-    options = "  ".join(
-        [
-            menu_key("P", "review"),
-            menu_key("E", "nable"),
-            menu_key("D", "isable"),
-            menu_key("X", " edit"),
-            menu_key("B", "ack"),
-        ]
+    await session.write_line("\r\n" + screen_title("Welcome banner", width=session.terminal_width))
+    await session.write_line(detail)
+    await session.write_line(
+        action_bar(
+            [
+                menu_key("P", "review"),
+                menu_key("E", "nable"),
+                menu_key("D", "isable"),
+                menu_key("X", " edit"),
+                menu_key("B", "ack"),
+            ],
+            width=session.terminal_width,
+        )
     )
-    await session.write_line(f"\r\n{header} {detail}\r\n{options}")
     await session.write("Choice: ")
 
 
@@ -3227,20 +3238,24 @@ async def _content_menu(
 
 
 async def _draw_content_menu(session: Session) -> None:
-    header = colored("Manage boards/areas/channels:", fg_color=HEADER_COLOR, bold=True)
-    options = "  ".join(
-        [
-            menu_key("M", "essage boards"),
-            menu_key("F", "ile areas"),
-            menu_key("N", "nels", prefix="Cha"),
-            menu_key("C", "ategories"),
-            menu_key("O", "mmunities", prefix="C"),
-            menu_key("G", "rant moderator"),
-            menu_key("R", "evoke moderator"),
-            menu_key("B", "ack"),
-        ]
+    await session.write_line(
+        "\r\n" + screen_title("Manage boards/areas/channels", width=session.terminal_width)
     )
-    await session.write_line(f"\r\n{header} {options}")
+    await session.write_line(
+        action_bar(
+            [
+                menu_key("M", "essage boards"),
+                menu_key("F", "ile areas"),
+                menu_key("N", "nels", prefix="Cha"),
+                menu_key("C", "ategories"),
+                menu_key("O", "mmunities", prefix="C"),
+                menu_key("G", "rant moderator"),
+                menu_key("R", "evoke moderator"),
+                menu_key("B", "ack"),
+            ],
+            width=session.terminal_width,
+        )
+    )
     await session.write("Choice: ")
 
 
@@ -3569,9 +3584,12 @@ async def _community_menu(session: Session, lane: DatabaseLane, actor: User) -> 
 
 
 async def _draw_community_menu(session: Session) -> None:
-    header = colored("Communities:", fg_color=HEADER_COLOR, bold=True)
-    options = "  ".join([menu_key("C", "reate"), menu_key("L", "ist"), menu_key("B", "ack")])
-    await session.write_line(f"\r\n{header} {options}")
+    await session.write_line("\r\n" + screen_title("Communities", width=session.terminal_width))
+    await session.write_line(
+        action_bar(
+            [menu_key("C", "reate"), menu_key("L", "ist"), menu_key("B", "ack")], width=session.terminal_width
+        )
+    )
     await session.write("Choice: ")
 
 
@@ -3736,8 +3754,9 @@ async def _community_detail_screen(session: Session, lane: DatabaseLane, actor: 
 
 
 async def _draw_community_detail(session: Session, community: Community) -> None:
-    header = colored(sanitize_text(community.name), fg_color=HEADER_COLOR, bold=True)
-    await session.write_line(f"\r\n{header}")
+    await session.write_line(
+        "\r\n" + screen_title(sanitize_text(community.name), width=session.terminal_width)
+    )
     await session.write_line(
         f"Description: {sanitize_text(community.description) if community.description else '(none)'}"
     )
@@ -3750,7 +3769,9 @@ async def _draw_community_detail(session: Session, community: Community) -> None
         f"{community.default_min_age if community.default_min_age is not None else 'none'}  "
         f"Default name requirement: {community.default_name_requirement or 'none'}"
     )
-    options = "  ".join([menu_key("E", "dit"), menu_key("D", "elete"), menu_key("B", "ack")])
+    options = action_bar(
+        [menu_key("E", "dit"), menu_key("D", "elete"), menu_key("B", "ack")], width=session.terminal_width
+    )
     await session.write_line(f"\r\n{options}")
     await session.write("Choice: ")
 
@@ -3813,9 +3834,12 @@ async def _board_menu(
 
 
 async def _draw_board_menu(session: Session) -> None:
-    header = colored("Message boards:", fg_color=HEADER_COLOR, bold=True)
-    options = "  ".join([menu_key("C", "reate"), menu_key("L", "ist"), menu_key("B", "ack")])
-    await session.write_line(f"\r\n{header} {options}")
+    await session.write_line("\r\n" + screen_title("Message boards", width=session.terminal_width))
+    await session.write_line(
+        action_bar(
+            [menu_key("C", "reate"), menu_key("L", "ist"), menu_key("B", "ack")], width=session.terminal_width
+        )
+    )
     await session.write("Choice: ")
 
 
@@ -4313,8 +4337,9 @@ async def _draw_board_detail(
     it redraws, so returning them here avoids a second, separately-timed
     recomputation immediately after.
     """
-    header = colored(sanitize_text(board.name), fg_color=HEADER_COLOR, bold=True)
-    await session.write_line(f"\r\n{header}")
+    await session.write_line(
+        "\r\n" + screen_title(sanitize_text(board.name), width=session.terminal_width)
+    )
     await session.write_line(f"Description: {sanitize_text(board.description) if board.description else '(none)'}")
     await session.write_line(f"Community: {await lane.run(_community_label, board.community_id)}")
     read_level = board.min_read_level if board.min_read_level is not None else "inherit"
@@ -4382,7 +4407,7 @@ async def _draw_board_detail(
     if has_incoming_offer:
         options.append(menu_key("A", "ccept transfer"))
     options.append(menu_key("B", "ack"))
-    await session.write_line(f"\r\n{'  '.join(options)}")
+    await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
     await session.write("Choice: ")
     return is_origin, has_incoming_offer, is_closed
 
@@ -4424,18 +4449,20 @@ async def _pending_posts_screen(
 
 
 async def _draw_post_action(session: Session, post: Post) -> None:
-    header = colored(sanitize_text(post.subject), fg_color=HEADER_COLOR, bold=True)
-    await session.write_line(f"\r\n{header}")
+    await session.write_line(
+        "\r\n" + screen_title(sanitize_text(post.subject), width=session.terminal_width)
+    )
     await session.write_line(f"By: {sanitize_text(post.author_label)}")
     await session.write_line(reflow(sanitize_text(post.body, allow_newlines=True), width=session.terminal_width))
-    options = "  ".join(
+    options = action_bar(
         [
             menu_key("A", "pprove"),
             menu_key("R", "eject"),
             menu_key("P", "in toggle"),
             menu_key("X", "empt toggle"),
             menu_key("B", "ack"),
-        ]
+        ],
+        width=session.terminal_width,
     )
     await session.write_line(f"\r\n{options}")
     await session.write("Choice: ")
@@ -4518,11 +4545,13 @@ async def _area_menu(
 
 
 async def _draw_area_menu(session: Session) -> None:
-    header = colored("File areas:", fg_color=HEADER_COLOR, bold=True)
-    options = "  ".join(
-        [menu_key("C", "reate"), menu_key("L", "ist"), menu_key("G", "C storage"), menu_key("B", "ack")]
+    await session.write_line("\r\n" + screen_title("File areas", width=session.terminal_width))
+    await session.write_line(
+        action_bar(
+            [menu_key("C", "reate"), menu_key("L", "ist"), menu_key("G", "C storage"), menu_key("B", "ack")],
+            width=session.terminal_width,
+        )
     )
-    await session.write_line(f"\r\n{header} {options}")
     await session.write("Choice: ")
 
 
@@ -4777,8 +4806,9 @@ async def _draw_area_detail(
     linked: bool = False,
     link_context: LinkContext | None = None,
 ) -> None:
-    header = colored(sanitize_text(area.name), fg_color=HEADER_COLOR, bold=True)
-    await session.write_line(f"\r\n{header}")
+    await session.write_line(
+        "\r\n" + screen_title(sanitize_text(area.name), width=session.terminal_width)
+    )
     await session.write_line(f"Description: {sanitize_text(area.description) if area.description else '(none)'}")
     await session.write_line(f"Community: {await lane.run(_community_label, area.community_id)}")
     read_level = area.min_read_level if area.min_read_level is not None else "inherit"
@@ -4799,7 +4829,7 @@ async def _draw_area_detail(
     if link_context is not None and not linked:
         options.append(menu_key("L", "ink this file area"))
     options.append(menu_key("B", "ack"))
-    await session.write_line(f"\r\n{'  '.join(options)}")
+    await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
     await session.write("Choice: ")
 
 
@@ -4904,20 +4934,22 @@ async def _pending_files_screen(session: Session, lane: DatabaseLane, actor: Use
 
 
 async def _draw_file_action(session: Session, entry: FileEntry) -> None:
-    header = colored(sanitize_text(entry.filename), fg_color=HEADER_COLOR, bold=True)
-    await session.write_line(f"\r\n{header}")
+    await session.write_line(
+        "\r\n" + screen_title(sanitize_text(entry.filename), width=session.terminal_width)
+    )
     await session.write_line(f"By: {sanitize_text(entry.uploader_label)}")
     if entry.description:
         await session.write_line(sanitize_text(entry.description))
     await session.write_line(f"Size: {entry.size_bytes} bytes")
-    options = "  ".join(
+    options = action_bar(
         [
             menu_key("A", "pprove"),
             menu_key("R", "eject"),
             menu_key("P", "in toggle"),
             menu_key("X", "empt toggle"),
             menu_key("B", "ack"),
-        ]
+        ],
+        width=session.terminal_width,
     )
     await session.write_line(f"\r\n{options}")
     await session.write("Choice: ")
@@ -4990,9 +5022,12 @@ async def _channel_menu(
 
 
 async def _draw_channel_menu(session: Session) -> None:
-    header = colored("Channels:", fg_color=HEADER_COLOR, bold=True)
-    options = "  ".join([menu_key("C", "reate"), menu_key("L", "ist"), menu_key("B", "ack")])
-    await session.write_line(f"\r\n{header} {options}")
+    await session.write_line("\r\n" + screen_title("Channels", width=session.terminal_width))
+    await session.write_line(
+        action_bar(
+            [menu_key("C", "reate"), menu_key("L", "ist"), menu_key("B", "ack")], width=session.terminal_width
+        )
+    )
     await session.write("Choice: ")
 
 
@@ -5192,8 +5227,9 @@ async def _draw_channel_detail(
     linked: bool = False,
     link_context: LinkContext | None = None,
 ) -> None:
-    header = colored(sanitize_text(channel.name), fg_color=HEADER_COLOR, bold=True)
-    await session.write_line(f"\r\n{header}")
+    await session.write_line(
+        "\r\n" + screen_title(sanitize_text(channel.name), width=session.terminal_width)
+    )
     await session.write_line(
         f"Description: {sanitize_text(channel.description) if channel.description else '(none)'}"
     )
@@ -5216,7 +5252,7 @@ async def _draw_channel_detail(
     if link_context is not None and not linked:
         options.append(menu_key("L", "ink this channel"))
     options.append(menu_key("B", "ack"))
-    await session.write_line(f"\r\n{'  '.join(options)}")
+    await session.write_line(f"\r\n{action_bar(options, width=session.terminal_width)}")
     await session.write("Choice: ")
 
 
@@ -5328,16 +5364,18 @@ async def _category_menu(session: Session, lane: DatabaseLane, actor: User) -> N
 
 
 async def _draw_category_menu(session: Session) -> None:
-    header = colored("Categories:", fg_color=HEADER_COLOR, bold=True)
-    options = "  ".join(
-        [
-            menu_key("M", "essage board category"),
-            menu_key("F", "ile-area category"),
-            menu_key("C", "hannel category"),
-            menu_key("B", "ack"),
-        ]
+    await session.write_line("\r\n" + screen_title("Categories", width=session.terminal_width))
+    await session.write_line(
+        action_bar(
+            [
+                menu_key("M", "essage board category"),
+                menu_key("F", "ile-area category"),
+                menu_key("C", "hannel category"),
+                menu_key("B", "ack"),
+            ],
+            width=session.terminal_width,
+        )
     )
-    await session.write_line(f"\r\n{header} {options}")
     await session.write("Choice: ")
 
 
@@ -5370,9 +5408,13 @@ async def _generic_category_screen(
 
 
 async def _draw_generic_category_menu(session: Session, title: str) -> None:
-    header = colored(f"{title}:", fg_color=HEADER_COLOR, bold=True)
-    options = "  ".join([menu_key("C", "reate"), menu_key("L", "ist/delete"), menu_key("B", "ack")])
-    await session.write_line(f"\r\n{header} {options}")
+    await session.write_line("\r\n" + screen_title(title, width=session.terminal_width))
+    await session.write_line(
+        action_bar(
+            [menu_key("C", "reate"), menu_key("L", "ist/delete"), menu_key("B", "ack")],
+            width=session.terminal_width,
+        )
+    )
     await session.write("Choice: ")
 
 

@@ -47,14 +47,15 @@ from netbbs.net.session import Session
 from netbbs.rendering import (
     ACCENT_COLOR,
     ERROR_COLOR,
-    HEADER_COLOR,
     MENU_KEY_COLOR,
     MUTED_COLOR,
+    action_bar,
     colored,
     colored_truncate,
     menu_key,
     reject_keystroke,
     sanitize_text,
+    screen_title,
 )
 
 T = TypeVar("T")
@@ -191,12 +192,13 @@ async def pick_item(
         start = page_index * page_size
         page_items = working_set[start : start + page_size]
 
-        header = colored(
-            f"{title} (page {page_index + 1}/{total_pages}, {len(working_set)} total)",
-            fg_color=HEADER_COLOR,
-            bold=True,
+        await session.write_line(
+            "\r\n" + screen_title(
+                title,
+                subtitle=f"page {page_index + 1}/{total_pages}, {len(working_set)} total",
+                width=session.terminal_width,
+            )
         )
-        await session.write_line(f"\r\n{header}")
         for position, item in enumerate(page_items, start=1):
             # Two numbers shown per line, deliberately: the 2-digit
             # prefix is what to press to select *this item, right now,
@@ -232,7 +234,7 @@ async def pick_item(
         if on_sort is not None:
             nav_keys.append(menu_key("O", "rder"))
         nav_keys.append(menu_key("B", "ack"))
-        nav = "  ".join(nav_keys)
+        nav = action_bar(nav_keys, width=session.terminal_width)
         # Folded into this same trailing line, not a line of its own
         # (issue #102's own "document it somewhere discoverable"
         # criterion) -- a permanent extra row here would shift every
