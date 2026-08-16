@@ -11,7 +11,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from netbbs.rendering.ansi import colored
+from netbbs.rendering.ansi import clear_screen, colored
 from netbbs.rendering.theme import (
     ERROR_COLOR,
     HEADER_COLOR,
@@ -107,8 +107,19 @@ def screen_title(
     breadcrumb: Sequence[str] = ("NetBBS",),
     subtitle: str | None = None,
     width: int = 80,
+    clear: bool = False,
 ) -> str:
-    """Render a compact location/title block with an ASCII-safe divider."""
+    """Render a compact location/title block with an ASCII-safe divider.
+
+    `clear` (dogfood feature request -- `netbbs.net.redraw_preference`),
+    if `True`, prepends `clear_screen()` -- home the cursor and blank
+    the terminal -- so this screen replaces whatever was there instead
+    of printing below it and scrolling. `False` by default, so every
+    existing caller renders byte-for-byte as before; a caller opts in
+    by passing the resolved `redraw_in_place_enabled(db, user)` value,
+    the same "resolve once, pass down" shape `menu_grid`'s own
+    `description_level` already uses -- this stays a pure rendering
+    function with no `Session`/`Database` access of its own."""
     if width < 1:
         raise ValueError("width must be >= 1")
     location = " / ".join((*breadcrumb, title)) if breadcrumb else title
@@ -116,7 +127,8 @@ def screen_title(
     if subtitle:
         lines.append(colored(cut_to_width(subtitle, width), fg_color=METADATA_COLOR))
     lines.append(colored("-" * min(width, max(12, display_width(location))), fg_color=METADATA_COLOR))
-    return "\r\n".join(lines)
+    result = "\r\n".join(lines)
+    return f"{clear_screen()}{result}" if clear else result
 
 
 @dataclass(frozen=True)

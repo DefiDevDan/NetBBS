@@ -147,6 +147,18 @@ def test_profile_menu_descriptions_toggle_cycles_off_brief_detailed(db, alice):
     assert menu_description_level(db, alice) == "brief"
 
 
+def test_profile_redraw_in_place_toggle_switches_on_and_off(db, alice):
+    from netbbs.net.redraw_preference import redraw_in_place_enabled
+
+    assert redraw_in_place_enabled(db, alice) is False  # default
+    session = FakeSession(["r", "r", "b"])
+    asyncio.run(login_flow._edit_profile(session, db, alice))
+    # First "r" turns it on, second turns it back off.
+    assert redraw_in_place_enabled(db, alice) is False
+    assert "In-place redraw is now on" in _written_text(session)
+    assert "In-place redraw is now off" in _written_text(session)
+
+
 # -- composing a new post ---------------------------------------------------
 
 

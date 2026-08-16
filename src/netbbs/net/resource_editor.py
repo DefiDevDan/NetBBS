@@ -134,6 +134,8 @@ async def edit_resource_draft(
     save_hotkey: str = "s",
     back_hotkey: str = "b",
     description_level: str = "off",
+    redraw_in_place: bool = False,
+    redraw_hint: bool = False,
 ) -> Any | None:
     """
     Drives one draft-based create/edit screen: renders `title` plus
@@ -191,11 +193,30 @@ async def edit_resource_draft(
     the screen scrolls off (dogfood-reported regression). The menu row
     falls back to the compact form, regardless of preference, whenever
     the descriptive form wouldn't fit this terminal at all.
+
+    `redraw_in_place` (dogfood feature request, `netbbs.net.
+    redraw_preference`) clears the terminal on every redraw instead of
+    printing a fresh block below the last one -- every arrow-key/Left-
+    Right/Ctrl-H press redraws this whole screen, so without it, an
+    account that's actively navigating scrolls its own history away
+    fast. Off by default, same "caller resolves the preference once,
+    this function just trusts it" shape as `description_level`.
+    `redraw_hint`, if `True`, shows a one-time contextual note after
+    this screen has already redrawn at least once in place (not on the
+    very first draw, before anything has scrolled) -- meant for an
+    account that has never touched the preference at all
+    (`redraw_in_place_ever_set`), pointing them at where to turn it on
+    now that they've actually felt the thing it fixes; the caller is
+    responsible for only passing `True` when `redraw_in_place` is off
+    and unset, not this function.
     """
     initial_draft = dict(draft)
     selected: int | None = None
+    redraw_count = 0
     while True:
-        await session.write_line("\r\n" + screen_title(title, width=session.terminal_width))
+        await session.write_line(
+            "\r\n" + screen_title(title, width=session.terminal_width, clear=redraw_in_place)
+        )
         for i, f in enumerate(fields):
             value = sanitize_text(f.render(draft))
             # One colored() call, not marker/label separately -- two
@@ -249,7 +270,14 @@ async def edit_resource_draft(
             # "does not need to cover every existing feature on day
             # one" scope extends to which screens mention it at all).
             await session.write_line(colored("(Ctrl-H for help on these fields)", fg_color=MUTED_COLOR))
+        if redraw_hint and redraw_count >= 1:
+            await session.write_line(
+                colored(
+                    "(Tip: enable in-place redraw in Your profile to stop this scrolling)", fg_color=MUTED_COLOR
+                )
+            )
         await session.write("Choice: ")
+        redraw_count += 1
         key = await _read_navigable_key(session)
 
         if key.kind == EditorKeyKind.UP:

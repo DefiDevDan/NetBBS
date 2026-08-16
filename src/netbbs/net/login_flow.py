@@ -144,6 +144,7 @@ from netbbs.net.chat_flow import (
 )
 from netbbs.net.color_depth_preference import color_depth_override, set_color_depth_override
 from netbbs.net.menu_description_preference import menu_description_level, set_menu_description_level
+from netbbs.net.redraw_preference import redraw_in_place_enabled, set_redraw_in_place_enabled
 from netbbs.net.composition import ReviewAction, edit_line_body, review_composition
 from netbbs.net.draft_storage import delete_draft, drafts_directory, load_draft
 from netbbs.net.editor_preference import fullscreen_editor_enabled, set_fullscreen_editor_enabled
@@ -3635,6 +3636,13 @@ async def _render_profile(session: Session, db: Database, user: User) -> bool:
     # description underneath it.
     description_level = menu_description_level(db, user)
     await session.write_line(_profile_field("Menu descriptions", description_level))
+    # Dogfood feature request: whether a menu-driven screen clears the
+    # terminal before reprinting itself instead of scrolling -- off by
+    # default (see netbbs.net.redraw_preference's own docstring for why
+    # this isn't asked at registration the way most other preferences
+    # aren't either).
+    redraw_on = redraw_in_place_enabled(db, user)
+    await session.write_line(_profile_field("In-place redraw", "on" if redraw_on else "off"))
 
     options = [
             MenuEntry(label=menu_key("E", "dit bio"), brief="Change your public bio text"),
@@ -3644,6 +3652,7 @@ async def _render_profile(session: Session, db: Database, user: User) -> bool:
             MenuEntry(label=menu_key("H", "istory visibility"), brief="Show your name in Last sessions"),
             MenuEntry(label=menu_key("C", "olor depth"), brief="Force a terminal color depth"),
             MenuEntry(label=menu_key("D", "escriptions"), brief="Off/brief/detailed menu text"),
+            MenuEntry(label=menu_key("R", "edraw style"), brief="Clear screen instead of scrolling"),
             MenuEntry(label=menu_key("N", "ame & details"), brief="Display name, location, age"),
             MenuEntry(label=menu_key("S", "ort preferences"), brief="Manage saved sort orders"),
             MenuEntry(label=menu_key("B", "ack"), brief="Return to the main menu"),
@@ -3732,6 +3741,13 @@ async def _edit_profile(session: Session, db: Database, user: User) -> None:
             next_value = {"off": "brief", "brief": "detailed", "detailed": "off"}[current]
             set_menu_description_level(db, user, next_value)
             await session.write_line(f"Menu descriptions are now {next_value}.")
+            visible = await _render_profile(session, db, user)
+        elif choice == "r":
+            await session.write_line("")
+            set_redraw_in_place_enabled(db, user, not redraw_in_place_enabled(db, user))
+            await session.write_line(
+                f"In-place redraw is now {'on' if redraw_in_place_enabled(db, user) else 'off'}."
+            )
             visible = await _render_profile(session, db, user)
         else:
             await session.write(reject_unhandled_key(choice))

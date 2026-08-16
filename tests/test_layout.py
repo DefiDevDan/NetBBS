@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from netbbs.rendering import MenuEntry, action_bar, badge, empty_state, menu_grid, menu_key, screen_title, visible_width
+from netbbs.rendering import MenuEntry, action_bar, badge, clear_screen, empty_state, menu_grid, menu_key, screen_title, visible_width
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -22,6 +22,22 @@ def test_screen_title_shows_location_subtitle_and_ascii_divider():
         "alice / mail caught up",
         "-------------",
     ]
+
+
+def test_screen_title_does_not_clear_by_default():
+    result = screen_title("Home", width=80)
+    assert not result.startswith(clear_screen())
+
+
+def test_screen_title_clear_prepends_clear_screen():
+    """Dogfood feature request (redraw in place instead of scrolling):
+    `clear=True` prepends the same clear_screen() sequence the
+    fullscreen editors already use for a first draw, so this screen
+    replaces whatever was on the terminal instead of printing below
+    it."""
+    result = screen_title("Home", width=80)
+    cleared = screen_title("Home", width=80, clear=True)
+    assert cleared == f"{clear_screen()}{result}"
 
 
 def test_screen_title_truncates_every_visible_line_to_terminal_width():

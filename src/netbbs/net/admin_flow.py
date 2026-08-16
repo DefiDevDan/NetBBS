@@ -225,6 +225,7 @@ from netbbs.net.shutdown import (
     run_shutdown_sequence,
 )
 from netbbs.net.menu_description_preference import menu_description_level
+from netbbs.net.redraw_preference import redraw_in_place_enabled, redraw_in_place_ever_set
 from netbbs.operational_history import list_operational_run_history
 from netbbs.selfupdate import (
     UpdateError,
@@ -3952,6 +3953,19 @@ def _name_requirement_step(key: str = "name_requirement") -> Callable[[dict, int
     return choice_step(key, _NAME_REQUIREMENT_VALUES)
 
 
+def _resolve_redraw_preference(db: Database, actor: User) -> tuple[bool, bool]:
+    """`(redraw_in_place, show_hint)` for `edit_resource_draft` -- one
+    `lane.run` round trip instead of two, resolved once by the caller
+    before entering the screen, the same "caller resolves, function
+    just trusts it" shape `description_level` already uses. The hint
+    is only ever worth showing when the preference is both off and
+    never explicitly touched -- an account that already turned it on,
+    or already turned it down, doesn't need to be told about it again."""
+    enabled = redraw_in_place_enabled(db, actor)
+    show_hint = not enabled and not redraw_in_place_ever_set(db, actor)
+    return enabled, show_hint
+
+
 # Dogfood feature request, issue #150's own concrete example ("new
 # SysOps have absolutely no clue what name requirements do"): Ctrl-H
 # help text for every FieldSpec below that exposes this field. One
@@ -4165,12 +4179,14 @@ async def _community_screen(
             default_name_requirement=draft["default_name_requirement"], changed_by=actor,
         )
 
+    redraw_in_place, redraw_hint = await lane.run(_resolve_redraw_preference, actor)
     community = await edit_resource_draft(
         session, lane,
         title="Edit Community" if existing is not None else "Create Community",
         fields=_community_field_specs(), draft=draft, save=save, error_type=CommunityError,
         save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
         description_level=await lane.run(menu_description_level, actor),
+        redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
     )
     if community is not None:
         verb = "Updated" if existing is not None else "Created Community"
@@ -4466,12 +4482,14 @@ async def _board_screen(
             name_requirement=draft["name_requirement"], community_id=draft["community_id"], changed_by=actor,
         )
 
+    redraw_in_place, redraw_hint = await lane.run(_resolve_redraw_preference, actor)
     board = await edit_resource_draft(
         session, lane,
         title="Edit message board" if existing is not None else "Create message board",
         fields=_board_field_specs(), draft=draft, save=save, error_type=BoardError,
         save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
         description_level=await lane.run(menu_description_level, actor),
+        redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
     )
     if board is not None:
         verb = "Updated" if existing is not None else "Created message board"
@@ -5286,12 +5304,14 @@ async def _area_screen(
             name_requirement=draft["name_requirement"], community_id=draft["community_id"], changed_by=actor,
         )
 
+    redraw_in_place, redraw_hint = await lane.run(_resolve_redraw_preference, actor)
     area = await edit_resource_draft(
         session, lane,
         title="Edit file area" if existing is not None else "Create file area",
         fields=_area_field_specs(), draft=draft, save=save, error_type=FileAreaError,
         save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
         description_level=await lane.run(menu_description_level, actor),
+        redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
     )
     if area is not None:
         verb = "Updated" if existing is not None else "Created file area"
@@ -5749,12 +5769,14 @@ async def _channel_screen(
             community_id=draft["community_id"], changed_by=actor,
         )
 
+    redraw_in_place, redraw_hint = await lane.run(_resolve_redraw_preference, actor)
     channel = await edit_resource_draft(
         session, lane,
         title="Edit chat channel" if existing is not None else "Create chat channel",
         fields=_channel_field_specs(), draft=draft, save=save, error_type=ChannelError,
         save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
         description_level=await lane.run(menu_description_level, actor),
+        redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
     )
     if channel is not None:
         verb = "Updated" if existing is not None else "Created chat channel"

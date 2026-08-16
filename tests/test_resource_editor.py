@@ -11,6 +11,7 @@ import asyncio
 import pytest
 
 from netbbs.net.char_input import CANCEL_KEY, HELP_KEY, EditorKey, EditorKeyKind
+from netbbs.rendering import clear_screen
 from netbbs.net.char_input import read_editor_key as _raw_read_editor_key
 from netbbs.net.resource_editor import (
     FieldSpec,
@@ -1081,3 +1082,97 @@ def test_description_level_brief_still_shows_when_it_fits():
     )
     assert result == "saved"
     assert "Shown at the top of listings" in _written_text(session)
+
+
+# -- redraw-in-place (dogfood feature request) -------------------------------
+
+
+def test_redraw_in_place_off_by_default_never_clears():
+    async def save(draft):
+        return "saved"
+
+    session = NavigableFakeSession(["DOWN", "s"])
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Edit thing", fields=[_name_field(), _pinned_field()], draft={},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        )
+    )
+    assert result == "saved"
+    assert clear_screen() not in _written_text(session)
+
+
+def test_redraw_in_place_clears_on_every_redraw():
+    """Dogfood feature request: an account that turned this on gets a
+    cleared screen every time this loop redraws -- including the very
+    first draw (entering this screen is itself a "menu changed"
+    moment), not just after a state-changing keystroke."""
+    async def save(draft):
+        return "saved"
+
+    session = NavigableFakeSession(["DOWN", "s"])
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Edit thing", fields=[_name_field(), _pinned_field()], draft={},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+            redraw_in_place=True,
+        )
+    )
+    assert result == "saved"
+    text = _written_text(session)
+    # Entered once (first draw) + redrawn once more after DOWN.
+    assert text.count(clear_screen()) == 2
+
+
+def test_redraw_hint_not_shown_on_the_first_draw():
+    async def save(draft):
+        return "saved"
+
+    session = FakeSession(["s"])
+    asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Edit thing", fields=[_name_field()], draft={},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+            redraw_hint=True,
+        )
+    )
+    assert "enable in-place redraw" not in _written_text(session)
+
+
+def test_redraw_hint_shown_after_a_real_redraw():
+    async def save(draft):
+        return "saved"
+
+    session = NavigableFakeSession(["DOWN", "s"])
+    asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Edit thing", fields=[_name_field(), _pinned_field()], draft={},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+            redraw_hint=True,
+        )
+    )
+    assert "enable in-place redraw" in _written_text(session)
+
+
+def test_redraw_hint_omitted_when_not_requested():
+    async def save(draft):
+        return "saved"
+
+    session = NavigableFakeSession(["DOWN", "s"])
+    asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Edit thing", fields=[_name_field(), _pinned_field()], draft={},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        )
+    )
+    assert "enable in-place redraw" not in _written_text(session)
