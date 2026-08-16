@@ -401,6 +401,27 @@ def list_files_page(
     return FileEntryPage(entries=entries, has_older=bool(has_older), has_newer=bool(has_newer))
 
 
+def count_visible_files(db: Database, area: FileArea) -> tuple[int, str | None]:
+    """
+    Total visible (approved) files in `area`, plus the most recent
+    one's `created_at` (`None` if there are none).
+
+    For admin/reporting surfaces (`netbbs.net.admin_flow`'s file-area
+    detail screen -- dogfood follow-up: a SysOp had no way to tell a
+    dead area from an active one without leaving admin and browsing it
+    as an ordinary caller, mirroring `netbbs.boards.posts.
+    count_visible_posts`'s same gap for boards) -- not gated by
+    `min_read_level` since only a SysOp already inside the admin
+    console reaches this.
+    """
+    _sweep_expired_files(db, area)
+    row = db.connection.execute(
+        "SELECT COUNT(*), MAX(created_at) FROM files WHERE area_id = ? AND status = 'approved'",
+        (area.id,),
+    ).fetchone()
+    return row[0], row[1]
+
+
 def download_file(entry: FileEntry) -> bytes:
     """Read a file entry's bytes back from storage."""
     return read_bytes(Path(entry.storage_path))

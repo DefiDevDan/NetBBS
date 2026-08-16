@@ -18,6 +18,7 @@ from netbbs.files.areas import create_file_area
 from netbbs.files.entries import (
     FileEntryError,
     approve_file,
+    count_visible_files,
     delete_file,
     get_file,
     get_file_by_name,
@@ -242,6 +243,35 @@ def test_list_pinned_files_empty_by_default(db, alice, bob):
     area = create_file_area(db, "docs", creator=alice)
     upload_file(db, area, bob, "hello.txt", b"data")
     assert list_pinned_files(db, area, requesting_user=bob) == []
+
+
+# -- count_visible_files -----------------------------------------------------
+
+
+def test_count_visible_files_on_an_empty_area(db, alice):
+    area = create_file_area(db, "docs", creator=alice)
+    count, last_created_at = count_visible_files(db, area)
+    assert count == 0
+    assert last_created_at is None
+
+
+def test_count_visible_files_counts_approved_and_reports_latest(db, alice, bob):
+    area = create_file_area(db, "docs", creator=alice)
+    upload_file(db, area, bob, "first.txt", b"data")
+    newest = upload_file(db, area, bob, "second.txt", b"data")
+
+    count, last_created_at = count_visible_files(db, area)
+    assert count == 2
+    assert last_created_at == newest.created_at
+
+
+def test_count_visible_files_excludes_pending_files(db, alice, bob):
+    area = create_file_area(db, "docs", creator=alice, moderated=True)
+    upload_file(db, area, bob, "needs-approval.txt", b"data")
+
+    count, last_created_at = count_visible_files(db, area)
+    assert count == 0
+    assert last_created_at is None
 
 
 # -- expiry sweep -----------------------------------------------------------

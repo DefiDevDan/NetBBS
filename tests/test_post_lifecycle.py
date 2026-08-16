@@ -14,6 +14,7 @@ from netbbs.boards.boards import create_board
 from netbbs.boards.posts import (
     PostError,
     approve_post,
+    count_visible_posts,
     create_post,
     delete_post,
     edit_post,
@@ -399,6 +400,45 @@ def test_list_pinned_posts_empty_by_default(db, alice, bob):
     board = create_board(db, "general", creator=alice)
     create_post(db, board, bob, "Hello", "Body")
     assert list_pinned_posts(db, board, requesting_user=bob) == []
+
+
+# -- count_visible_posts -----------------------------------------------------
+
+
+def test_count_visible_posts_on_an_empty_board(db, alice):
+    board = create_board(db, "general", creator=alice)
+    count, last_created_at = count_visible_posts(db, board)
+    assert count == 0
+    assert last_created_at is None
+
+
+def test_count_visible_posts_counts_approved_roots_and_reports_latest(db, alice, bob):
+    board = create_board(db, "general", creator=alice)
+    create_post(db, board, bob, "First", "Body")
+    newest = create_post(db, board, bob, "Second", "Body")
+
+    count, last_created_at = count_visible_posts(db, board)
+    assert count == 2
+    assert last_created_at == newest.created_at
+
+
+def test_count_visible_posts_excludes_pending_posts(db, alice, bob):
+    board = create_board(db, "general", creator=alice, moderated=True)
+    create_post(db, board, bob, "Needs approval", "Body")
+
+    count, last_created_at = count_visible_posts(db, board)
+    assert count == 0
+    assert last_created_at is None
+
+
+def test_count_visible_posts_reflects_an_edit_without_double_counting(db, sysop, alice, bob):
+    board = create_board(db, "general", creator=alice)
+    grant_permissions(db, sysop, object_type="board", object_id=board.id, permissions=BoardPermission.EDIT, granted_by=sysop)
+    post = create_post(db, board, bob, "Original", "Body")
+    edit_post(db, post, board, subject="Edited", body="New body", edited_by=bob)
+
+    count, _last_created_at = count_visible_posts(db, board)
+    assert count == 1
 
 
 # -- expiry sweep -----------------------------------------------------------

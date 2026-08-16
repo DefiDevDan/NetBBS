@@ -388,6 +388,19 @@ _DEFAULT_PAGE_SIZE = 5
 
 PostCursor = tuple[str, str]  # (created_at, post_id) -- see PostPage/list_posts_page
 
+# A root qualifies as long as *some* row sharing its root_post_id is
+# currently approved -- not necessarily the root row itself, which may
+# have expired while a later edit stayed fresh. Shared between
+# `list_posts_page` and `count_visible_posts` so both agree on exactly
+# which posts "count" as visible.
+_HAS_APPROVED_VERSION_SQL = """
+    EXISTS (
+        SELECT 1 FROM posts v
+        WHERE v.root_post_id = root.root_post_id AND v.board_id = root.board_id
+          AND v.status = 'approved'
+    )
+"""
+
 
 @dataclass(frozen=True)
 class PostPage:
@@ -482,18 +495,7 @@ def list_posts_page(
 
     _sweep_expired_posts(db, board)
 
-    # A root qualifies as long as *some* row sharing its root_post_id is
-    # currently approved -- not necessarily the root row itself, which
-    # may have expired while a later edit stayed fresh. Position/cursor
-    # ordering still uses the root's own (created_at, post_id), never
-    # the approved row's, so editing can't reorder the feed.
-    _has_approved_version = """
-        EXISTS (
-            SELECT 1 FROM posts v
-            WHERE v.root_post_id = root.root_post_id AND v.board_id = root.board_id
-              AND v.status = 'approved'
-        )
-    """
+    _has_approved_version = _HAS_APPROVED_VERSION_SQL
 
     if after is not None:
         created_at, post_id = after
@@ -569,6 +571,32 @@ def list_posts_page(
         (board.id, newest.created_at, newest.post_id),
     ).fetchone()[0]
     return PostPage(posts=posts, has_older=bool(has_older), has_newer=bool(has_newer))
+
+
+def count_visible_posts(db: Database, board: Board) -> tuple[int, str | None]:
+    """
+    Total visible (approved) posts on `board`, plus the most recent
+    one's `created_at` (`None` if there are none).
+
+    For admin/reporting surfaces (`netbbs.net.admin_flow`'s board
+    detail screen -- dogfood follow-up: a SysOp trying to spot a dead
+    board versus an active one had no way to tell without leaving
+    admin and browsing it as an ordinary reader) -- not gated by
+    `min_read_level` since only a SysOp already inside the admin
+    console reaches this. Uses the same root-eligibility rule as
+    `list_posts_page` (`_HAS_APPROVED_VERSION_SQL`) so the count
+    matches what an actual reader would see.
+    """
+    _sweep_expired_posts(db, board)
+    row = db.connection.execute(
+        f"""
+        SELECT COUNT(*), MAX(root.created_at) FROM posts root
+        WHERE root.board_id = ? AND root.post_id = root.root_post_id
+          AND {_HAS_APPROVED_VERSION_SQL}
+        """,
+        (board.id,),
+    ).fetchone()
+    return row[0], row[1]
 
 
 def approve_post(db: Database, post: Post, *, approved_by: User) -> Post:

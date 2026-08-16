@@ -249,6 +249,21 @@ def test_check_outcome_round_trip(tmp_path):
     db.close()
 
 
+def test_record_check_outcome_appends_to_operational_run_history(tmp_path):
+    # Dogfood follow-up: get_last_check_summary only ever tracks the
+    # single most recent point in time -- a SysOp couldn't tell "this
+    # runs on a healthy schedule" from "it happened to succeed once".
+    from netbbs.operational_history import list_operational_run_history
+
+    db = Database(tmp_path / "node.db")
+    record_check_outcome(db, "up to date (v2.1.0)")
+    record_check_outcome(db, "applied v2.2.0 successfully")
+
+    history = list_operational_run_history(db, "update_check")
+    assert [r.outcome for r in history] == ["applied v2.2.0 successfully", "up to date (v2.1.0)"]
+    db.close()
+
+
 # -- run_scheduled_update_check (sleep injected -- no real waiting) ---------
 
 

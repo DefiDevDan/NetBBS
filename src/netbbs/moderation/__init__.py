@@ -19,6 +19,7 @@ from netbbs.moderation.log import (
     ModerationLogEntry,
     list_actions_for_object,
     list_actions_for_target_user,
+    list_recent_actions,
     record_action,
 )
 from netbbs.moderation.roles import (
@@ -45,6 +46,7 @@ __all__ = [
     "ModerationLogEntry",
     "list_actions_for_object",
     "list_actions_for_target_user",
+    "list_recent_actions",
     "record_action",
     "BoardPermission",
     "ChannelPermission",

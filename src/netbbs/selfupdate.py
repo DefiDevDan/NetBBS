@@ -37,6 +37,7 @@ from typing import Awaitable, Callable
 from urllib.error import URLError
 
 from netbbs.config import get_config, set_config
+from netbbs.operational_history import record_operational_run
 from netbbs.storage.database import Database
 from netbbs.timeutil import utc_now_iso
 
@@ -179,6 +180,11 @@ def record_check_outcome(db: Database, outcome: str) -> None:
     rolled back to v2.1.0"."""
     set_config(db, _LAST_CHECK_AT_CONFIG_KEY, utc_now_iso())
     set_config(db, _LAST_OUTCOME_CONFIG_KEY, outcome)
+    # Dogfood follow-up: the two lines above only ever kept the single
+    # most recent point in time, overwritten on every check -- a SysOp
+    # could not tell "this runs on a healthy schedule" from "it happened
+    # to succeed once."
+    record_operational_run(db, "update_check", outcome)
 
 
 def get_last_check_summary(db: Database) -> tuple[str | None, str | None]:

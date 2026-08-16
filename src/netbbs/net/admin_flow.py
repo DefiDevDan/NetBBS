@@ -83,6 +83,7 @@ from netbbs.boards.posts import (
     Post,
     PostError,
     approve_post,
+    count_visible_posts,
     delete_post,
     list_pending_posts,
     set_post_exempt,
@@ -118,6 +119,7 @@ from netbbs.files.gc import GCReport, reclaim_orphaned_blobs
 from netbbs.files.entries import (
     FileEntry,
     approve_file,
+    count_visible_files,
     delete_file,
     list_pending_files,
     set_file_exempt,
@@ -193,7 +195,7 @@ from netbbs.link.work_items import (
     replay_work_item,
 )
 from netbbs.moderation.blocklist import BlocklistError, block_user, is_blocked, unblock_user
-from netbbs.moderation.log import list_actions_for_target_user, record_action
+from netbbs.moderation.log import list_actions_for_target_user, list_recent_actions, record_action
 from netbbs.moderation.roles import (
     BoardPermission,
     ChannelPermission,
@@ -215,6 +217,7 @@ from netbbs.net.shutdown import (
     run_drain_sequence,
     run_shutdown_sequence,
 )
+from netbbs.operational_history import list_operational_run_history
 from netbbs.selfupdate import (
     UpdateError,
     check_latest_release,
@@ -313,7 +316,7 @@ async def admin_menu(
         if choice == "b":
             await session.write_line("")
             return
-        elif choice == "d":
+        elif choice == "r":
             dashboard_state = await _draw_admin_menu(
                 session, lane, user, node_controls=node_controls, link_context=link_context
             )
@@ -378,10 +381,13 @@ async def _draw_admin_menu(
     """Render the SysOp landing page as an operations overview, not a link list."""
 
     def _load(db: Database) -> dict[str, object]:
-        pending_users = sum(user.pending_approval for user in list_users(db))
-        pending_posts = sum(len(list_pending_posts(db, board, requesting_user=actor)) for board in list_boards(db))
+        all_users = list_users(db)
+        all_boards = list_boards(db)
+        all_areas = list_file_areas(db)
+        pending_users = sum(user.pending_approval for user in all_users)
+        pending_posts = sum(len(list_pending_posts(db, board, requesting_user=actor)) for board in all_boards)
         pending_files = sum(
-            len(list_pending_files(db, area, requesting_user=actor)) for area in list_file_areas(db)
+            len(list_pending_files(db, area, requesting_user=actor)) for area in all_areas
         )
         dead_letters = len(list_work_items(db, status="dead_lettered")) if link_context is not None else 0
         recent_diagnostics = list_diagnostic_log_entries(db, limit=20) if link_context is not None else []
@@ -389,6 +395,16 @@ async def _draw_admin_menu(
             "pending_users": pending_users,
             "pending_posts": pending_posts,
             "pending_files": pending_files,
+            # Dogfood follow-up: the dashboard previously showed only
+            # *pending* counts (always 0 on a quiet node) with no sense
+            # of overall node scale at all -- a SysOp glancing at the
+            # landing screen couldn't tell how many users/boards/posts/
+            # files actually exist.
+            "total_users": len(all_users),
+            "total_boards": len(all_boards),
+            "total_posts": sum(count_visible_posts(db, board)[0] for board in all_boards),
+            "total_areas": len(all_areas),
+            "total_files": sum(count_visible_files(db, area)[0] for area in all_areas),
             "dead_letters": dead_letters,
             "recent_errors": sum(entry.level == "ERROR" for entry in recent_diagnostics),
             "recent_warnings": sum(entry.level == "WARNING" for entry in recent_diagnostics),
@@ -432,6 +448,12 @@ async def _draw_admin_menu(
             f"Dead letters: {state['dead_letters']}"
         )
 
+    await session.write_line(colored("CONTENT", fg_color=LABEL_COLOR, bold=True))
+    await session.write_line(
+        f"  Users: {state['total_users']}  Boards: {state['total_boards']}  "
+        f"Posts: {state['total_posts']}  File areas: {state['total_areas']}  Files: {state['total_files']}"
+    )
+
     pending_total = state["pending_users"] + state["pending_posts"] + state["pending_files"]
     await session.write_line(colored("ATTENTION", fg_color=LABEL_COLOR, bold=True))
     await session.write_line(f"  Moderation: {pending_total} pending")
@@ -456,7 +478,15 @@ async def _draw_admin_menu(
     await session.write_line(colored("\r\nCONSOLE", fg_color=HEADER_COLOR, bold=True))
     await session.write_line(action_bar(
         [menu_key("U", "sers"), menu_key("C", "ontent"), menu_key("O", "perations"),
-         menu_key("S", "ettings"), menu_key("D", "ashboard"), menu_key("B", "ack")],
+         menu_key("S", "ettings"),
+         # Dogfood follow-up: this used to say "Dashboard" (hotkey "d"),
+         # which reads as a promise of some separate, deeper stats view
+         # -- it's actually a manual redraw of the exact screen already
+         # on display (see the "r" dispatch case in `admin_menu`).
+         # "Refresh" says what it actually does; "d" wasn't a natural
+         # fit for that word, so the hotkey moves to "r" (unused at
+         # this menu) rather than forcing a mismatched letter.
+         menu_key("R", "efresh"), menu_key("B", "ack")],
         width=session.terminal_width,
     ))
     quick = [menu_key("K", "up", prefix="Bac")]
@@ -561,7 +591,7 @@ async def _operations_menu(
                 width=session.terminal_width,
             )
         )
-        options = [menu_key("K", "up status", prefix="Bac"), menu_key("P", "rune drafts")]
+        options = [menu_key("K", "up status", prefix="Bac"), menu_key("P", "rune drafts"), menu_key("A", "udit log")]
         if node_controls is not None:
             options.insert(0, menu_key("N", "ode and sessions"))
         if link_context is not None:
@@ -593,6 +623,8 @@ async def _operations_menu(
             await _backup_status_screen(session, lane, actor)
         elif choice == "p":
             await _prune_drafts_screen(session, lane)
+        elif choice == "a":
+            await _audit_log_screen(session, lane)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -1985,6 +2017,18 @@ async def _update_settings_screen(session: Session, lane: DatabaseLane, actor: U
             colored("Last check: ", fg_color=LABEL_COLOR)
             + colored(f"{when} -- {sanitize_text(outcome or '')}", fg_color=METADATA_COLOR)
         )
+        # Dogfood follow-up: "Last check" alone couldn't distinguish
+        # "runs on a healthy schedule" from "happened to succeed once"
+        # -- a few of the most recent runs make a gap or a run of
+        # consecutive failures visible at a glance.
+        history = await lane.run(list_operational_run_history, "update_check", limit=5)
+        if len(history) > 1:
+            await session.write_line(colored("Recent checks:", fg_color=MUTED_COLOR))
+            for run in history:
+                run_when = format_for_display(
+                    run.created_at, override_format=display_format, override_timezone=display_timezone
+                )
+                await session.write_line(f"  {run_when}: {sanitize_text(run.outcome)}")
     else:
         await session.write_line(colored("No check has been run on this node yet.", fg_color=MUTED_COLOR))
 
@@ -2049,6 +2093,7 @@ async def _backup_status_screen(session: Session, lane: DatabaseLane, actor: Use
     `_link_status_screen`.
     """
     checked_at, path = await lane.run(get_last_backup_summary)
+    history = await lane.run(list_operational_run_history, "backup", limit=5)
 
     await session.write_line(
         "\r\n"
@@ -2081,6 +2126,18 @@ async def _backup_status_screen(session: Session, lane: DatabaseLane, actor: Use
     await session.write_line(
         colored("Run 'python -m netbbs.backup create --to <path>' to create one.", fg_color=MUTED_COLOR)
     )
+    # Dogfood follow-up: the single "Last backup" line above couldn't
+    # distinguish "runs on a healthy schedule" from "happened to
+    # succeed once" -- a few of the most recent runs make a gap or an
+    # irregular cadence visible at a glance.
+    if len(history) > 1:
+        display_format, display_timezone = await lane.run(resolve_display_preferences)
+        await session.write_line(colored("\r\nRecent backups:", fg_color=MUTED_COLOR))
+        for run in history:
+            when = format_for_display(
+                run.created_at, override_format=display_format, override_timezone=display_timezone
+            )
+            await session.write_line(f"  {when}: {sanitize_text(run.outcome)}")
 
 
 # -- node-wide display format/timezone -------------------------------------
@@ -2426,6 +2483,80 @@ async def _diagnostic_log_screen(session: Session, lane: DatabaseLane) -> None:
     await session.write_line(f"Level: {colored(selected.level, fg_color=level_color, bold=True)}")
     await session.write_line(colored(f"Logger: {sanitize_text(selected.logger_name)}", fg_color=MUTED_COLOR))
     await session.write_line(f"Message: {sanitize_text(selected.message)}")
+
+
+async def _audit_log_screen(session: Session, lane: DatabaseLane) -> None:
+    """
+    Read-only, node-wide moderation/admin audit trail (dogfood follow-
+    up: `list_actions_for_object`/`list_actions_for_target_user` only
+    ever answer "what happened to this specific user/board/channel" --
+    a SysOp investigating "did anything bad happen on this node
+    recently" had no way to ask that without already knowing who or
+    what to check). Mirrors `_diagnostic_log_screen`'s own shape
+    (bounded list, newest-first toggle, pick an entry for its full
+    detail) since both are "here's what's been logged lately" screens.
+    """
+    await session.write_line(colored("\r\nAudit log:", fg_color=HEADER_COLOR, bold=True))
+    entries = await lane.run(list_recent_actions)
+    if not entries:
+        await session.write_line(colored("Nothing logged yet.", fg_color=MUTED_COLOR))
+        return
+
+    ascending = not await prompt_yes_no(session, "Show newest first?", default=True)
+    order_label = "oldest first" if ascending else "most recent first"
+    if ascending:
+        entries = list(reversed(entries))
+
+    def _resolve_names(db: Database) -> dict[int, str]:
+        ids = {entry.actor_user_id for entry in entries if entry.actor_user_id is not None}
+        ids |= {entry.target_user_id for entry in entries if entry.target_user_id is not None}
+        names: dict[int, str] = {}
+        for user_id in ids:
+            user = get_user_by_id(db, user_id)
+            names[user_id] = user.username if user is not None else "(deleted account)"
+        return names
+
+    usernames = await lane.run(_resolve_names)
+
+    def _actor_name(entry) -> str:
+        if entry.actor_user_id is None:
+            return "(system)"
+        return usernames.get(entry.actor_user_id, "(deleted account)")
+
+    def _row_label(entry) -> str:
+        return f"{entry.created_at}  {entry.action}  (by {_actor_name(entry)})"
+
+    def _row_description(entry) -> str:
+        parts = []
+        if entry.object_type is not None:
+            parts.append(f"{entry.object_type} #{entry.object_id}")
+        if entry.target_user_id is not None:
+            parts.append(f"target: {usernames.get(entry.target_user_id, '(deleted account)')}")
+        if entry.detail:
+            parts.append(sanitize_text(entry.detail))
+        return "  ".join(parts) if parts else "(no detail)"
+
+    selected = await pick_item(
+        session, entries,
+        name_of=_row_label,
+        stable_id_of=lambda entry: entry.id,
+        description_of=_row_description,
+        title=f"Audit log ({order_label})",
+        empty_message="Nothing logged yet.",
+    )
+    if selected is None:
+        return
+
+    await session.write_line(colored(f"\r\nWhen: {selected.created_at}", fg_color=MUTED_COLOR))
+    await session.write_line(f"Action: {sanitize_text(selected.action)}")
+    await session.write_line(f"By: {sanitize_text(_actor_name(selected))}")
+    if selected.object_type is not None:
+        await session.write_line(f"Object: {sanitize_text(selected.object_type)} #{selected.object_id}")
+    if selected.target_user_id is not None:
+        target_name = usernames.get(selected.target_user_id, "(deleted account)")
+        await session.write_line(f"Target: {sanitize_text(target_name)}")
+    if selected.detail:
+        await session.write_line(f"Detail: {sanitize_text(selected.detail)}")
 
 
 # How often `_diagnostic_log_tail_screen` polls for new rows -- the log
@@ -4474,6 +4605,18 @@ async def _draw_board_detail(
         "\r\n" + screen_title(sanitize_text(board.name), width=session.terminal_width)
     )
     await session.write_line(f"Description: {sanitize_text(board.description) if board.description else '(none)'}")
+    # Dogfood follow-up: nothing on this screen (or the board-list picker)
+    # ever showed how many posts actually exist or when the last one was
+    # made -- a SysOp trying to spot a dead board versus an active one had
+    # no way to tell without leaving admin and browsing it as an ordinary
+    # reader.
+    post_count, last_post_at = await lane.run(count_visible_posts, board)
+    if last_post_at is None:
+        activity = "no posts yet"
+    else:
+        display_format, display_timezone = await lane.run(resolve_display_preferences)
+        activity = f"last post {format_for_display(last_post_at, override_format=display_format, override_timezone=display_timezone)}"
+    await session.write_line(f"Posts: {post_count} ({activity})")
     await session.write_line(f"Community: {await lane.run(_community_label, board.community_id)}")
     read_level = board.min_read_level if board.min_read_level is not None else "inherit"
     write_level = board.min_write_level if board.min_write_level is not None else "inherit"
@@ -4943,6 +5086,13 @@ async def _draw_area_detail(
         "\r\n" + screen_title(sanitize_text(area.name), width=session.terminal_width)
     )
     await session.write_line(f"Description: {sanitize_text(area.description) if area.description else '(none)'}")
+    file_count, last_file_at = await lane.run(count_visible_files, area)
+    if last_file_at is None:
+        activity = "no files yet"
+    else:
+        display_format, display_timezone = await lane.run(resolve_display_preferences)
+        activity = f"last upload {format_for_display(last_file_at, override_format=display_format, override_timezone=display_timezone)}"
+    await session.write_line(f"Files: {file_count} ({activity})")
     await session.write_line(f"Community: {await lane.run(_community_label, area.community_id)}")
     read_level = area.min_read_level if area.min_read_level is not None else "inherit"
     write_level = area.min_write_level if area.min_write_level is not None else "inherit"

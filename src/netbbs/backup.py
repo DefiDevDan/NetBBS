@@ -78,6 +78,7 @@ from pathlib import Path
 from netbbs import __version__
 from netbbs.config import get_config, set_config
 from netbbs.link.node_identity import NodeIdentity, NodeIdentityError
+from netbbs.operational_history import record_operational_run
 from netbbs.selfupdate import snapshot_database
 from netbbs.storage.database import Database
 from netbbs.storage.migrations import MIGRATIONS
@@ -231,6 +232,7 @@ def _record_backup_state(db_path: Path, destination: Path) -> None:
     try:
         set_config(db, _LAST_BACKUP_AT_CONFIG_KEY, utc_now_iso())
         set_config(db, _LAST_BACKUP_PATH_CONFIG_KEY, str(destination))
+        record_operational_run(db, "backup", "succeeded", detail=str(destination))
     finally:
         db.close()
 

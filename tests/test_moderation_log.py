@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 
 from netbbs.auth.users import create_user
-from netbbs.moderation import list_actions_for_object, list_actions_for_target_user, record_action
+from netbbs.moderation import (
+    list_actions_for_object,
+    list_actions_for_target_user,
+    list_recent_actions,
+    record_action,
+)
 from netbbs.storage.database import Database
 
 
@@ -92,3 +97,36 @@ def test_list_actions_for_target_user_excludes_other_users(db, sysop, alice):
     record_action(db, actor=sysop, action="grant", object_type="board", object_id=1, target_user_id=alice.id)
     entries = list_actions_for_target_user(db, bob.id)
     assert entries == []
+
+
+# -- site-wide recent actions -----------------------------------------------
+
+
+def test_list_recent_actions_spans_every_user_and_object(db, sysop, alice):
+    bob = create_user(db, "bob", password="hunter2", user_level=10)
+    record_action(db, actor=sysop, action="grant", object_type="board", object_id=1, target_user_id=alice.id)
+    record_action(db, actor=sysop, action="mute", object_type="channel", object_id=1, target_user_id=bob.id)
+    # Dogfood follow-up: unlike list_actions_for_object/
+    # list_actions_for_target_user, this doesn't require already
+    # knowing which specific user or object to check.
+    entries = list_recent_actions(db)
+    assert {e.action for e in entries} == {"grant", "mute"}
+
+
+def test_list_recent_actions_is_most_recent_first(db, sysop, alice):
+    record_action(db, actor=sysop, action="first", target_user_id=alice.id)
+    record_action(db, actor=sysop, action="second", target_user_id=alice.id)
+    entries = list_recent_actions(db)
+    assert [e.action for e in entries] == ["second", "first"]
+
+
+def test_list_recent_actions_respects_limit(db, sysop, alice):
+    for i in range(5):
+        record_action(db, actor=sysop, action=f"action-{i}", target_user_id=alice.id)
+    entries = list_recent_actions(db, limit=2)
+    assert len(entries) == 2
+    assert [e.action for e in entries] == ["action-4", "action-3"]
+
+
+def test_list_recent_actions_empty_when_nothing_recorded(db):
+    assert list_recent_actions(db) == []

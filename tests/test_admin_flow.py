@@ -161,6 +161,57 @@ def test_sysop_lands_on_an_operations_overview(db, lane, sysop):
     assert "QUICK" in text
 
 
+def test_console_refresh_key_is_labeled_refresh_not_dashboard(db, lane, sysop):
+    # Dogfood follow-up: "[D]ashboard" read as a promise of a separate,
+    # deeper stats view -- it's actually a manual redraw of the exact
+    # screen already on display. The hotkey moves to "r" since "d"
+    # isn't a natural fit for "Refresh".
+    session = FakeSession(["r", "b"])
+    _run(session, lane, sysop)
+
+    text = _written_text(session)
+    # menu_key colors the bracketed hotkey separately from the rest of
+    # the word, so "efresh" (not "Refresh") is the contiguous, uncolored
+    # substring actually in the rendered text -- same reason other
+    # menu_key-label assertions in this file check the tail, not the
+    # whole word.
+    assert "efresh" in text
+    assert "ashboard" not in text
+    # Still functions: pressing "r" redraws the same overview screen.
+    assert text.count("SysOp operations console") == 2
+
+
+def test_dashboard_shows_real_node_scale_totals_not_just_pending_counts(db, lane, sysop):
+    # Dogfood follow-up: the landing screen previously showed only
+    # *pending* counts (always 0 on a quiet node) with no sense of
+    # overall node scale at all.
+    from netbbs.boards.boards import create_board
+    from netbbs.boards.posts import create_post
+    from netbbs.files.areas import create_file_area
+    from netbbs.files.entries import upload_file
+
+    alice = create_user(db, "alice", password="hunter2", user_level=10)
+    board = create_board(db, "General", creator=sysop)
+    create_post(db, board, alice, "Hello", "Body text")
+    area = create_file_area(db, "docs", creator=sysop)
+    upload_file(db, area, alice, "readme.txt", b"data")
+
+    session = FakeSession(["b"])
+    _run(session, lane, sysop)
+
+    text = _written_text(session)
+    assert "CONTENT" in text
+    # 3 users: sysop, alice, plus the fixture's own db setup creates none
+    # extra -- counted directly rather than hardcoded in case that
+    # changes.
+    from netbbs.auth.users import list_users
+    assert f"Users: {len(list_users(db))}" in text
+    assert "Boards: 1" in text
+    assert "Posts: 1" in text
+    assert "File areas: 1" in text
+    assert "Files: 1" in text
+
+
 def test_live_sysop_overview_surfaces_node_and_link_health(db, lane, sysop):
     node_controls = _node_controls()
     link_context = _link_context()
@@ -480,6 +531,37 @@ def test_user_detail_recent_admin_actions_show_who_performed_them(db, lane, syso
     text = _written_text(session)
     assert "level" in text.lower()
     assert "(by sysop)" in text
+
+
+# -- audit log ----------------------------------------------------------
+
+
+def test_audit_log_empty_state(db, lane, sysop):
+    session = FakeSession(["o", "a", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Nothing logged yet." in _written_text(session)
+
+
+def test_audit_log_lists_actions_across_every_user_and_shows_full_detail(db, lane, sysop):
+    # Dogfood follow-up: a SysOp investigating "did anything happen on
+    # this node recently" previously had no way to ask that without
+    # already knowing which specific user/board/channel to check.
+    from netbbs.moderation import record_action
+
+    alice = create_user(db, "alice", password="hunter2", user_level=10)
+    record_action(
+        db, actor=sysop, action="promote", target_user_id=alice.id, detail="user_level 10 -> 50"
+    )
+
+    session = FakeSession(["o", "a", "y", "0", "1", "b", "b"])
+    _run(session, lane, sysop)
+
+    text = _written_text(session)
+    assert "promote" in text
+    assert "by sysop" in text
+    assert "By: sysop" in text
+    assert "Target: alice" in text
+    assert "user_level 10 -> 50" in text
 
 
 def test_list_users_sort_by_highest_level_first_changes_pick_order(db, lane, sysop):
@@ -1952,6 +2034,61 @@ def test_sysop_approves_a_pending_post_with_zero_grants(db, lane, sysop):
     assert get_post(db, post.post_id).status == "approved"
 
 
+def test_board_detail_shows_no_posts_yet_for_an_empty_board(db, lane, sysop):
+    from netbbs.boards.boards import create_board
+
+    create_board(db, "General", creator=sysop)
+
+    session = FakeSession(["m", "m", "l", "0", "1", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+
+    assert "Posts: 0 (no posts yet)" in _written_text(session)
+
+
+def test_board_detail_shows_post_count_and_last_activity(db, lane, sysop):
+    # Dogfood follow-up: a SysOp trying to spot a dead board versus an
+    # active one had no way to tell without leaving admin and browsing
+    # it as an ordinary reader.
+    from netbbs.boards.boards import create_board
+    from netbbs.boards.posts import create_post
+
+    alice = create_user(db, "alice", password="hunter2", user_level=10)
+    board = create_board(db, "General", creator=sysop)
+    create_post(db, board, alice, "Hello", "Body text")
+    create_post(db, board, alice, "Second", "More body")
+
+    session = FakeSession(["m", "m", "l", "0", "1", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+
+    assert "Posts: 2 (last post" in _written_text(session)
+
+
+def test_area_detail_shows_no_files_yet_for_an_empty_area(db, lane, sysop):
+    from netbbs.files.areas import create_file_area
+
+    create_file_area(db, "docs", creator=sysop)
+
+    session = FakeSession(["m", "f", "l", "0", "1", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+
+    assert "Files: 0 (no files yet)" in _written_text(session)
+
+
+def test_area_detail_shows_file_count_and_last_activity(db, lane, sysop):
+    from netbbs.files.areas import create_file_area
+    from netbbs.files.entries import upload_file
+
+    alice = create_user(db, "alice", password="hunter2", user_level=10)
+    area = create_file_area(db, "docs", creator=sysop)
+    upload_file(db, area, alice, "first.txt", b"data")
+    upload_file(db, area, alice, "second.txt", b"data")
+
+    session = FakeSession(["m", "f", "l", "0", "1", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+
+    assert "Files: 2 (last upload" in _written_text(session)
+
+
 # -- linked boards ------------------------------------------------------------
 
 
@@ -3161,6 +3298,34 @@ def test_update_screen_declining_toggle_leaves_auto_check_unchanged(db, lane, sy
     assert get_auto_update_check_enabled(db) is True
 
 
+def test_update_screen_shows_recent_check_history(db, lane, sysop):
+    # Dogfood follow-up: "Last check" alone couldn't distinguish "runs
+    # on a healthy schedule" from "happened to succeed once".
+    from netbbs.selfupdate import record_check_outcome
+
+    record_check_outcome(db, "up to date (v2.1.0)")
+    record_check_outcome(db, "check failed: connection timed out")
+
+    session = FakeSession(["s", "u", "n", "n", "b", "b"])
+    _run(session, lane, sysop)
+
+    text = _written_text(session)
+    assert "Recent checks:" in text
+    assert "check failed: connection timed out" in text
+    assert "up to date (v2.1.0)" in text
+
+
+def test_update_screen_hides_history_section_with_only_one_check(db, lane, sysop):
+    from netbbs.selfupdate import record_check_outcome
+
+    record_check_outcome(db, "up to date (v2.1.0)")
+
+    session = FakeSession(["s", "u", "n", "n", "b", "b"])
+    _run(session, lane, sysop)
+
+    assert "Recent checks:" not in _written_text(session)
+
+
 # -- node-wide timestamp display format/timezone ----------------------------
 
 
@@ -3272,6 +3437,35 @@ def test_backup_status_shows_last_backup_summary(db, lane, sysop):
     text = _written_text(session)
     assert "Last backup:" in text
     assert str(destination) in text
+
+
+def test_backup_status_shows_recent_backup_history(db, lane, sysop):
+    # Dogfood follow-up: "Last backup" alone couldn't distinguish "runs
+    # on a healthy schedule" from "happened to succeed once".
+    from netbbs.backup import create_backup
+
+    identity_dir = db.path.parent / "netbbs_identity"
+    create_backup(db_path=db.path, identity_dir=identity_dir, destination=db.path.parent / "backup1")
+    create_backup(db_path=db.path, identity_dir=identity_dir, destination=db.path.parent / "backup2")
+
+    session = FakeSession(["s", "k", "b", "b"])
+    _run(session, lane, sysop)
+
+    text = _written_text(session)
+    assert "Recent backups:" in text
+    assert text.count("succeeded") == 2
+
+
+def test_backup_status_hides_history_section_with_only_one_backup(db, lane, sysop):
+    from netbbs.backup import create_backup
+
+    identity_dir = db.path.parent / "netbbs_identity"
+    create_backup(db_path=db.path, identity_dir=identity_dir, destination=db.path.parent / "backup1")
+
+    session = FakeSession(["s", "k", "b", "b"])
+    _run(session, lane, sysop)
+
+    assert "Recent backups:" not in _written_text(session)
 
 
 # -- outbox: work-item inspection/replay/cancel (design doc §13.7) ----------

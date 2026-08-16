@@ -160,6 +160,21 @@ def test_create_backup_records_last_backup_state(tmp_path, db_path, identity_dir
     assert path == str(destination)
 
 
+def test_create_backup_appends_to_operational_run_history(tmp_path, db_path, identity_dir):
+    # Dogfood follow-up: get_last_backup_summary only ever tracks the
+    # single most recent point in time -- a SysOp couldn't tell "this
+    # runs on a healthy schedule" from "it happened to succeed once".
+    from netbbs.operational_history import list_operational_run_history
+
+    create_backup(db_path=db_path, identity_dir=identity_dir, destination=tmp_path / "backup1")
+    create_backup(db_path=db_path, identity_dir=identity_dir, destination=tmp_path / "backup2")
+
+    history = list_operational_run_history(Database(db_path), "backup")
+    assert [r.outcome for r in history] == ["succeeded", "succeeded"]
+    assert history[0].detail == str(tmp_path / "backup2")
+    assert history[1].detail == str(tmp_path / "backup1")
+
+
 # -- restore_backup ---------------------------------------------------------
 
 

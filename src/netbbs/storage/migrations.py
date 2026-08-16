@@ -2416,4 +2416,34 @@ MIGRATIONS = [
             WHERE category_id IS NOT NULL;
         """,
     ),
+    Migration(
+        description=(
+            "Dogfood follow-up (SysOp reporting scouting): the admin "
+            "dashboard's Backup/Update check lines only ever showed a "
+            "single last-known point in time (netbbs.backup/"
+            "netbbs.selfupdate's own single-value config keys, "
+            "overwritten on every run) -- a SysOp could not tell 'this "
+            "runs on a healthy schedule' from 'it happened to succeed "
+            "once'. One shared table for both kinds of operational run, "
+            "mirroring moderation_log's own 'one shared table rather "
+            "than a bespoke log per feature' precedent -- 'backup' and "
+            "'update_check' are simply two different `kind` values, not "
+            "two separate tables to keep in sync. Bounded (pruned to the "
+            "most recent rows per kind on every write, the same "
+            "prune-on-insert discipline link_diagnostic_log already "
+            "established) rather than growing forever, since this is "
+            "reporting context for a SysOp, not a permanent audit trail."
+        ),
+        sql="""
+        CREATE TABLE operational_run_history (
+            id          INTEGER PRIMARY KEY,
+            kind        TEXT NOT NULL CHECK (kind IN ('backup', 'update_check')),
+            outcome     TEXT NOT NULL,
+            detail      TEXT,
+            created_at  TEXT NOT NULL
+        );
+        CREATE INDEX idx_operational_run_history_kind
+            ON operational_run_history(kind, id DESC);
+        """,
+    ),
 ]

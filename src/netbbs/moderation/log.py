@@ -120,6 +120,27 @@ def list_actions_for_target_user(db: Database, target_user_id: int) -> list[Mode
     return [_row_to_entry(row) for row in rows]
 
 
+def list_recent_actions(db: Database, *, limit: int = 200) -> list[ModerationLogEntry]:
+    """
+    The most recent `limit` entries across every user/object -- the
+    site-wide audit trail (`netbbs.net.admin_flow`'s Operations
+    `[A]udit log`, dogfood follow-up: `list_actions_for_object`/
+    `list_actions_for_target_user` only ever answer "what happened to
+    this specific user/board/channel", leaving a SysOp with no way to
+    ask "what has happened on this node recently" without already
+    knowing who or what to check).
+
+    Most recent first, mirroring `netbbs.link.diagnostics.
+    list_diagnostic_log_entries`'s own reading order and `limit`
+    convention -- callers wanting oldest-first reverse this same
+    window rather than a separate query.
+    """
+    rows = db.connection.execute(
+        "SELECT * FROM moderation_log ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    return [_row_to_entry(row) for row in rows]
+
+
 def _row_to_entry(row: sqlite3.Row) -> ModerationLogEntry:
     return ModerationLogEntry(
         id=row["id"],
