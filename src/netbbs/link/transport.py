@@ -47,7 +47,7 @@ import json
 import logging
 import random
 from dataclasses import dataclass
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Sequence
 from urllib.parse import urljoin, urlparse
 
 import nacl.bindings
@@ -135,7 +135,7 @@ from netbbs.link.files import (
     materialize_carried_file_descriptor,
 )
 from netbbs.link.mail import apply_link_message_accepted, apply_link_message_bounced, deliver_link_message
-from netbbs.link.node_identity import NodeIdentity, resolve_current_operational_key
+from netbbs.link.node_identity import NodeIdentity, resolve_current_operational_key, rotate_operational_key
 from netbbs.identity.encryption import derive_encryption_private_key
 from netbbs.link.protocol import (
     _MAX_EVENTS_PER_REQUEST,
@@ -1043,6 +1043,52 @@ class LinkRealtimeSessionRegistry:
             await asyncio.gather(*self._watchers, return_exceptions=True)
 
 
+async def rotate_realtime_transport_key(
+    identity: NodeIdentity,
+    *,
+    registry: LinkRealtimeSessionRegistry,
+    server: LinkRealtimeServer | None = None,
+    connectors: Sequence[LinkRealtimeConnector] = (),
+) -> NodeIdentity:
+    """
+    Rotates `identity`'s transport key and makes the rotation actually take
+    effect for real-time traffic (design doc §8.10: "transport-key rotation
+    ends sessions using the old key; reconnect performs a fresh handshake
+    against the new verified chain") -- `rotate_operational_key` alone is
+    silent to any of this, since it returns a new `NodeIdentity` with no
+    reference to what's currently live.
+
+    Every session `registry` currently holds was authenticated during a
+    handshake that presented the *pre-rotation* chain -- post-handshake, a
+    Noise session's symmetric keys never touch the static key again, so
+    nothing about an established session's own traffic would ever notice a
+    rotation on its own. Closing it is therefore the only way to actually
+    retire it; its peer sees an ordinary session close and, if it wants to
+    keep talking to this node, redials.
+
+    `server`/`connectors` -- if given -- are switched to the rotated
+    identity *before* `registry.close_all()` runs, not after: both hold a
+    fixed `NodeIdentity` reference from construction and reuse it for every
+    future handshake, inbound or outbound, so a redial that raced ahead of
+    an after-the-fact swap would still complete against the very chain
+    being retired, silently defeating the rotation. `connectors` is this
+    node's own outbound reconnect loops (`LinkRealtimeConnector`) for this
+    identity, if any -- their automatic reconnect after `close_all` closes
+    their current session must dial with the new key too.
+
+    Does not save `identity` to disk -- same contract as
+    `rotate_operational_key` itself; the caller persists the returned
+    identity.
+    """
+    rotated = rotate_operational_key(identity, purpose="transport")
+    if server is not None:
+        server.update_identity(rotated)
+    for connector in connectors:
+        connector.update_identity(rotated)
+    await registry.close_all(reason="transport_key_rotated")
+    return rotated
+
+
 class LinkRealtimeServer:
     """
     Accepts real inbound Noise-authenticated Link real-time sessions
@@ -1086,6 +1132,14 @@ class LinkRealtimeServer:
         if self._server is None or not self._server.sockets:
             raise LinkTransportError("real-time server has not been started")
         return self._server.sockets[0].getsockname()[1]
+
+    def update_identity(self, identity: NodeIdentity) -> None:
+        """Swap the identity presented to every future inbound handshake
+        -- e.g. after `rotate_realtime_transport_key` rotates the transport
+        key -- without needing to stop and rebuild the listener. Already-
+        admitted sessions are unaffected; only a *new* handshake reads
+        `self._identity`."""
+        self._identity = identity
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(self._handle, self._host, self._port)
@@ -1253,6 +1307,12 @@ class LinkRealtimeConnector:
         if self._current_session is not None:
             await self._current_session.close(reason="local_shutdown", send_close_frame=True)
             self._current_session = None
+
+    def update_identity(self, identity: NodeIdentity) -> None:
+        """Swap the identity `_run`'s next dial (including the reconnect
+        this connector performs on its own after a rotation-triggered
+        close) will present -- see `LinkRealtimeServer.update_identity`."""
+        self._identity = identity
 
     async def _run(self) -> None:
         backoff = self._min_backoff

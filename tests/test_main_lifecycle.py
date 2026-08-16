@@ -30,9 +30,16 @@ from netbbs.__main__ import (
 )
 from netbbs.net.shutdown import SequenceScheduler
 from netbbs.auth.users import SYSOP_LEVEL, create_user
+from netbbs.link.enforcement import ensure_node_subject
 from netbbs.link.node_identity import bootstrap_node_identity
-from netbbs.link.protocol import LinkNode
-from netbbs.link.transport import dial_hello, establish_noise_xx_initiator
+from netbbs.link.protocol import LinkNode, RealtimeFrame
+from netbbs.link.transport import (
+    dial_hello,
+    establish_noise_xx_initiator,
+    read_realtime_record,
+    write_realtime_record,
+)
+from netbbs.link.trust import TrustDimension, TrustState, TrustSubject, set_trust_override
 from netbbs.net.maintenance import MaintenanceMode
 from netbbs.net.nodeconfig import LinkConfig, NodeConfig, ShutdownConfig, TransportConfig
 from netbbs.net.session_registry import ActiveSessionRegistry
@@ -313,6 +320,86 @@ def test_configured_link_realtime_listener_accepts_a_real_noise_session(tmp_path
         finally:
             shutdown_event.set()
             await task
+
+    asyncio.run(scenario())
+
+
+def test_a_live_realtime_session_is_owned_and_gathered_cleanly_on_node_shutdown(tmp_path):
+    """`run()`'s shutdown path (`netbbs/__main__.py`) calls
+    `link_realtime_registry.close_all(reason="node_shutdown")`, which in
+    turn cancels and gathers every reader/writer/heartbeat task
+    `LinkRealtimeSession.close()` owns (design doc §8.10.1: "reader,
+    writer, heartbeat, and reconnect tasks are owned by one
+    session/supervisor object"). The sibling test above only proves the
+    *listener* stops accepting -- it closes its own connection right
+    after the handshake, before a session is genuinely live. This proves
+    the stronger claim: shutdown with an *already-admitted, still-open*
+    session completes promptly (no hang waiting on a task that was never
+    cancelled) and that session's peer actually observes its connection
+    closed, not merely abandoned."""
+    async def scenario():
+        config = _config(
+            tmp_path,
+            telnet=TransportConfig(True, "127.0.0.1", 12420),
+            link=LinkConfig(
+                enabled=True, host="127.0.0.1", port=12421, realtime_port=12422,
+            ),
+        )
+        # `run()` always enforces trust policy on the real-time listener
+        # (`netbbs/__main__.py`'s `enforce_trust_policy=True`); a freshly-
+        # seen node subject defaults to `PROBATIONARY`, which `LinkPolicy
+        # Action.REALTIME` never allows (same setup `test_link_realtime_
+        # channels.py`'s own `_establish_trust` needs). Seeded via a
+        # throwaway connection to the same db file, closed before `run()`
+        # opens its own -- the same "seed, then close" shape `_config`
+        # already uses for the SysOp account above.
+        dialer_identity = bootstrap_node_identity("shutdown-dialer")
+        seed_db = Database(config.db_path)
+        ensure_node_subject(seed_db, dialer_identity.fingerprint)
+        subject = TrustSubject.node(dialer_identity.fingerprint)
+        for dimension in (TrustDimension.IDENTITY_INTEGRITY, TrustDimension.RESOURCE_BEHAVIOR):
+            set_trust_override(
+                seed_db, subject, dimension, TrustState.ESTABLISHED,
+                reason="pre-established for test", now_iso="2026-08-14T12:00:00+00:00",
+            )
+        seed_db.close()
+
+        shutdown_event = asyncio.Event()
+        task = asyncio.create_task(run(config, shutdown_event=shutdown_event))
+        try:
+            await _open_connection_when_ready("127.0.0.1", 12420)  # node fully up
+
+            reader, writer = await asyncio.open_connection("127.0.0.1", 12422)
+            remote, ciphers = await establish_noise_xx_initiator(reader, writer, dialer_identity)
+
+            # Prove this is a genuinely live, still-open session (not just
+            # a completed handshake whose socket the client already
+            # abandoned) before touching shutdown at all.
+            ping = RealtimeFrame(type="ping", message_id="shutdown-ping", payload={})
+            await write_realtime_record(writer, ciphers.sending.encrypt_with_ad(b"", ping.to_json_bytes()))
+            pong_ciphertext = await asyncio.wait_for(read_realtime_record(reader), timeout=2.0)
+            pong = RealtimeFrame.from_json_bytes(ciphers.receiving.decrypt_with_ad(b"", pong_ciphertext))
+            assert pong.type == "pong"
+        finally:
+            shutdown_event.set()
+            # Bounded: if the session's own tasks were never cancelled,
+            # `close_all`'s gather would hang and this `run()` call would
+            # never return -- the whole point of this test.
+            await asyncio.wait_for(task, timeout=5.0)
+
+        # The server side actively closed its end of the still-open
+        # session as part of shutdown, not merely stopped accepting new
+        # ones. `close_all(reason="node_shutdown")` sends a courtesy close
+        # frame before tearing the socket down (`LinkRealtimeSession.
+        # close(..., send_close_frame=True)`), so the peer sees that frame
+        # first, then a real EOF -- not a connection left dangling.
+        close_ciphertext = await asyncio.wait_for(read_realtime_record(reader), timeout=2.0)
+        close_frame = RealtimeFrame.from_json_bytes(ciphers.receiving.decrypt_with_ad(b"", close_ciphertext))
+        assert close_frame.type == "close"
+        assert close_frame.payload.get("reason") == "node_shutdown"
+        trailing = await asyncio.wait_for(reader.read(1), timeout=2.0)
+        assert trailing == b""
+        writer.close()
 
     asyncio.run(scenario())
 

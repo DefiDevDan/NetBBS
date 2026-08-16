@@ -2545,6 +2545,27 @@ multi-node-per-host deployment pattern, not just validated in isolation --
 a cross-node collision when two instances of the same defaults run
 together.
 
+**`LinkRealtimeServer`/`LinkRealtimeConnector` hold a fixed `NodeIdentity`
+reference from construction and reuse it for every future handshake, inbound
+accept or outbound dial alike -- `rotate_operational_key` alone has no way
+to reach either of them, so calling it in isolation changes nothing about
+what a live process actually presents on the wire.** `rotate_realtime_
+transport_key` (design doc §8.10, issue #148) is the one place this is
+wired up: it calls `server.update_identity()`/`connector.update_identity()`
+*before* `registry.close_all(reason="transport_key_rotated")`, never after
+-- closing first would let a peer's own fast reconnect (or, for a
+`LinkRealtimeConnector`, this node's *own* automatic reconnect) race ahead
+of the identity swap and complete against the very chain being retired,
+silently defeating the rotation instead of enforcing it. Also: a live Noise
+session's post-handshake symmetric keys never touch the static key again,
+so an already-open session needs an explicit close to retire it -- nothing
+about its ongoing traffic would ever notice that the `NodeIdentity` object
+it was built from has since changed. Any future code that swaps a node's
+live identity (signing-key rotation, not just transport) needs to ask the
+same two questions this one already answers: what already-constructed
+objects hold a stale reference to the old identity, and what already-
+established sessions/connections were authenticated using it.
+
 **A caller-facing "resume a saved draft?" prompt must consume (delete) the
 draft file before handing its text to the editor as `initial_text`, or the
 editor's own crash-recovery check double-prompts for the same file.**

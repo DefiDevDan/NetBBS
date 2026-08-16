@@ -22,6 +22,7 @@ lane's connection only ever runs on its dedicated worker thread.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import random
@@ -42,7 +43,7 @@ from netbbs.link.events import (
     build_endpoint_descriptor, build_link_message,
 )
 from netbbs.link.node_identity import bootstrap_node_identity, rotate_operational_key
-from netbbs.identity.encryption import derive_encryption_private_key
+from netbbs.identity.encryption import derive_encryption_private_key, derive_encryption_public_key
 from netbbs.link.protocol import (
     FileChunkRequest, HelloMessage, LinkNode, LinkProtocolError, RealtimeFrame,
     RealtimeIdentityPayload, build_channel_message_frame, build_subscribe_frame,
@@ -71,6 +72,7 @@ from netbbs.link.transport import (
     request_relay_consent,
     request_trust_objects,
     read_realtime_record,
+    rotate_realtime_transport_key,
     write_realtime_record,
 )
 from netbbs.link.trust import (
@@ -644,6 +646,56 @@ def test_link_realtime_connector_reconnects_with_bounded_backoff_after_a_session
             await connector.stop()
             await registry_b.close_all(reason="test_done")
             await server.stop()
+
+    asyncio.run(scenario())
+
+
+def test_rotate_realtime_transport_key_closes_live_sessions_and_a_fresh_handshake_presents_the_new_key():
+    async def scenario():
+        alice = bootstrap_node_identity("alice-rotate")
+        bob = bootstrap_node_identity("bob-rotate")
+        registry_a = LinkRealtimeSessionRegistry(own_fingerprint=alice.fingerprint)
+        registry_b = LinkRealtimeSessionRegistry(own_fingerprint=bob.fingerprint)
+        server_a = LinkRealtimeServer(
+            host="127.0.0.1", port=0, identity=alice, registry=registry_a, on_frame=_default_on_frame,
+        )
+        await server_a.start()
+        try:
+            session_b = await dial_realtime_session(
+                "127.0.0.1", server_a.port, bob, on_frame=_default_on_frame, registry=registry_b,
+            )
+            assert await _wait_until(lambda: registry_a.get(bob.fingerprint) is not None)
+            pre_rotation_static_key = bytes(derive_encryption_public_key(alice.transport_key.verify_key))
+
+            rotated_alice = await rotate_realtime_transport_key(alice, registry=registry_a, server=server_a)
+            assert rotated_alice.transport_key.verify_key != alice.transport_key.verify_key
+
+            # The session predates the rotation -- Noise's post-handshake
+            # symmetric keys never touch the static key again, so nothing
+            # about its own traffic would ever notice a rotation on its
+            # own; only an explicit close (both ends) retires it.
+            assert registry_a.get(bob.fingerprint) is None
+            assert await _wait_until(lambda: session_b.closed.is_set())
+
+            # A fresh handshake against server_a must present the rotated
+            # chain, not the one just retired -- if `server_a`'s own
+            # identity reference hadn't been swapped by
+            # `rotate_realtime_transport_key`, this would silently keep
+            # validating against the old key forever.
+            reader, writer = await asyncio.open_connection("127.0.0.1", server_a.port)
+            try:
+                remote, _ = await establish_noise_xx_initiator(reader, writer, bob)
+            finally:
+                writer.close()
+                await writer.wait_closed()
+            presented_static_key = base64.b64decode(remote.noise_static_key, validate=True)
+            assert presented_static_key != pre_rotation_static_key
+            assert presented_static_key == bytes(
+                derive_encryption_public_key(rotated_alice.transport_key.verify_key)
+            )
+        finally:
+            await registry_b.close_all(reason="test_done")
+            await server_a.stop()
 
     asyncio.run(scenario())
 
