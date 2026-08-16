@@ -1067,6 +1067,7 @@ async def _draw_main_menu(
             else "  /  mail caught up"
         ),
         width=session.terminal_width,
+        clear=redraw_in_place_enabled(db, user),
     )
     options = menu_grid(
         [("Explore", explore_options), ("You", personal_options), ("System", system_options)],
@@ -1216,7 +1217,7 @@ async def _main_menu(
                 key_task.cancel()
                 await asyncio.gather(key_task, return_exceptions=True)
                 direct_invites.clear_arrival(session)
-                await _handle_incoming_invite(session, direct_invites, hub, presence, user)
+                await _handle_incoming_invite(session, db, direct_invites, hub, presence, user)
                 continue
             invite_task.cancel()
             await asyncio.gather(invite_task, return_exceptions=True)
@@ -1367,7 +1368,12 @@ async def _main_menu(
 
 
 async def _handle_incoming_invite(
-    session: Session, direct_invites: DirectChatInvites, hub: ChatHub, presence: PresenceRegistry, user: User
+    session: Session,
+    db: Database,
+    direct_invites: DirectChatInvites,
+    hub: ChatHub,
+    presence: PresenceRegistry,
+    user: User,
 ) -> None:
     """
     Runs once `_main_menu`'s own read/invite race (design doc §6.3,
@@ -1402,7 +1408,10 @@ async def _handle_incoming_invite(
         await session.write_line(colored("That invitation is no longer valid.", fg_color=MUTED_COLOR))
         return
     if accepted:
-        await run_direct_chat_loop(session, hub, presence, user, invite.inviter, invite.room_token)
+        await run_direct_chat_loop(
+            session, hub, presence, user, invite.inviter, invite.room_token,
+            redraw_in_place=redraw_in_place_enabled(db, user),
+        )
     else:
         await session.write_line(colored("Declined.", fg_color=MUTED_COLOR))
 
@@ -1672,6 +1681,7 @@ async def _find_screen(
             "Search",
             subtitle="Find posts, files, and retained chat on this node.",
             width=session.terminal_width,
+            clear=redraw_in_place_enabled(db, user),
         )
     )
     await session.write("Search terms (Enter cancels): ")
@@ -2189,6 +2199,7 @@ async def _resource_type_menu(
     re-entering the Community picker each time.
     """
     description_level = menu_description_level(db, user)
+    redraw_in_place = redraw_in_place_enabled(db, user)
     while True:
         show_boards = not community_scoped or _has_visible_boards(
             db, user, community_id=community_id, community_scoped=community_scoped
@@ -2213,6 +2224,7 @@ async def _resource_type_menu(
             breadcrumb=("NetBBS", "Communities") if community_scoped else ("NetBBS",),
             subtitle="Choose a space to explore",
             width=session.terminal_width,
+            clear=redraw_in_place,
         )
         await session.write_line(f"\r\n{heading}")
         await session.write_line(
@@ -2615,12 +2627,15 @@ async def _render_board_page(
     can_post: bool,
     name_requirement: str | None,
     description_level: str,
+    redraw_in_place: bool,
 ) -> None:
     """Renders one page of posts plus its navigation options — the unit
     that should be redrawn on an actual page change (initial entry,
     Older/Newer/Recent), not on every loop iteration regardless of
     whether anything changed."""
-    await _render_post_page(session, db, board_name, page, name_requirement=name_requirement)
+    await _render_post_page(
+        session, db, board_name, page, name_requirement=name_requirement, redraw_in_place=redraw_in_place
+    )
     options = []
     if page.has_older:
         options.append(MenuEntry(label=menu_key("O", "lder"), brief="Show older posts"))
@@ -2681,6 +2696,7 @@ async def _show_board(
         and meets_name_requirement(db, user, get_effective_name_requirement(db, board))
     )
     description_level = menu_description_level(db, user)
+    redraw_in_place = redraw_in_place_enabled(db, user)
 
     def _refetch_current_page() -> PostPage:
         """Re-fetches whichever page is currently on screen, using the
@@ -2705,6 +2721,7 @@ async def _show_board(
             session, db, board_name, current_page, user, can_post=can_post,
             name_requirement=get_effective_name_requirement(db, board),
             description_level=description_level,
+            redraw_in_place=redraw_in_place,
         )
         if current_page.posts:
             record_board_seen(db, user, board, current_page.posts[-1])
@@ -2739,6 +2756,7 @@ async def _show_board(
                 commit_label="ost",
                 commit_brief="Publish this post",
                 description_level=description_level,
+                redraw_in_place=redraw_in_place,
             )
             if action is ReviewAction.CANCEL:
                 await session.write_line(colored("Post cancelled.", fg_color=MUTED_COLOR))
@@ -2845,7 +2863,7 @@ async def _show_board(
         # navigation loop (nothing to browse either way), but offers the
         # same explicit choice before composing anything.
         await session.write_line(
-            f"\r\n{screen_title(board_name, breadcrumb=('NetBBS', 'Message boards'), width=session.terminal_width)}"
+            f"\r\n{screen_title(board_name, breadcrumb=('NetBBS', 'Message boards'), width=session.terminal_width, clear=redraw_in_place)}"
         )
         await session.write_line(
             f"\r\n{empty_state('This message board has no posts yet', detail='It is ready for its first conversation.', width=session.terminal_width)}"
@@ -3124,13 +3142,20 @@ def _author_display_name(db: Database, post: Post, *, name_requirement: str | No
 
 
 async def _render_post_page(
-    session: Session, db: Database, board_name: str, page: PostPage, *, name_requirement: str | None
+    session: Session,
+    db: Database,
+    board_name: str,
+    page: PostPage,
+    *,
+    name_requirement: str | None,
+    redraw_in_place: bool = False,
 ) -> None:
     header = screen_title(
         board_name,
         breadcrumb=("NetBBS", "Message boards"),
         subtitle=f"{len(page.posts)} post{'s' if len(page.posts) != 1 else ''} on this page",
         width=session.terminal_width,
+        clear=redraw_in_place,
     )
     await session.write_line(f"\r\n{header}")
     for position, post in enumerate(page.posts, start=1):
@@ -3238,6 +3263,7 @@ async def _show_vcard(session: Session, db: Database, target: User, requesting_u
             breadcrumb=("NetBBS", "Directory"),
             subtitle="Member profile",
             width=session.terminal_width,
+            clear=redraw_in_place_enabled(db, requesting_user),
         )
     )
     await session.write_line(
@@ -3327,6 +3353,7 @@ async def _caller_who_screen(
         # connected changes independently of anything this screen does.
         refresh=_load_entries,
         description_level=menu_description_level(db, user),
+        redraw_in_place=redraw_in_place_enabled(db, user),
     )
     if selected is None:
         return
@@ -3351,6 +3378,7 @@ async def _caller_who_screen(
             breadcrumb=("NetBBS", "Who's online"),
             subtitle="Choose how you would like to connect.",
             width=session.terminal_width,
+            clear=redraw_in_place_enabled(db, user),
         )
     )
     options = [MenuEntry(label=menu_key("M", "essage"), brief="Send a one-off message")]
@@ -3594,6 +3622,7 @@ async def _render_profile(session: Session, db: Database, user: User) -> bool:
             "Your profile",
             subtitle="Your public identity and caller preferences.",
             width=session.terminal_width,
+            clear=redraw_in_place_enabled(db, user),
         )
     )
     await session.write_line(colored("BIO", fg_color=METADATA_COLOR, bold=True))
@@ -3881,7 +3910,11 @@ async def _render_identity_details(session: Session, db: Database, user: User) -
     age_attestation = get_attestation(db, user, "age")
     name_attestation = get_attestation(db, user, "name")
 
-    await session.write_line("\r\n" + screen_title("Name & details", width=session.terminal_width))
+    await session.write_line(
+        "\r\n" + screen_title(
+            "Name & details", width=session.terminal_width, clear=redraw_in_place_enabled(db, user)
+        )
+    )
     await session.write_line(
         f"Display name: {sanitize_text(display_name) if display_name else '(not set)'} "
         f"({'public' if is_display_name_visible(db, user) else 'private'})"

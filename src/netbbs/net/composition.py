@@ -256,6 +256,7 @@ async def review_composition(
     commit_label: str,
     commit_brief: str | None = None,
     description_level: str = "off",
+    redraw_in_place: bool = False,
 ) -> ReviewAction:
     """Render a complete draft and return one explicit review action.
 
@@ -265,12 +266,16 @@ async def review_composition(
     (posting a board message, sending mail, etc.) to describe it with,
     unlike the other fixed T/U/B/C options below. `description_level`
     should be the caller's already-resolved `menu_description_level`
-    preference, same caching rule as every other screen in this rollout."""
+    preference, same caching rule as every other screen in this rollout.
+    `redraw_in_place` (dogfood feature request, `netbbs.net.
+    redraw_preference`) is the same shape -- the caller's already-
+    resolved preference, not looked up here."""
     heading = screen_title(
         "Review composition",
         breadcrumb=("NetBBS", "Compose"),
         subtitle="Check the draft before continuing",
         width=session.terminal_width,
+        clear=redraw_in_place,
     )
     await session.write_line(f"\r\n{heading}")
     if recipient is not None:

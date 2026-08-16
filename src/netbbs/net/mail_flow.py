@@ -62,6 +62,7 @@ from netbbs.net.composition import ReviewAction, edit_line_body, review_composit
 from netbbs.net.confirm import prompt_yes_no
 from netbbs.net.editor_preference import fullscreen_editor_enabled
 from netbbs.net.menu_description_preference import menu_description_level
+from netbbs.net.redraw_preference import redraw_in_place_enabled
 from netbbs.net.picker import pick_item
 from netbbs.net.prose_editor import edit_prose
 from netbbs.net.session import Session
@@ -117,7 +118,8 @@ async def browse_mail(
     disabled, the same convention `netbbs.link.boards.LinkContext`
     itself already establishes for boards."""
     description_level = await lane.run(menu_description_level, user)
-    await _render_mail_menu(session, lane, user, description_level)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, user)
+    await _render_mail_menu(session, lane, user, description_level, redraw_in_place)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -127,27 +129,29 @@ async def browse_mail(
         elif choice == "i":
             await session.write_line("")
             await _show_inbox(session, lane, user)
-            await _render_mail_menu(session, lane, user, description_level)
+            await _render_mail_menu(session, lane, user, description_level, redraw_in_place)
         elif choice == "s":
             await session.write_line("")
             await _show_sent(session, lane, user)
-            await _render_mail_menu(session, lane, user, description_level)
+            await _render_mail_menu(session, lane, user, description_level, redraw_in_place)
         elif choice == "c":
             await session.write_line("")
             await _compose_mail(session, lane, user, link_context=link_context)
-            await _render_mail_menu(session, lane, user, description_level)
+            await _render_mail_menu(session, lane, user, description_level, redraw_in_place)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
-async def _render_mail_menu(session: Session, lane: DatabaseLane, user: User, description_level: str) -> None:
+async def _render_mail_menu(
+    session: Session, lane: DatabaseLane, user: User, description_level: str, redraw_in_place: bool = False
+) -> None:
     unread = await lane.run(unread_count, user)
     subtitle = (
         f"{unread} unread message{'s' if unread != 1 else ''}"
         if unread
         else "Inbox caught up"
     )
-    header = screen_title("Mail", subtitle=subtitle, width=session.terminal_width)
+    header = screen_title("Mail", subtitle=subtitle, width=session.terminal_width, clear=redraw_in_place)
     await session.write_line(f"\r\n{header}")
 
     options = [
@@ -164,6 +168,7 @@ async def _render_mail_menu(session: Session, lane: DatabaseLane, user: User, de
 
 async def _show_inbox(session: Session, lane: DatabaseLane, user: User) -> None:
     description_level = await lane.run(menu_description_level, user)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, user)
     while True:
         messages = await lane.run(list_inbox, user)
         display_format, display_timezone = await lane.run(resolve_display_preferences)
@@ -185,6 +190,7 @@ async def _show_inbox(session: Session, lane: DatabaseLane, user: User) -> None:
             title="Inbox",
             empty_message="Your inbox is empty. New mail will appear here.",
             description_level=description_level,
+            redraw_in_place=redraw_in_place,
         )
         if message is None:
             return
@@ -193,6 +199,7 @@ async def _show_inbox(session: Session, lane: DatabaseLane, user: User) -> None:
 
 async def _show_sent(session: Session, lane: DatabaseLane, user: User) -> None:
     description_level = await lane.run(menu_description_level, user)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, user)
     while True:
         messages = await lane.run(list_sent, user)
         display_format, display_timezone = await lane.run(resolve_display_preferences)
@@ -223,6 +230,7 @@ async def _show_sent(session: Session, lane: DatabaseLane, user: User) -> None:
             title="Sent Mail",
             empty_message="You haven't sent any mail. Compose one from the Mail menu.",
             description_level=description_level,
+            redraw_in_place=redraw_in_place,
         )
         if message is None:
             return
@@ -230,13 +238,19 @@ async def _show_sent(session: Session, lane: DatabaseLane, user: User) -> None:
 
 
 async def _render_message(
-    session: Session, lane: DatabaseLane, *, message: MailMessage, to_label: str | None
+    session: Session,
+    lane: DatabaseLane,
+    *,
+    message: MailMessage,
+    to_label: str | None,
+    redraw_in_place: bool = False,
 ) -> None:
     mailbox = "Sent" if to_label is not None else "Inbox"
     header = screen_title(
         sanitize_text(message.subject),
         breadcrumb=("NetBBS", "Mail", mailbox),
         width=session.terminal_width,
+        clear=redraw_in_place,
     )
     await session.write_line(f"\r\n{header}")
     if to_label is not None:
@@ -264,7 +278,10 @@ async def _render_message(
 
 async def _show_inbox_message(session: Session, lane: DatabaseLane, user: User, message: MailMessage) -> None:
     message = await lane.run(mark_read, user, message)
-    await _render_message(session, lane, message=message, to_label=None)
+    await _render_message(
+        session, lane, message=message, to_label=None,
+        redraw_in_place=await lane.run(redraw_in_place_enabled, user),
+    )
     description_level = await lane.run(menu_description_level, user)
 
     while True:
@@ -310,7 +327,10 @@ async def _show_inbox_message(session: Session, lane: DatabaseLane, user: User, 
 async def _show_sent_message(session: Session, lane: DatabaseLane, user: User, message: MailMessage) -> None:
     recipient = await lane.run(get_user_by_id, message.recipient_user_id)
     to_label = recipient.username if recipient is not None else "(deleted account)"
-    await _render_message(session, lane, message=message, to_label=to_label)
+    await _render_message(
+        session, lane, message=message, to_label=to_label,
+        redraw_in_place=await lane.run(redraw_in_place_enabled, user),
+    )
     description_level = await lane.run(menu_description_level, user)
 
     while True:
@@ -413,6 +433,7 @@ async def _compose_mail(
         return
 
     review_description_level = await lane.run(menu_description_level, user)
+    review_redraw_in_place = await lane.run(redraw_in_place_enabled, user)
     while True:
         action = await review_composition(
             session,
@@ -423,6 +444,7 @@ async def _compose_mail(
             commit_label="end",
             commit_brief="Send this message",
             description_level=review_description_level,
+            redraw_in_place=review_redraw_in_place,
         )
         if action is ReviewAction.CANCEL:
             await session.write_line(colored("Message cancelled.", fg_color=MUTED_COLOR))

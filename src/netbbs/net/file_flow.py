@@ -86,6 +86,7 @@ from netbbs.net.session import Session
 from netbbs.net.sort_ui import SORT_MODE_LABELS, prompt_sort_change
 from netbbs.permissions import meets_level
 from netbbs.net.menu_description_preference import menu_description_level
+from netbbs.net.redraw_preference import redraw_in_place_enabled
 from netbbs.rendering import (
     ACCENT_COLOR,
     ERROR_COLOR,
@@ -254,6 +255,7 @@ async def _browse_areas_in_category(
     )
     areas_here, categories_here, category_name, community_name = await lane.run(_load, current_mode)
     description_level = await lane.run(menu_description_level, user)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, user)
     mode_box = {"mode": current_mode}
 
     async def _persist_sort_choice(mode: str, scope_kwargs: dict) -> None:
@@ -291,6 +293,7 @@ async def _browse_areas_in_category(
             on_sort=on_sort_flat,
             sort_label=_sort_label,
             description_level=description_level,
+            redraw_in_place=redraw_in_place,
         )
         if area is not None:
             await _show_area(session, lane, area, user, link_context=link_context)
@@ -328,6 +331,7 @@ async def _browse_areas_in_category(
         title=title,
         empty_message="No file areas are available to you yet.",
         description_level=description_level,
+        redraw_in_place=redraw_in_place,
     )
     if selected is None:
         return
@@ -367,12 +371,15 @@ async def _render_area_page(
     name_requirement: str | None,
     show_remote_hint: bool = False,
     description_level: str = "off",
+    redraw_in_place: bool = False,
 ) -> None:
     """Renders one page of files plus its navigation options and command
     hints — the unit that should be redrawn on an actual page change
     (initial entry, Older/Newer/Recent), not on every loop iteration
     regardless of whether anything changed."""
-    await _render_file_page(session, lane, area_name, page, name_requirement=name_requirement)
+    await _render_file_page(
+        session, lane, area_name, page, name_requirement=name_requirement, redraw_in_place=redraw_in_place
+    )
     options = []
     if page.has_older:
         options.append(MenuEntry(label=menu_key("O", "lder"), brief="Show older files"))
@@ -476,9 +483,14 @@ async def _show_area(
             and meets_age(db, user, get_effective_min_age(db, area))
             and meets_name_requirement(db, user, effective_name_requirement)
         )
-        return page, effective_name_requirement, can_write, is_area_linked(db, area), menu_description_level(db, user)
+        return (
+            page, effective_name_requirement, can_write, is_area_linked(db, area),
+            menu_description_level(db, user), redraw_in_place_enabled(db, user),
+        )
 
-    page, effective_name_requirement, can_write, area_linked, description_level = await lane.run(_load)
+    page, effective_name_requirement, can_write, area_linked, description_level, redraw_in_place = (
+        await lane.run(_load)
+    )
 
     show_remote_hint = link_context is not None and area_linked
 
@@ -488,13 +500,15 @@ async def _show_area(
         whatever is now newest on screen."""
         await _render_area_page(
             session, lane, area_name, current_page, can_write=can_write, name_requirement=effective_name_requirement,
-            show_remote_hint=show_remote_hint, description_level=description_level,
+            show_remote_hint=show_remote_hint, description_level=description_level, redraw_in_place=redraw_in_place,
         )
         if current_page.entries:
             await lane.run(record_file_area_seen, user, area, current_page.entries[-1])
 
     if not page.entries:
-        heading = screen_title(area_name, breadcrumb=("NetBBS", "Files"), width=session.terminal_width)
+        heading = screen_title(
+            area_name, breadcrumb=("NetBBS", "Files"), width=session.terminal_width, clear=redraw_in_place
+        )
         await session.write_line(f"\r\n{heading}")
         state = empty_state(
             "This file area has no files yet",
@@ -581,11 +595,13 @@ async def _browse_remote_files(
     fetched/promoted locally."
     """
     remote_files = await lane.run(list_remote_files, area)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, user)
     if not remote_files:
         heading = screen_title(
             "Remote catalogue",
             breadcrumb=("NetBBS", "Files", sanitize_text(area.name)),
             width=session.terminal_width,
+            clear=redraw_in_place,
         )
         await session.write_line(f"\r\n{heading}")
         state = empty_state(
@@ -609,6 +625,7 @@ async def _browse_remote_files(
         title=f"Remote catalogue: {sanitize_text(area.name)}",
         empty_message="No remote catalogue entries.",
         description_level=await lane.run(menu_description_level, user),
+        redraw_in_place=redraw_in_place,
     )
     if selected is None:
         return
@@ -630,11 +647,16 @@ async def _browse_remote_files(
         await session.write_line(colored("Cancelled.", fg_color=MUTED_COLOR))
         return
 
-    await _fetch_remote_file(session, lane, selected, link_context)
+    await _fetch_remote_file(session, lane, selected, link_context, redraw_in_place=redraw_in_place)
 
 
 async def _fetch_remote_file(
-    session: Session, lane: DatabaseLane, remote_file: RemoteFile, link_context: LinkContext
+    session: Session,
+    lane: DatabaseLane,
+    remote_file: RemoteFile,
+    link_context: LinkContext,
+    *,
+    redraw_in_place: bool = False,
 ) -> None:
     """
     Drives `netbbs.link.transport.fetch_next_file_chunk` in a loop until
@@ -676,6 +698,7 @@ async def _fetch_remote_file(
         breadcrumb=("NetBBS", "Files", "Link"),
         subtitle=sanitize_text(remote_file.filename),
         width=session.terminal_width,
+        clear=redraw_in_place,
     )
     await session.write_line(f"\r\n{heading}")
     transfer = None
@@ -724,13 +747,20 @@ def _uploader_display_name(db: Database, entry, *, name_requirement: str | None)
 
 
 async def _render_file_page(
-    session: Session, lane: DatabaseLane, area_name: str, page: FileEntryPage, *, name_requirement: str | None
+    session: Session,
+    lane: DatabaseLane,
+    area_name: str,
+    page: FileEntryPage,
+    *,
+    name_requirement: str | None,
+    redraw_in_place: bool = False,
 ) -> None:
     header = screen_title(
         area_name,
         breadcrumb=("NetBBS", "Files"),
         subtitle=f"{len(page.entries)} file{'s' if len(page.entries) != 1 else ''} on this page",
         width=session.terminal_width,
+        clear=redraw_in_place,
     )
     await session.write_line(f"\r\n{header}")
     display_format, display_timezone = await lane.run(resolve_display_preferences)
@@ -765,6 +795,7 @@ async def _handle_upload(session: Session, lane: DatabaseLane, area: FileArea, u
         breadcrumb=("NetBBS", "Files", sanitize_text(area.name)),
         subtitle="Zmodem transfer",
         width=session.terminal_width,
+        clear=await lane.run(redraw_in_place_enabled, user),
     )
     await session.write_line(f"\r\n{heading}")
     await session.write_line("Start your terminal's Zmodem send (sz) now. Waiting for the transfer to begin...")
@@ -818,6 +849,7 @@ async def _handle_download(session: Session, lane: DatabaseLane, area: FileArea,
         breadcrumb=("NetBBS", "Files", sanitize_text(area.name)),
         subtitle=f"{entry_filename} / {_format_size(entry.size_bytes)}",
         width=session.terminal_width,
+        clear=await lane.run(redraw_in_place_enabled, user),
     )
     await session.write_line(f"\r\n{heading}")
     await session.write_line(f"Starting Zmodem send of {entry_filename!r} — accept the transfer in your terminal.")

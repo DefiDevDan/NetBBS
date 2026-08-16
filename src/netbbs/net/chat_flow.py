@@ -144,6 +144,7 @@ from netbbs.moderation import ChannelPermission, has_permission
 from netbbs.net.char_input import Completer, InputHistory, LiveInputBuffer, reject_unhandled_key
 from netbbs.net.char_input import move_cursor as relative_move_cursor
 from netbbs.net.picker import pick_item
+from netbbs.net.redraw_preference import redraw_in_place_enabled
 from netbbs.net.session import Session, SessionClosedError
 from netbbs.net.session_registry import ActiveSessionRegistry
 from netbbs.net.sort_ui import SORT_MODE_LABELS, prompt_sort_change
@@ -3201,6 +3202,7 @@ async def _chat_loop(
             breadcrumb=("NetBBS", "Chat"),
             subtitle=sanitize_text(channel.topic or channel.description or "Live conversation"),
             width=session.terminal_width,
+            clear=await lane.run(redraw_in_place_enabled, user),
         )
         await session.write_line(f"\r\n{heading}")
 
@@ -3953,6 +3955,8 @@ async def run_direct_chat_loop(
     user: User,
     other_user: User,
     room_token: str,
+    *,
+    redraw_in_place: bool = False,
 ) -> None:
     """
     Real-time 1:1 direct chat, until either side types `/close`, the
@@ -4018,6 +4022,7 @@ async def run_direct_chat_loop(
             breadcrumb=("NetBBS", "Direct chat"),
             subtitle="Private, ephemeral conversation",
             width=session.terminal_width,
+            clear=redraw_in_place,
         )
         await session.write_line(f"\r\n{heading}")
         await session.write_line(f"Type {close_hint}.")
@@ -4211,6 +4216,7 @@ async def run_direct_chat_invite_flow(
         breadcrumb=("NetBBS", "Direct chat"),
         subtitle=f"Waiting for {sanitize_text(target.username)} to respond",
         width=session.terminal_width,
+        clear=await lane.run(redraw_in_place_enabled, user),
     )
     await session.write_line(f"\r\n{heading}")
     await session.write(f"{menu_key('C', 'ancel')}: ")
@@ -4283,7 +4289,10 @@ async def run_direct_chat_invite_flow(
 
     if outcome == "accepted":
         await session.write_line(colored(f"\r\n{sanitize_text(target.username)} accepted.", fg_color=SUCCESS_COLOR))
-        await run_direct_chat_loop(session, hub, presence, user, target, invites[accepted_session].room_token)
+        await run_direct_chat_loop(
+            session, hub, presence, user, target, invites[accepted_session].room_token,
+            redraw_in_place=await lane.run(redraw_in_place_enabled, user),
+        )
     elif outcome == "declined":
         await session.write_line(colored(f"\r\n{sanitize_text(target.username)} declined.", fg_color=MUTED_COLOR))
     else:  # "timed_out" -- "cancelled" never reaches here (that's only ever this same inviter's own cancel_key_task path above)

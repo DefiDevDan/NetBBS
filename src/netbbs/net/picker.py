@@ -92,6 +92,7 @@ async def pick_item(
     on_sort: Callable[[], Awaitable[Sequence[T] | None]] | None = None,
     sort_label: Callable[[], str] | None = None,
     description_level: str = "off",
+    redraw_in_place: bool = False,
 ) -> T | None:
     """
     Let the user browse/search/jump through `items` and pick one, or
@@ -183,6 +184,13 @@ async def pick_item(
     accounts for the nav block's actual line count instead of assuming
     the old constant 1-line nav that `_RESERVED_LINES` was calibrated
     against, so paging math and the real on-screen nav never disagree.
+
+    `redraw_in_place` (dogfood feature request, `netbbs.net.
+    redraw_preference`) clears the terminal before every redraw of this
+    screen instead of printing a fresh block below the last one -- same
+    "caller resolves the preference once, this function just trusts it"
+    shape as `description_level`. `False` by default, so an existing
+    caller that doesn't pass it renders exactly as before.
     """
     if not items and refresh is None:
         await session.write_line(colored(f"\r\n{empty_message}", fg_color=MUTED_COLOR))
@@ -217,6 +225,7 @@ async def pick_item(
                 title,
                 subtitle=f"page {page_index + 1}/{total_pages}, {len(working_set)} total",
                 width=session.terminal_width,
+                clear=redraw_in_place,
             )
         )
         for position, item in enumerate(page_items, start=1):
