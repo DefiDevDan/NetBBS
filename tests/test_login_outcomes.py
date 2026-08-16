@@ -142,7 +142,8 @@ def test_ssh_session_skips_login_and_reaches_main_menu_directly(db):
     exhaust the queue asking for a password, raising StopIteration
     rather than silently succeeding."""
     create_user(db, "alice", password="hunter2", user_level=10)
-    session = _SSHFakeSession(["l"], lines=["y"])  # logoff immediately, confirmed
+    # Leading "n" answers the one-time post-login Unicode-style prompt.
+    session = _SSHFakeSession(["l"], lines=["n", "y"])  # logoff immediately, confirmed
     session.authenticated_username = "alice"
 
     asyncio.run(

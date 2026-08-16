@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from netbbs.rendering.ansi import clear_screen, colored
+from netbbs.rendering.reflow import colored_truncate
 from netbbs.rendering.theme import (
     ERROR_COLOR,
     HEADER_COLOR,
@@ -108,8 +109,9 @@ def screen_title(
     subtitle: str | None = None,
     width: int = 80,
     clear: bool = False,
+    unicode_style: bool = False,
 ) -> str:
-    """Render a compact location/title block with an ASCII-safe divider.
+    """Render a compact location/title block with a divider.
 
     `clear` (dogfood feature request -- `netbbs.net.redraw_preference`),
     if `True`, prepends `clear_screen()` -- home the cursor and blank
@@ -119,14 +121,45 @@ def screen_title(
     by passing the resolved `redraw_in_place_enabled(db, user)` value,
     the same "resolve once, pass down" shape `menu_grid`'s own
     `description_level` already uses -- this stays a pure rendering
-    function with no `Session`/`Database` access of its own."""
+    function with no `Session`/`Database` access of its own.
+
+    `unicode_style` (dogfood feature request -- `netbbs.net.
+    unicode_style_preference`) joins multi-level breadcrumbs with a "›"
+    arrow instead of a plain "/", and colors every ancestor level
+    `METADATA_COLOR` (muted) with only the final, current-location
+    segment in `HEADER_COLOR` -- "NetBBS › System › Trust
+    policy" instead of one uniformly-colored "NetBBS / System / Trust
+    policy", directly answering a dogfood report that the old flat
+    breadcrumb was hard to parse at a glance. `False` by default here
+    too -- even though `unicode_style_preference` itself defaults to
+    `True` (unlike `redraw_in_place`'s own off-by-default choice; see
+    that preference module's own docstring for why), this local
+    parameter stays conservative so every existing caller/test renders
+    byte-for-byte as before until a caller explicitly threads the
+    resolved `unicode_style_enabled(db, user)` value through, the exact
+    same "safe local default, rich preference default" split `clear`
+    already established -- flipping this one's own default to match the
+    preference's would have silently changed output (and broken
+    literal-text assertions) for every one of `screen_title`'s many
+    existing callers/tests before any of them opted in on purpose.
+    """
     if width < 1:
         raise ValueError("width must be >= 1")
-    location = " / ".join((*breadcrumb, title)) if breadcrumb else title
-    lines = [colored(cut_to_width(location, width), fg_color=HEADER_COLOR, bold=True)]
+    segments = (*breadcrumb, title) if breadcrumb else (title,)
+    plain_location = " / ".join(segments)
+    if unicode_style and len(segments) > 1:
+        colored_segments: list[tuple[str, int | None]] = []
+        for segment in segments[:-1]:
+            colored_segments.append((segment, METADATA_COLOR))
+            colored_segments.append((" › ", METADATA_COLOR))
+        colored_segments.append((segments[-1], HEADER_COLOR))
+        location_line = colored_truncate(colored_segments, width, ellipsis="")
+    else:
+        location_line = colored(cut_to_width(plain_location, width), fg_color=HEADER_COLOR, bold=True)
+    lines = [location_line]
     if subtitle:
         lines.append(colored(cut_to_width(subtitle, width), fg_color=METADATA_COLOR))
-    lines.append(colored("-" * min(width, max(12, display_width(location))), fg_color=METADATA_COLOR))
+    lines.append(colored("-" * min(width, max(12, display_width(plain_location))), fg_color=METADATA_COLOR))
     result = "\r\n".join(lines)
     return f"{clear_screen()}{result}" if clear else result
 

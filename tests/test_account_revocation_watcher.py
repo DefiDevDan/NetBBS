@@ -201,7 +201,8 @@ def test_watcher_does_not_disconnect_a_still_active_session(db):
     hub, presence, mailbox = ChatHub(), PresenceRegistry(), MessageMailbox()
     registry = ActiveSessionRegistry()
     alice = create_user(db, "alice", password="hunter2", user_level=10)
-    session = FakeSession(["l", "y"])  # logs off normally, on its own (confirmed)
+    # Leading "n" answers the one-time post-login Unicode-style prompt.
+    session = FakeSession(["n", "l", "y"])  # logs off normally, on its own (confirmed)
 
     async def scenario():
         task = asyncio.create_task(_drive(db, hub, presence, mailbox, registry, alice, session))
@@ -216,7 +217,8 @@ def test_watcher_task_does_not_leak_after_normal_logoff(db):
     hub, presence, mailbox = ChatHub(), PresenceRegistry(), MessageMailbox()
     registry = ActiveSessionRegistry()
     alice = create_user(db, "alice", password="hunter2", user_level=10)
-    session = FakeSession(["l", "y"])  # confirmed logoff
+    # Leading "n" answers the one-time post-login Unicode-style prompt.
+    session = FakeSession(["n", "l", "y"])  # confirmed logoff
 
     async def scenario():
         current = asyncio.current_task()
@@ -237,7 +239,8 @@ def test_watcher_disconnects_a_session_stuck_composing_a_board_post(db):
     registry = ActiveSessionRegistry()
     # m -> boards, 01 -> pick "general" (only board, empty -- skips
     # straight to the compose prompt), then block on the subject read.
-    session = FakeSession(["m", "0", "1"])
+    # Leading "n" answers the one-time post-login Unicode-style prompt.
+    session = FakeSession(["n", "m", "0", "1"])
 
     async def scenario():
         task = asyncio.create_task(_drive(db, hub, presence, mailbox, registry, alice, session))
@@ -256,7 +259,8 @@ def test_watcher_disconnects_a_session_stuck_inside_a_file_area(db):
     registry = ActiveSessionRegistry()
     # f -> file areas, 01 -> pick "docs" (only area, empty -- lands on
     # its own "Command (or press Enter to go back):" prompt), block.
-    session = FakeSession(["f", "0", "1"])
+    # Leading "n" answers the one-time post-login Unicode-style prompt.
+    session = FakeSession(["n", "f", "0", "1"])
 
     async def scenario():
         task = asyncio.create_task(_drive(db, hub, presence, mailbox, registry, alice, session))
@@ -274,7 +278,8 @@ def test_watcher_disconnects_a_session_stuck_inside_the_profile_screen(db):
     hub, presence, mailbox = ChatHub(), PresenceRegistry(), MessageMailbox()
     registry = ActiveSessionRegistry()
     # p -> profile, then block on the profile sub-menu's own key read.
-    session = FakeSession(["p"])
+    # Leading "n" answers the one-time post-login Unicode-style prompt.
+    session = FakeSession(["n", "p"])
 
     async def scenario():
         task = asyncio.create_task(_drive(db, hub, presence, mailbox, registry, alice, session))
@@ -296,7 +301,8 @@ def test_watcher_disconnects_a_disabled_sysop_stuck_inside_the_admin_menu(db):
     hub, presence, mailbox = ChatHub(), PresenceRegistry(), MessageMailbox()
     registry = ActiveSessionRegistry()
     # a -> admin menu, then block on its own top-level key read.
-    session = FakeSession(["a"])
+    # Leading "n" answers the one-time post-login Unicode-style prompt.
+    session = FakeSession(["n", "a"])
 
     async def scenario():
         task = asyncio.create_task(_drive(db, hub, presence, mailbox, registry, sysop, session))

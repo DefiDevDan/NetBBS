@@ -145,6 +145,11 @@ from netbbs.net.chat_flow import (
 from netbbs.net.color_depth_preference import color_depth_override, set_color_depth_override
 from netbbs.net.menu_description_preference import menu_description_level, set_menu_description_level
 from netbbs.net.redraw_preference import redraw_in_place_enabled, set_redraw_in_place_enabled
+from netbbs.net.unicode_style_preference import (
+    set_unicode_style_enabled,
+    unicode_style_enabled,
+    unicode_style_ever_set,
+)
 from netbbs.net.composition import ReviewAction, edit_line_body, review_composition
 from netbbs.net.draft_storage import delete_draft, drafts_directory, load_draft
 from netbbs.net.editor_preference import fullscreen_editor_enabled, set_fullscreen_editor_enabled
@@ -548,6 +553,44 @@ async def _watch_for_account_revocation(
             return
 
 
+async def _confirm_unicode_style(session: Session, db: Database, user: User) -> None:
+    """One-time post-login check (dogfood feature request): shows a
+    live sample of the Unicode breadcrumb style and asks whether it
+    rendered cleanly, since -- unlike `netbbs.net.color_depth_
+    preference`'s own COLORTERM signal -- there's no reliable way to
+    detect real UTF-8 terminal support ahead of time. The sample is
+    built with the actual `screen_title(..., unicode_style=True)`, not
+    a hand-typed copy, so what's shown always matches what real screens
+    will actually look like.
+
+    Fires exactly once per account, gated on `unicode_style_ever_set`.
+    Answering either way -- including keeping it on -- writes the
+    preference, which itself counts as "touched" and prevents asking
+    again (`netbbs.net.unicode_style_preference`'s own established
+    contract, shared with `redraw_preference`)."""
+    if unicode_style_ever_set(db, user):
+        return
+    await session.write_line(
+        colored("\r\nNetBBS can use a few Unicode characters for a cleaner look, like this:", fg_color=METADATA_COLOR)
+    )
+    await session.write_line(
+        screen_title(
+            "Example", breadcrumb=("NetBBS", "System"), width=session.terminal_width, unicode_style=True
+        ).split("\r\n")[0]
+    )
+    switch_off = await prompt_yes_no(
+        session, "Does that look garbled or wrong? Switch to plain ASCII instead?", default=False
+    )
+    set_unicode_style_enabled(db, user, not switch_off)
+    if switch_off:
+        await session.write_line(
+            colored(
+                "Switched to plain ASCII style. You can change this later in Your profile.",
+                fg_color=MUTED_COLOR,
+            )
+        )
+
+
 async def run_authenticated_session(
     session: Session,
     db: Database,
@@ -666,6 +709,14 @@ async def run_authenticated_session(
             _watch_for_account_revocation(session, db, user, node_controls.session_registry)
         )
     try:
+        # Deliberately after the watcher task above, not alongside the
+        # other post-login notices earlier in this function: unlike
+        # those (which only ever print, never read), this is genuinely
+        # interactive and could block indefinitely on a session that
+        # never answers -- placing it before the watcher existed would
+        # leave a revoked account's session completely unprotected for
+        # as long as it sat here (GitHub issue #29's whole point).
+        await _confirm_unicode_style(session, db, user)
         await _main_menu(
             session, db, hub, presence, mailbox, history, user,
             node_controls=node_controls, lane=lane, link_context=link_context, direct_invites=direct_invites,

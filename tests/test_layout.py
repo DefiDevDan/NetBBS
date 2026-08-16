@@ -40,6 +40,48 @@ def test_screen_title_clear_prepends_clear_screen():
     assert cleared == f"{clear_screen()}{result}"
 
 
+def test_screen_title_unicode_style_off_by_default():
+    """Dogfood feature request: even though `unicode_style_preference`
+    itself defaults to on, this function's own local parameter stays
+    conservative -- every existing caller/test renders byte-for-byte as
+    before until a caller explicitly threads the resolved preference
+    through."""
+    result = visible(screen_title("Trust policy", breadcrumb=("NetBBS", "System"), width=80))
+    assert "NetBBS / System / Trust policy" in result
+    assert "›" not in result
+
+
+def test_screen_title_unicode_style_uses_arrow_separator():
+    result = visible(
+        screen_title("Trust policy", breadcrumb=("NetBBS", "System"), width=80, unicode_style=True)
+    )
+    assert "NetBBS › System › Trust policy" in result
+    assert "/" not in result.split("\r\n")[0]
+
+
+def test_screen_title_unicode_style_colors_ancestors_muted_and_title_prominent():
+    """The other half of the dogfood report: ancestor levels ("NetBBS",
+    "System") should read as less important than the current location
+    ("Trust policy") -- muted color for ancestors, the header color
+    reserved for the final segment only."""
+    result = screen_title("Trust policy", breadcrumb=("NetBBS", "System"), width=80, unicode_style=True)
+    from netbbs.rendering import HEADER_COLOR, METADATA_COLOR
+    from netbbs.rendering.ansi import colored
+
+    assert colored("NetBBS", fg_color=METADATA_COLOR) in result
+    assert colored("Trust policy", fg_color=HEADER_COLOR) in result
+    assert colored("Trust policy", fg_color=METADATA_COLOR) not in result
+
+
+def test_screen_title_unicode_style_with_no_breadcrumb_is_unaffected():
+    """A single-segment title (breadcrumb=()) has no ancestor level to
+    color differently or separator to swap -- unicode_style is simply a
+    no-op here, not an error."""
+    plain = screen_title("Home", breadcrumb=(), width=80)
+    styled = screen_title("Home", breadcrumb=(), width=80, unicode_style=True)
+    assert plain == styled
+
+
 def test_screen_title_truncates_every_visible_line_to_terminal_width():
     result = screen_title("A title far too long", subtitle="also much too long", width=12)
     assert all(visible_width(line) <= 12 for line in result.split("\r\n"))
