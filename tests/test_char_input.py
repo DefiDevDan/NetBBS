@@ -24,6 +24,7 @@ from netbbs.net.char_input import (
     REDRAW_KEY,
     REFRESH_KEY,
     EditorKeyKind,
+    discard_buffered_enter,
     read_editor_key,
     read_key,
     read_line,
@@ -658,5 +659,91 @@ def test_read_editor_key_connection_closed_raises():
         source = FakeByteSource(b"")
         with pytest.raises(SessionClosedError):
             await read_editor_key(source)
+
+    asyncio.run(scenario())
+
+
+# -- discard_buffered_enter (dogfood follow-up: a hotkey typed as one --
+# -- "C<Enter>" habit was leaking that Enter into the very next prompt) --
+
+
+def test_discard_buffered_enter_consumes_a_trailing_cr_lf():
+    async def scenario():
+        # Simulates a hotkey byte (consumed by the caller before this
+        # point, not part of this call) immediately followed by CRLF --
+        # the same "typed as one burst" shape a habitual "C<Enter>"
+        # keypress produces. Without discarding it, the very next
+        # read_line() would see this CRLF as an immediate blank Enter.
+        source = FakeByteSource(b"\r\nhello\r\n")
+        await discard_buffered_enter(source)
+        writer = Writer()
+        line = await read_line(source, writer)
+        assert line == "hello"
+
+    asyncio.run(scenario())
+
+
+def test_discard_buffered_enter_consumes_a_bare_cr():
+    async def scenario():
+        # A bare CR with no following LF (some clients never send one) --
+        # `_consume_optional_lf_or_nul`'s other half of the same job.
+        source = FakeByteSource(b"\rhello\r\n")
+        await discard_buffered_enter(source)
+        writer = Writer()
+        line = await read_line(source, writer)
+        assert line == "hello"
+
+    asyncio.run(scenario())
+
+
+def test_discard_buffered_enter_pushes_back_a_real_character_unharmed():
+    async def scenario():
+        # Nothing was actually buffered behind the hotkey -- the very
+        # next byte is real, ordinary input for the next prompt, not a
+        # leftover Enter. It must not be lost.
+        source = FakeByteSource(b"hello\r\n")
+        await discard_buffered_enter(source)
+        writer = Writer()
+        line = await read_line(source, writer)
+        assert line == "hello"
+
+    asyncio.run(scenario())
+
+
+def test_read_line_bells_once_when_the_length_cap_drops_a_character():
+    # Dogfood follow-up: a line past `_MAX_LINE_LENGTH` used to drop the
+    # excess silently, with zero indication to the caller that anything
+    # was lost -- worst for a pasted letter body far longer than the cap.
+    # One bell, not one per dropped character (which would turn a long
+    # paste into a bell storm) -- Backspace/movement/Enter still work
+    # normally past the cap either way.
+    async def scenario():
+        overlong = b"x" * (char_input_module._MAX_LINE_LENGTH + 50) + b"\r\n"
+        source = FakeByteSource(overlong)
+        writer = Writer()
+        line = await read_line(source, writer)
+        assert len(line) == char_input_module._MAX_LINE_LENGTH
+        assert writer.joined.count("\a") == 1
+
+    asyncio.run(scenario())
+
+
+def test_read_line_does_not_bell_for_a_line_within_the_length_cap():
+    async def scenario():
+        source = FakeByteSource(b"hello\r\n")
+        writer = Writer()
+        await read_line(source, writer)
+        assert "\a" not in writer.joined
+
+    asyncio.run(scenario())
+
+
+def test_discard_buffered_enter_is_a_no_op_when_nothing_arrives_in_time():
+    async def scenario():
+        # No buffered byte at all (a genuinely idle connection, the
+        # common case) -- must return promptly rather than hang, and
+        # must not disturb whatever arrives later for real.
+        source = FakeByteSource(b"")
+        await discard_buffered_enter(source)
 
     asyncio.run(scenario())

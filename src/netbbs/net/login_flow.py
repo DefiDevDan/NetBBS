@@ -1024,7 +1024,16 @@ async def _draw_main_menu(
     title = screen_title(
         "Main menu:",
         subtitle=f"{sanitize_text(user.username)}  /  level {user.user_level}"
-        + (f"  /  {unread} unread mail" if unread else "  /  mail caught up"),
+        + (
+            # "mail" pluralized is "mails," which reads oddly -- the Mail
+            # submenu's own header (`_render_mail_menu`) already settled
+            # this exact wording as "message(s)"; matching it here fixes
+            # both the missing pluralization and a term the app wasn't
+            # even using consistently with itself.
+            f"  /  {unread} unread message{'' if unread == 1 else 's'}"
+            if unread
+            else "  /  mail caught up"
+        ),
         width=session.terminal_width,
     )
     options = menu_grid(

@@ -17,6 +17,7 @@ htmlcov/
 *.db
 *.sqlite3
 identity_keys/
+netbbs_identity/
 node.key
 node.pub
 

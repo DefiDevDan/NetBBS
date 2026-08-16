@@ -59,6 +59,7 @@ from netbbs.mail import (
 )
 from netbbs.net.char_input import reject_unhandled_key
 from netbbs.net.composition import ReviewAction, edit_line_body, review_composition
+from netbbs.net.confirm import prompt_yes_no
 from netbbs.net.editor_preference import fullscreen_editor_enabled
 from netbbs.net.picker import pick_item
 from netbbs.net.prose_editor import edit_prose
@@ -255,6 +256,8 @@ async def _show_inbox_message(session: Session, lane: DatabaseLane, user: User, 
             return
         elif choice == "d":
             await session.write_line("")
+            if not await prompt_yes_no(session, "Delete this message?", default=False):
+                continue
             await lane.run(delete_for_recipient, user, message)
             await session.write_line(colored("Message deleted.", fg_color=SUCCESS_COLOR))
             return
@@ -292,6 +295,8 @@ async def _show_sent_message(session: Session, lane: DatabaseLane, user: User, m
             return
         elif choice == "d":
             await session.write_line("")
+            if not await prompt_yes_no(session, "Delete this message?", default=False):
+                continue
             await lane.run(delete_for_sender, user, message)
             await session.write_line(colored("Message deleted.", fg_color=SUCCESS_COLOR))
             return
@@ -316,24 +321,47 @@ async def _compose_mail(
     fresh-compose path: a reply always targets an already-resolved
     local `User` (`prefill_recipient`), never a typed address.
     """
+    # Both entry points here are a hotkey (`[C]ompose`/`[R]eply`)
+    # immediately followed by a `read_line()` prompt -- an Enter that
+    # arrives right behind that hotkey (e.g. typed as one "C<Enter>"
+    # habit) would otherwise be consumed as a blank answer to whichever
+    # prompt comes first, cancelling compose outright on the fresh-
+    # compose path. Same fix `netbbs.net.confirm.read_confirmation_
+    # choice` already applies for Y/N prompts, just not previously wired
+    # up for a hotkey-to-text-prompt transition. `getattr` guard matches
+    # that same call site -- not every lightweight `Session`-like test
+    # double implements this optional method.
+    discard_buffered_enter = getattr(session, "discard_buffered_enter", None)
+    if discard_buffered_enter is not None:
+        await discard_buffered_enter()
+
     if prefill_recipient is not None:
         recipient_text = prefill_recipient.username
         await session.write_line(f"To: {sanitize_text(recipient_text)}")
     else:
         prompt = "username or user@node-fingerprint" if link_context is not None else "username"
-        await session.write(f"\r\nTo ({prompt}): ")
-        recipient_text = (await session.read_line()).strip()
-        if not recipient_text:
-            await session.write_line(colored("Cancelled.", fg_color=MUTED_COLOR))
-            return
-        if link_context is None or "@" not in recipient_text:
+        while True:
+            await session.write(f"\r\nTo ({prompt}): ")
+            recipient_text = (await session.read_line()).strip()
+            if not recipient_text:
+                await session.write_line(colored("Cancelled.", fg_color=MUTED_COLOR))
+                return
+            if link_context is not None and "@" in recipient_text:
+                break
             try:
                 await lane.run(get_user_by_username, recipient_text)
             except AuthError:
+                # Retry in place rather than discarding the whole compose
+                # attempt on one typo -- the identical error at the final
+                # commit step below already only re-prompts for the
+                # recipient, keeping subject/body intact; this matches
+                # that, instead of the harsher "start over" outcome
+                # hitting it here first would otherwise cause.
                 await session.write_line(
                     colored(f"No such user: {sanitize_text(recipient_text)!r}", fg_color=ERROR_COLOR)
                 )
-                return
+                continue
+            break
 
     if prefill_subject:
         await session.write(f"Subject [{sanitize_text(prefill_subject)}] (Enter to keep): ")

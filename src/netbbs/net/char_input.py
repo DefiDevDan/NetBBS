@@ -654,6 +654,7 @@ async def _read_line_editable(
     saved_in_progress: list[str] | None = None
     submitted = ""  # set from `line` the moment Enter is handled, below
     last_candidates = LastCandidateList()
+    line_limit_warned = False  # bell once per read_line() call, not once per dropped character
 
     while True:
         b = await _read_byte(source)
@@ -813,9 +814,19 @@ async def _read_line_editable(
                     continue
 
                 if len(line) >= _MAX_LINE_LENGTH:
-                    # silently drop the character but keep reading —
-                    # Backspace, movement, and Enter still work normally
-                    # past the cap.
+                    # Drop the character but keep reading — Backspace,
+                    # movement, and Enter still work normally past the
+                    # cap. A bell once (not once per dropped character,
+                    # which would turn a long paste into a bell storm)
+                    # is the same "rejected, but the prompt stays active"
+                    # signal invalid-key rejection already uses elsewhere
+                    # (e.g. `netbbs.net.confirm.read_confirmation_
+                    # choice`) -- silent truncation with zero feedback
+                    # previously let a caller paste a letter far past
+                    # this cap with no indication the tail was lost.
+                    if not line_limit_warned:
+                        await write("\a")
+                        line_limit_warned = True
                     continue
 
                 edit_pos = cursor

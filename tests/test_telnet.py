@@ -818,11 +818,18 @@ def test_malformed_new_environ_subnegotiation_does_not_raise():
 
 def test_line_length_is_capped():
     """
-    Characters beyond the cap are neither stored nor echoed — confirmed
-    deliberately, not just "doesn't crash": echoing characters we then
-    silently drop would show the user a complete line while actually
-    storing a truncated one, a display/storage mismatch worse than the
-    truncation itself.
+    Characters beyond the cap are neither stored nor echoed as
+    themselves — confirmed deliberately, not just "doesn't crash":
+    echoing characters we then silently drop would show the user a
+    complete line while actually storing a truncated one, a
+    display/storage mismatch worse than the truncation itself.
+
+    A single bell (`\\a`) *is* echoed the moment the cap is first hit
+    (dogfood follow-up: silent truncation gave zero indication anything
+    was lost) -- distinct from echoing the dropped character itself, so
+    it doesn't reintroduce the display/storage mismatch this test
+    guards against; every character after the first over the cap is
+    still dropped with no further echo of any kind.
     """
     received = []
 
@@ -836,8 +843,8 @@ def test_line_length_is_capped():
             await skip_initial_negotiation(reader)
             writer.write(b"a" * 5000 + b"\r\n")
             await writer.drain()
-            echoed = await reader.readexactly(4096 + 2)
-            assert echoed == b"a" * 4096 + b"\r\n"
+            echoed = await reader.readexactly(4096 + 1 + 2)
+            assert echoed == b"a" * 4096 + b"\a" + b"\r\n"
             writer.close()
             await writer.wait_closed()
         finally:

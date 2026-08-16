@@ -109,6 +109,31 @@ def test_main_menu_shows_unread_count_badge(tmp_path):
     )
 
     assert "(1 unread)" in _written_text(session)
+    assert "1 unread message" in _written_text(session)
+    lane.close()
+    db.close()
+
+
+def test_main_menu_pluralizes_the_unread_message_count(tmp_path):
+    # Dogfood follow-up: the main menu's own subtitle line used to say
+    # "2 unread mail" (no pluralization at all, and inconsistent with
+    # the Mail submenu's own already-correct "2 unread messages").
+    db_path = tmp_path / "node.db"
+    db = Database(db_path)
+    alice = create_user(db, "alice", password="hunter2pw", user_level=10)
+    bob = create_user(db, "bob", password="hunter2pw", user_level=10)
+    send_mail(db, alice, bob, "Hello", "body")
+    send_mail(db, alice, bob, "Hello again", "body")
+    session = FakeSession(keys=["l"], lines=["y"])
+    lane = DatabaseLane(db_path)
+
+    asyncio.run(
+        _main_menu(session, db, ChatHub(), PresenceRegistry(), MessageMailbox(), InputHistory(), bob, lane=lane)
+    )
+
+    text = _written_text(session)
+    assert "2 unread messages" in text
+    assert "2 unread mail" not in text
     lane.close()
     db.close()
 
@@ -197,13 +222,33 @@ def test_inbox_delete_removes_message(tmp_path):
     bob = create_user(db, "bob", password="hunter2pw", user_level=10)
     send_mail(db, alice, bob, "Hello", "body")
 
-    session = FakeSession(keys=["i", "0", "1", "d", "b", "b"])
+    session = FakeSession(keys=["i", "0", "1", "d", "b", "b"], lines=["y"])
     lane = DatabaseLane(db_path)
     asyncio.run(browse_mail(session, lane, bob))
 
     assert "Message deleted." in _written_text(session)
     assert colored("Message deleted.", fg_color=SUCCESS_COLOR) in _written_text(session)
     assert list_inbox(db, bob) == []
+    lane.close()
+    db.close()
+
+
+def test_inbox_delete_declined_at_the_confirmation_keeps_the_message(tmp_path):
+    db_path = tmp_path / "node.db"
+    db = Database(db_path)
+    alice = create_user(db, "alice", password="hunter2pw", user_level=10)
+    bob = create_user(db, "bob", password="hunter2pw", user_level=10)
+    send_mail(db, alice, bob, "Hello", "body")
+
+    # Bare Enter at the confirmation selects its default (No, per
+    # `prompt_yes_no(..., default=False)`) -- back to the message view,
+    # then "b"/"b" out entirely.
+    session = FakeSession(keys=["i", "0", "1", "d", "b", "b", "b"], lines=[""])
+    lane = DatabaseLane(db_path)
+    asyncio.run(browse_mail(session, lane, bob))
+
+    assert "Message deleted." not in _written_text(session)
+    assert list_inbox(db, bob) != []
     lane.close()
     db.close()
 
@@ -255,7 +300,7 @@ def test_sent_lists_recipient_and_delete_removes_it(tmp_path):
     bob = create_user(db, "bob", password="hunter2pw", user_level=10)
     send_mail(db, alice, bob, "Hello", "body")
 
-    session = FakeSession(keys=["s", "0", "1", "d", "b", "b"])
+    session = FakeSession(keys=["s", "0", "1", "d", "b", "b"], lines=["y"])
     lane = DatabaseLane(db_path)
     asyncio.run(browse_mail(session, lane, alice))
 
@@ -290,6 +335,36 @@ def test_compose_sends_a_message(tmp_path):
     db.close()
 
 
+class _EnterTrackingFakeSession(FakeSession):
+    """`FakeSession` has no `discard_buffered_enter` at all (a
+    lightweight test double, matching every other narrow `Session`-like
+    fake in this codebase) -- proves `_compose_mail` actually calls it
+    when present, the way a real `TelnetSession`/`SSHServerSession`
+    would, since `FakeSession`'s own line-scripted `read_line` can't
+    reproduce a genuinely leaked raw Enter byte to test the effect end
+    to end (that's `tests/test_char_input.py`'s job, at the byte level
+    the mechanism itself lives at)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.discard_buffered_enter_calls = 0
+
+    async def discard_buffered_enter(self) -> None:
+        self.discard_buffered_enter_calls += 1
+
+
+def test_compose_discards_a_buffered_enter_right_after_the_hotkey(tmp_path):
+    db_path = tmp_path / "node.db"
+    db = Database(db_path)
+    alice = create_user(db, "alice", password="hunter2pw", user_level=10)
+
+    session = _EnterTrackingFakeSession(keys=["c", "b"], lines=[""])
+    lane = DatabaseLane(db_path)
+    asyncio.run(browse_mail(session, lane, alice))
+
+    assert session.discard_buffered_enter_calls == 1
+
+
 def test_compose_rejects_unknown_recipient(tmp_path):
     db_path = tmp_path / "node.db"
     db = Database(db_path)
@@ -301,6 +376,35 @@ def test_compose_rejects_unknown_recipient(tmp_path):
 
     assert "No such user" in _written_text(session)
     assert f"\x1b[38;5;{ERROR_COLOR}m" in _written_text(session)
+    lane.close()
+    db.close()
+
+
+def test_compose_retries_the_recipient_prompt_in_place_after_an_unknown_username(tmp_path):
+    # Dogfood follow-up: a typo'd recipient used to discard the whole
+    # compose attempt (return straight to the Mail menu); it should
+    # instead just re-prompt for "To:" so a fixable mistake doesn't cost
+    # the subject/body the caller hasn't even typed yet -- matching how
+    # the identical error at final commit time already only re-prompts
+    # for the recipient, not the whole message.
+    db_path = tmp_path / "node.db"
+    db = Database(db_path)
+    alice = create_user(db, "alice", password="hunter2pw", user_level=10)
+    create_user(db, "bob", password="hunter2pw", user_level=10)
+
+    session = FakeSession(
+        keys=["c", "s", "b"],
+        lines=["nobody", "bob", "Hello", "How are you?", ""],
+    )
+    lane = DatabaseLane(db_path)
+    asyncio.run(browse_mail(session, lane, alice))
+
+    text = _written_text(session)
+    assert "No such user" in text
+    assert "Message sent." in text
+    sent = list_sent(db, alice)
+    assert len(sent) == 1
+    assert sent[0].subject == "Hello"
     lane.close()
     db.close()
 
