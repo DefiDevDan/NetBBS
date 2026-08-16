@@ -1019,7 +1019,17 @@ async def _read_utf8_continuation(source: ByteSource, lead_byte: int) -> str | N
     raw = bytearray([lead_byte])
     for _ in range(extra):
         cb = await _read_byte(source)
-        if cb is None or not (0x80 <= cb <= 0xBF):
+        if cb is None:
+            return None
+        if not (0x80 <= cb <= 0xBF):
+            # Not a continuation byte -- the lead byte's sequence is
+            # malformed/incomplete (e.g. a client sending single-byte
+            # Latin-1/CP1252 for extended characters instead of UTF-8),
+            # but `cb` itself is a real byte the caller hasn't consumed
+            # yet. Push it back so it's reprocessed as its own character
+            # on the next read instead of being silently dropped, which
+            # would desync every byte after it for the rest of the line.
+            _push_back(source, cb)
             return None
         raw.append(cb)
 

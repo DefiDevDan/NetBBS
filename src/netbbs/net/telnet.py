@@ -60,6 +60,7 @@ SB = 0xFA  # begin subnegotiation
 SE = 0xF0  # end subnegotiation
 ECHO = 0x01
 SUPPRESS_GO_AHEAD = 0x03
+BINARY = 0x00  # RFC 856 TRANSMIT-BINARY
 NAWS = 0x1F  # Negotiate About Window Size (RFC 1073)
 NEW_ENVIRON = 0x27  # RFC 1572
 NEW_ENVIRON_IS = 0
@@ -146,6 +147,19 @@ class TelnetSession(Session):
         "COLORTERM"`), not a full-environment dump, keeping the exchange
         small and avoiding parsing an arbitrarily large environment from
         an unauthenticated client.
+
+        Also requests TRANSMIT-BINARY (RFC 856) in both directions.
+        Without it, plain NVT ASCII is nominally 7-bit, and a client that
+        actually honors that (dogfood report: NetBSD's base telnet(1),
+        unlike more permissive clients that pass 8 bits through
+        regardless) strips the high bit off every outgoing byte —
+        silently corrupting every multi-byte UTF-8 character the caller
+        types. `DO BINARY` asks the client to stop doing that; `WILL
+        BINARY` declares we'll do the same for data sent to it, matching
+        what `write()` already sends unconditionally. Same fire-and-
+        forget treatment as every other option here — sent last since
+        `_INITIAL_NEGOTIATION`/`_NEW_ENVIRON_REQUEST` in
+        tests/test_telnet.py assert exact byte sequences.
         """
         self._writer.write(bytes([IAC, WILL, SUPPRESS_GO_AHEAD]))
         self._writer.write(bytes([IAC, WILL, ECHO]))
@@ -156,6 +170,8 @@ class TelnetSession(Session):
             + b"COLORTERM"
             + bytes([IAC, SE])
         )
+        self._writer.write(bytes([IAC, WILL, BINARY]))
+        self._writer.write(bytes([IAC, DO, BINARY]))
         await self._writer.drain()
 
     async def write(self, text: str) -> None:

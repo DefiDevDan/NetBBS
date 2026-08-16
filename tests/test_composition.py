@@ -52,6 +52,13 @@ def test_line_editor_prefills_existing_text_and_can_add_literal_slash_line():
     assert body == "hello\nworld\n/signature"
 
 
+def test_line_editor_help_is_reachable_via_help_and_question_mark_aliases():
+    session = FakeSession(lines=("/help", "/?", "/cancel"))
+    body = asyncio.run(edit_line_body(session, initial_text=None, max_bytes=1_000, max_lines=20))
+    assert body is None
+    assert _text(session).count("Line editor commands:") == 2
+
+
 def test_line_editor_cancel_is_distinct_from_an_empty_body():
     session = FakeSession(lines=("/cancel",))
     assert asyncio.run(edit_line_body(session, initial_text=None, max_bytes=1_000, max_lines=20)) is None

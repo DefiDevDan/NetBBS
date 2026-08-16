@@ -47,7 +47,7 @@ async def _show_line_editor_help(session: Session) -> None:
     await session.write_line("  /edit N     replace line N")
     await session.write_line("  /delete N   delete line N")
     await session.write_line("  /cancel     discard the composition")
-    await session.write_line("  /help       show these commands")
+    await session.write_line("  /help, /?   show these commands")
     await session.write_line("  //text      add a line beginning with /")
 
 
@@ -90,7 +90,7 @@ async def edit_line_body(
     """
     lines = initial_text.split("\n") if initial_text is not None else []
     await session.write_line(
-        "Enter message text. Blank line or /done reviews the draft; /help shows editing commands."
+        "Enter message text. Blank line or /done reviews the draft; /help or /? shows editing commands."
     )
     if lines:
         await _show_lines(session, lines)
@@ -124,7 +124,7 @@ async def edit_line_body(
             return body
         if lowered == "/cancel":
             return None
-        if lowered == "/help":
+        if lowered in ("/help", "/?"):
             await _show_line_editor_help(session)
             continue
         if lowered == "/list":

@@ -151,6 +151,34 @@ def test_read_line_decodes_two_byte_utf8():
     asyncio.run(scenario())
 
 
+def test_read_line_recovers_byte_after_malformed_utf8_lead_byte():
+    async def scenario():
+        # 0xD6 is a valid two-byte UTF-8 lead byte, but here it's followed
+        # by an ordinary ASCII byte instead of a continuation byte -- e.g.
+        # a client sending a Latin-1/CP1252 extended character as a single
+        # byte instead of real UTF-8. The malformed sequence must be
+        # discarded without losing the ASCII byte that broke it.
+        source = FakeByteSource(bytes([0xD6, ord("A")]) + b"\r\n")
+        writer = Writer()
+        line = await read_line(source, writer)
+        assert line == "A"
+
+    asyncio.run(scenario())
+
+
+def test_read_line_recovers_repeated_malformed_utf8_lead_bytes():
+    async def scenario():
+        # Regression for the reported bug: repeatedly typing an umlaut
+        # whose bytes aren't valid UTF-8 continuations must not desync the
+        # rest of the line -- each malformed lead byte drops only itself.
+        source = FakeByteSource(bytes([0xD6, 0xD6, 0xD6]) + b"ok\r\n")
+        writer = Writer()
+        line = await read_line(source, writer)
+        assert line == "ok"
+
+    asyncio.run(scenario())
+
+
 def test_read_line_discards_csi_escape_sequence():
     async def scenario():
         # ESC [ A (an up-arrow CSI sequence) shouldn't corrupt the line.

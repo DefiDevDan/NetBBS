@@ -20,6 +20,7 @@ import time
 from netbbs.net.confirm import prompt_yes_no
 from netbbs.net.session import Session
 from netbbs.net.telnet import (
+    BINARY,
     DO,
     ECHO,
     IAC,
@@ -50,11 +51,18 @@ _NEW_ENVIRON_REQUEST = bytes([IAC, DO, NEW_ENVIRON]) + bytes(
     [IAC, SB, NEW_ENVIRON, NEW_ENVIRON_SEND, NEW_ENVIRON_VAR]
 ) + b"COLORTERM" + bytes([IAC, SE])
 
+# Immediately follows _NEW_ENVIRON_REQUEST: IAC WILL BINARY, IAC DO
+# BINARY (RFC 856) -- see negotiate_initial_options's docstring for why
+# this matters for non-ASCII input (issue #152).
+_BINARY_REQUEST = bytes([IAC, WILL, BINARY, IAC, DO, BINARY])
+
 # Every connection now sends _INITIAL_NEGOTIATION followed immediately by
-# _NEW_ENVIRON_REQUEST -- tests that don't care about the negotiation
-# bytes themselves (the overwhelming majority) skip past both as one
-# chunk before reading application-level data.
-_FULL_NEGOTIATION_LEN = len(_INITIAL_NEGOTIATION) + len(_NEW_ENVIRON_REQUEST)
+# _NEW_ENVIRON_REQUEST and then _BINARY_REQUEST -- tests that don't care
+# about the negotiation bytes themselves (the overwhelming majority) skip
+# past all three as one chunk before reading application-level data.
+_FULL_NEGOTIATION_LEN = (
+    len(_INITIAL_NEGOTIATION) + len(_NEW_ENVIRON_REQUEST) + len(_BINARY_REQUEST)
+)
 
 
 async def skip_initial_negotiation(reader: asyncio.StreamReader) -> None:
@@ -692,6 +700,26 @@ def test_server_requests_colorterm_via_new_environ_after_naws():
             await reader.readexactly(9)
             data = await reader.readexactly(len(_NEW_ENVIRON_REQUEST))
             assert data == _NEW_ENVIRON_REQUEST
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
+def test_server_requests_binary_transmission_after_new_environ():
+    async def handler(session: Session):
+        await session.write_line("done")
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await reader.readexactly(9)
+            await reader.readexactly(len(_NEW_ENVIRON_REQUEST))
+            data = await reader.readexactly(len(_BINARY_REQUEST))
+            assert data == _BINARY_REQUEST
             writer.close()
             await writer.wait_closed()
         finally:
