@@ -327,3 +327,40 @@ def test_disconnect_without_unsubscribe_is_purged_by_the_watcher(tmp_path):
             await subscriber.teardown()
 
     asyncio.run(scenario())
+
+
+def test_local_interest_reference_counts_holders_per_channel():
+    """Issue #159: `register_local_interest`/`release_local_interest`
+    are the subscriber-side mirror of `_subscribers` above (which tracks
+    the *origin*-side "who subscribes to my channels"). Plain in-memory
+    bookkeeping, no I/O -- covered directly rather than only through the
+    full `_chat_loop` integration test in `test_chat_flow_link.py`."""
+    bridge = LiveChannelBridge(hub=ChatHub(), lane=None)
+    alice_holder, bob_holder = 1, 2
+
+    # First registration for a channel is reported as such; a second,
+    # different holder for the *same* channel is not -- someone else
+    # already established local interest.
+    assert bridge.register_local_interest("channel-a", alice_holder) is True
+    assert bridge.register_local_interest("channel-a", bob_holder) is False
+
+    # Registering the same holder twice (e.g. a caller re-entering the
+    # same channel view) is idempotent, not a second holder.
+    assert bridge.register_local_interest("channel-a", alice_holder) is False
+
+    # Releasing one of two holders is never "the last" -- the other is
+    # still relying on the same feed.
+    assert bridge.release_local_interest("channel-a", alice_holder) is False
+    # Releasing an already-released (or never-registered) holder is a
+    # safe no-op, not an error and not falsely "the last."
+    assert bridge.release_local_interest("channel-a", alice_holder) is False
+    assert bridge.release_local_interest("channel-a", 999) is False
+
+    # The one remaining holder leaving is genuinely the last.
+    assert bridge.release_local_interest("channel-a", bob_holder) is True
+    # A channel with zero holders left releases its own bookkeeping
+    # entirely, so the next registration is a fresh "first" again --
+    # this and the two independent channels below both prove holder
+    # state never leaks across different channel_ids.
+    assert bridge.register_local_interest("channel-a", alice_holder) is True
+    assert bridge.register_local_interest("channel-b", alice_holder) is True

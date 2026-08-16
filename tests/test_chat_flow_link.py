@@ -313,6 +313,76 @@ def test_chat_loop_subscribes_to_a_linked_channels_origin_and_unsubscribes_on_qu
     assert sent_frames[0].payload == {"channel_id": channel.channel_id}
 
 
+def test_a_second_local_caller_still_watching_keeps_the_origin_subscription_alive_when_the_first_leaves(
+    db, lane, hub, presence, channel, alice, node_identity, monkeypatch
+):
+    """Issue #159: the live subscription to a linked channel's origin is
+    a node-level resource (`LiveChannelBridge.register_local_interest`/
+    `release_local_interest`), shared by every local caller currently
+    interested in that channel -- not owned by whichever one view
+    happens to leave first. Without this reference counting, the sibling
+    test above's own single-caller `unsubscribe`-on-quit behavior would
+    be wrong the moment a *second* local caller is also relying on the
+    same feed: the first to `/quit` would send `unsubscribe`
+    unconditionally and silently cut off live delivery for the other."""
+    link_channel(db, channel, node_identity=node_identity)
+    bob = create_user(db, "bob", password="hunter2", user_level=10)
+
+    calls: list[dict] = []
+    sent_frames: list = []
+
+    class _FakeLiveSession:
+        def __init__(self):
+            self.closed = asyncio.Event()
+
+        async def send(self, frame):
+            sent_frames.append(frame)
+
+    shared_live_session = _FakeLiveSession()
+
+    async def fake_ensure_live_subscription(**kwargs):
+        calls.append(kwargs)
+        return shared_live_session
+
+    monkeypatch.setattr(
+        "netbbs.link.realtime_channels.ensure_live_subscription", fake_ensure_live_subscription
+    )
+
+    registry = LinkRealtimeSessionRegistry(own_fingerprint=node_identity.fingerprint)
+    bridge = LiveChannelBridge(hub=hub, lane=lane)
+    link_context = _link_context_for(node_identity, registry=registry, bridge=bridge)
+
+    async def scenario():
+        # Bob joins first and stays -- no scripted `/quit`, so his
+        # FakeSession blocks forever once its (empty) line list runs
+        # out, same "still genuinely connected" shape every other test
+        # here relies on.
+        bob_task = asyncio.create_task(
+            _run(lane, hub, presence, channel, bob, [], link_context=link_context)
+        )
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 2.0
+        while loop.time() < deadline and len(calls) < 1:
+            await asyncio.sleep(0.02)
+        assert len(calls) == 1  # bob is now live-subscribed and interest-registered
+
+        # Alice joins and immediately leaves -- her own `/quit` must NOT
+        # unsubscribe the shared origin session while bob is still here.
+        await _run(lane, hub, presence, channel, alice, ["/quit"], link_context=link_context)
+        assert sent_frames == []
+
+        # Bob disconnects too, now the *last* local holder -- this must
+        # unsubscribe.
+        bob_task.cancel()
+        await asyncio.gather(bob_task, return_exceptions=True)
+        assert len(sent_frames) == 1
+        assert sent_frames[0].type == "unsubscribe"
+        assert sent_frames[0].payload == {"channel_id": channel.channel_id}
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+
+
 def test_chat_loop_announces_the_real_time_link_coming_up_and_going_down(
     db, lane, hub, presence, channel, alice, node_identity, monkeypatch
 ):

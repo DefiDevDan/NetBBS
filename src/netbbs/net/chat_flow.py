@@ -3549,6 +3549,13 @@ async def _chat_loop(
                         )
                     )
                     return
+                # Issue #159: record this caller's own interest in
+                # `channel` -- `finally`'s matching `release_local_
+                # interest` call is unconditional on `live_session_
+                # holder["session"]` being set (i.e. exactly this branch
+                # having been reached), so registration must happen here
+                # unconditionally too, kept in that same lockstep.
+                link_context.realtime_bridge.register_local_interest(channel.channel_id, id(session))
                 await deliver(
                     f"{badge('LIVE', tone='success')} "
                     + colored("Real-time link to this channel's origin is up.", fg_color=MUTED_COLOR)
@@ -3693,16 +3700,25 @@ async def _chat_loop(
             await asyncio.gather(live_subscribe_task, return_exceptions=True)
         live_session = live_session_holder["session"]
         if live_session is not None:
-            # Lazy for the same reason as the matching import above --
-            # only ever reached when `live_subscribe_task` was created,
-            # which itself required this same import to already work.
-            from netbbs.link.protocol import build_unsubscribe_frame
-            from netbbs.link.transport import LinkTransportError
+            # Issue #159: the underlying live subscription is a node-
+            # level resource, shared with any other local caller/view
+            # also currently interested in `channel` -- only send
+            # `unsubscribe` to the origin when `release_local_interest`
+            # reports this was the *last* local holder, or a still-
+            # interested party elsewhere on this node would silently lose
+            # live delivery the moment this one caller leaves.
+            last_holder = link_context.realtime_bridge.release_local_interest(channel.channel_id, id(session))
+            if last_holder:
+                # Lazy for the same reason as the matching import above --
+                # only ever reached when `live_subscribe_task` was created,
+                # which itself required this same import to already work.
+                from netbbs.link.protocol import build_unsubscribe_frame
+                from netbbs.link.transport import LinkTransportError
 
-            try:
-                await live_session.send(build_unsubscribe_frame(channel.channel_id))
-            except LinkTransportError:
-                pass
+                try:
+                    await live_session.send(build_unsubscribe_frame(channel.channel_id))
+                except LinkTransportError:
+                    pass
         hub.leave(channel.name, participant_id)
         recorded_leave = await lane.run(
             record_message, channel, kind="leave", author_label=user.username, author_fingerprint=user.fingerprint

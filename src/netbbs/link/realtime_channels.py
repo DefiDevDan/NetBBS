@@ -90,6 +90,52 @@ class LiveChannelBridge:
         # channel_id -> {peer_fingerprint: session}
         self._subscribers: dict[str, dict[str, LinkRealtimeSession]] = {}
         self._watchers: set[asyncio.Task] = set()
+        # channel_id -> opaque holder ids (issue #159): this node's own
+        # *subscriber*-side interest in a linked channel it doesn't
+        # originate -- the mirror image of `_subscribers` above, which is
+        # the *origin*-side "who subscribes to my channels" bookkeeping.
+        # Needed because a live subscription to a remote origin is a
+        # node-level resource (one `LinkRealtimeSession` per remote
+        # fingerprint, shared by every local caller who wants it), but
+        # `_chat_loop` used to send `unsubscribe` unconditionally on
+        # leaving one channel view -- correct only when exactly one local
+        # party ever cared about that channel at a time, wrong the moment
+        # a second caller (or a caller's own background subscription
+        # alongside another active view) is also relying on the same
+        # feed: the first to leave would silently cut off live delivery
+        # for everyone else still interested.
+        self._local_interest: dict[str, set[int]] = {}
+
+    def register_local_interest(self, channel_id: str, holder: int) -> bool:
+        """Record that `holder` (a caller's own `id(session)`) wants live
+        delivery for `channel_id`. Returns whether this is the *first*
+        local holder -- informational only, since re-sending `subscribe`
+        to an origin that's already subscribed is harmless and idempotent
+        (`_handle_subscribe` just re-registers), so callers aren't
+        required to gate that frame on this return value the way they
+        must gate `unsubscribe` on `release_local_interest`'s."""
+        holders = self._local_interest.setdefault(channel_id, set())
+        first = not holders
+        holders.add(holder)
+        return first
+
+    def release_local_interest(self, channel_id: str, holder: int) -> bool:
+        """Record that `holder` no longer wants live delivery for
+        `channel_id`. Returns whether `holder` was the *last* local
+        holder -- the caller must send `unsubscribe` to the origin only
+        when this is `True`; otherwise some other local caller/view is
+        still relying on the same feed and unsubscribing would silently
+        cut them off. A `holder` that was never registered (e.g. this
+        caller never actually got a live session) is a safe no-op,
+        returning `False`."""
+        holders = self._local_interest.get(channel_id)
+        if holders is None or holder not in holders:
+            return False
+        holders.discard(holder)
+        last = not holders
+        if last:
+            del self._local_interest[channel_id]
+        return last
 
     def track_session(self, session: LinkRealtimeSession) -> None:
         """Spawn the bounded (one per session) watcher that purges
