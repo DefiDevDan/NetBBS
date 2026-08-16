@@ -271,16 +271,33 @@ async def pick_item(
         # (each already deterministically cut via colored_truncate/
         # menu_grid), this one wasn't clamped at all, so whichever
         # client rendered it wrapped wherever it happened to land,
-        # sometimes mid-word. Cut the trailer to whatever room remains
-        # on the nav's own last line instead -- the nav portion itself
-        # is left intact (it's already width-aware), mirroring
-        # `menu_grid`'s own established "hard cut, not a client wrap"
-        # convention for this kind of trailing informational text.
+        # sometimes mid-word. Cut the trailer to whatever room remains,
+        # mirroring `menu_grid`'s own established "hard cut, not a
+        # client wrap" convention for this kind of trailing text.
         separator = " — "
         last_nav_line = nav.rsplit("\r\n", 1)[-1]
-        available_for_trailer = session.terminal_width - visible_width(last_nav_line) - visible_width(separator)
-        trailer = cut_to_width(trailer, max(0, available_for_trailer))
-        await session.write_line(f"\r\n{nav}{separator}{trailer}" if trailer else f"\r\n{nav}")
+        if description_level == "off":
+            # The compact `action_bar` form's last (often only) line is
+            # short, so folding the trailer onto it is cheap and keeps
+            # this screen's height completely unchanged from before
+            # descriptions existed at all.
+            available_for_trailer = session.terminal_width - visible_width(last_nav_line) - visible_width(separator)
+            trailer = cut_to_width(trailer, max(0, available_for_trailer))
+            await session.write_line(f"\r\n{nav}{separator}{trailer}" if trailer else f"\r\n{nav}")
+        else:
+            # `menu_grid`'s own last line, unlike `action_bar`'s, is
+            # often padded out to nearly the full width already (issue
+            # #160's flat-section column-splitting fills every row to
+            # its column width) -- folding the trailer onto it the same
+            # way left almost no room and cut "Sort: X" down to nothing.
+            # Its own line instead; `_page_size` already measures
+            # whatever this function actually renders, so the one extra
+            # line is accounted for automatically, not a hardcoded
+            # assumption to keep in sync.
+            trailer = cut_to_width(trailer, max(0, session.terminal_width))
+            await session.write_line(f"\r\n{nav}")
+            if trailer:
+                await session.write_line(trailer)
         await session.write("Choice: ")
         return page_items
 

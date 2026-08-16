@@ -967,7 +967,11 @@ def test_description_level_detailed_prefers_help_over_brief():
         render=lambda draft: "yes" if draft.get("pinned") else "no",
         prompt=bool_field("pinned", "Pinned?"),
         brief="Shown at the top of listings",
-        help="Keeps this item at the top of every listing, above everything else.",
+        # Short enough to survive this screen's flat-section column-
+        # splitting (issue #160): 4 entries at the default 80-column
+        # FakeSession width means 2 columns, narrowing each entry's own
+        # available description width well below a full 80-column line.
+        help="Keeps this item at the very top.",
     )
     session = FakeSession(["x", "s"])
     result = asyncio.run(
@@ -981,7 +985,7 @@ def test_description_level_detailed_prefers_help_over_brief():
     )
     assert result == "lobby"
     text = _written_text(session)
-    assert "Keeps this item at the top of every listing, above everything else." in text
+    assert "Keeps this item at the very top." in text
     assert "Shown at the top of listings" not in text
 
 

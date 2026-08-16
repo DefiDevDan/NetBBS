@@ -156,6 +156,38 @@ def _column_count(width: int, section_count: int) -> int:
 
 
 _DESCRIPTION_INDENT = "    "
+# Dogfood-reported gap (issue #160's own rollout): a single flat,
+# unheaded section -- most converted screens' actual shape -- always
+# got exactly 1 column from `_column_count`, since column count there
+# is section-count-based, not entry-count-based. Splitting a flat
+# section's own entries into columns is only worth doing once there
+# are meaningfully more entries than columns; below this ratio, a
+# handful of options spread thin across several columns reads as a
+# table, not a menu, and the plain vertical list is more scannable.
+_MIN_ENTRIES_PER_COLUMN = 2
+
+
+def _entry_block_lines(entry: MenuEntry, *, description_level: str, available_width: int) -> list[str]:
+    """One entry's own line(s): just the label at `"off"`, plus one
+    more line for its description text (`.detailed` at the `"detailed"`
+    level, else `.brief`) when authored -- entries with none stay a
+    single line even with descriptions on, matching every existing
+    caller's expectation (a `MenuEntry` with only a `label` renders
+    identically to a bare `str`)."""
+    lines = [f"  {entry.label}"]
+    if description_level == "off":
+        return lines
+    text = entry.detailed if description_level == "detailed" and entry.detailed else entry.brief
+    if text:
+        description_width = max(1, available_width - len(_DESCRIPTION_INDENT))
+        # A hard cut, not a wrap: descriptions are meant to be one
+        # short line to begin with (the whole point of this feature
+        # over full online help), so losing an unlikely overflowing
+        # tail on a narrow terminal is an acceptable, simple
+        # degradation -- the same convention `screen_title`/
+        # `empty_state` already use for their own text in this module.
+        lines.append(colored(f"{_DESCRIPTION_INDENT}{cut_to_width(text, description_width)}", fg_color=MUTED_COLOR))
+    return lines
 
 
 def _section_lines(
@@ -166,22 +198,45 @@ def _section_lines(
     # group), not just an unlabeled section; skip the line entirely
     # rather than rendering a blank one.
     lines = [colored(title.upper(), fg_color=METADATA_COLOR, bold=True)] if title else []
-    description_width = max(1, available_width - len(_DESCRIPTION_INDENT))
     for entry in entries:
-        lines.append(f"  {entry.label}")
-        if description_level == "off":
-            continue
-        text = entry.detailed if description_level == "detailed" and entry.detailed else entry.brief
-        if text:
-            # A hard cut, not a wrap: descriptions are meant to be one
-            # short line to begin with (the whole point of this feature
-            # over full online help), so losing an unlikely overflowing
-            # tail on a narrow terminal is an acceptable, simple
-            # degradation -- the same convention `screen_title`/
-            # `empty_state` already use for their own text in this module.
-            lines.append(
-                colored(f"{_DESCRIPTION_INDENT}{cut_to_width(text, description_width)}", fg_color=MUTED_COLOR)
-            )
+        lines.extend(_entry_block_lines(entry, description_level=description_level, available_width=available_width))
+    return lines
+
+
+def _flat_entry_columns(
+    entries: Sequence[MenuEntry], *, description_level: str, width: int, columns: int
+) -> list[str]:
+    """Column-major layout (fill top-to-bottom within a column before
+    moving to the next -- the same reading order `ls`'s own column
+    output uses) for one flat section's entries, since `_column_count`
+    only ever gives a lone section 1 column otherwise. Entries can be 1
+    or 2 lines each depending on whether that entry has description
+    text; cells are padded to the tallest entry actually present so
+    every column's rows line up, rather than assuming every entry is
+    always 2 lines."""
+    column_width = max(1, (width - _COLUMN_GUTTER * (columns - 1)) // columns)
+    blocks = [
+        _entry_block_lines(entry, description_level=description_level, available_width=column_width)
+        for entry in entries
+    ]
+    entry_height = max((len(block) for block in blocks), default=1)
+    padded = [block + [""] * (entry_height - len(block)) for block in blocks]
+    rows_per_column = -(-len(padded) // columns)  # ceil division, no float rounding surprises
+    lines = []
+    for row in range(rows_per_column):
+        for sub_row in range(entry_height):
+            cells = []
+            for column in range(columns):
+                index = column * rows_per_column + row
+                cells.append(padded[index][sub_row] if index < len(padded) else "")
+            parts = []
+            for i, cell in enumerate(cells):
+                if i < len(cells) - 1:
+                    padding = " " * max(1, column_width - visible_width(cell))
+                    parts.append(cell + padding + " " * _COLUMN_GUTTER)
+                else:
+                    parts.append(cell)
+            lines.append("".join(parts).rstrip())
     return lines
 
 
@@ -245,7 +300,25 @@ def menu_grid(
     # experience than this menu would otherwise give.
     columns_collapsed = columns == 1 and len(populated) > 1
 
-    if columns == 1:
+    # A lone flat (unheaded) section -- most converted screens' actual
+    # shape -- always got 1 column above, since `_column_count` counts
+    # *sections*, not entries (dogfood-reported gap). Column-split its
+    # own entries instead, using the same width breakpoints, once
+    # there are meaningfully more entries than columns.
+    if columns == 1 and len(populated) == 1 and populated[0][0] == "":
+        flat_entries = populated[0][1]
+        flat_columns = _column_count(width, len(flat_entries))
+        if flat_columns > 1 and len(flat_entries) >= flat_columns * _MIN_ENTRIES_PER_COLUMN:
+            result = "\r\n".join(
+                _flat_entry_columns(
+                    flat_entries, description_level=effective_level, width=width, columns=flat_columns
+                )
+            )
+        else:
+            result = "\r\n".join(
+                _section_lines("", flat_entries, description_level=effective_level, available_width=width)
+            )
+    elif columns == 1:
         blocks = [
             "\r\n".join(_section_lines(title, entries, description_level=effective_level, available_width=width))
             for title, entries in populated

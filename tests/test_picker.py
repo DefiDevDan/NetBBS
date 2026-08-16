@@ -857,14 +857,15 @@ def test_description_level_brief_shows_nav_descriptions():
 
 
 def test_description_level_brief_reserves_extra_lines_for_the_taller_nav_block():
-    """The nav row grows from 1 line to 2 lines/entry (5 entries: Next/
-    Prev/Search/Goto/Back) once descriptions are on, so `_page_size`
-    must reserve more lines than the `description_level="off"` case --
-    otherwise the item list plus the now-taller nav block would overflow
-    a real terminal of this height. At a negotiated 80x20 terminal:
-    off reserves 6 lines (page size 14), brief reserves 15 lines (page
-    size 5) -- verified here by checking exactly 5 of 20 items appear on
-    page 1."""
+    """The nav row grows taller once descriptions are on (issue #160's
+    own flat-section column-splitting packs the 5 Next/Prev/Search/
+    Goto/Back entries into 2 columns of 6 lines total at this width,
+    rather than 1 column of 10), so `_page_size` must reserve more
+    lines than the `description_level="off"` case -- otherwise the item
+    list plus the now-taller nav block would overflow a real terminal
+    of this height. At a negotiated 80x20 terminal: off reserves 6
+    lines (page size 14), brief reserves 11 (page size 9) -- verified
+    here by checking exactly 9 of 20 items appear on page 1."""
     result = {}
     items = [f"item{i:02d}" for i in range(1, 21)]
 
@@ -886,8 +887,8 @@ def test_description_level_brief_reserves_extra_lines_for_the_taller_nav_block()
             await writer.drain()
 
             text = (await _read_until_quiet(reader)).decode()
-            assert "item01" in text and "item05" in text
-            assert "item06" not in text
+            assert "item01" in text and "item09" in text
+            assert "item10" not in text
 
             writer.write(b"b")
             await writer.drain()
