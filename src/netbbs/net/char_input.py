@@ -960,7 +960,7 @@ _SYMBOLIC_TO_EDITOR_KIND: dict[str, EditorKeyKind] = {
 }
 
 
-async def read_editor_key(source: ByteSource) -> EditorKey:
+async def read_editor_key(source: ByteSource, *, distinguish_ctrl_h: bool = False) -> EditorKey:
     """
     Read one structured key event for a full-screen editor.
 
@@ -972,6 +972,22 @@ async def read_editor_key(source: ByteSource) -> EditorKey:
     (returned as `EditorKeyKind.CTRL` with the lowercase letter, e.g.
     Ctrl+S -> `char="s"`) -- everything a screen editor needs that
     `read_line`'s line-oriented model has no use for.
+
+    `distinguish_ctrl_h` (issue #160's cursor-navigation follow-up on
+    `netbbs.net.resource_editor.edit_resource_draft`) -- `False` by
+    default, matching every existing caller's behavior byte-for-byte
+    (`netbbs.net.prose_editor`/`ansi_editor` both genuinely need 0x08
+    to keep meaning real character-deleting Backspace, since that's the
+    byte most terminals actually send for it). `True` splits 0x08
+    specifically off from the `_BS`/`_DEL` collapse into its own
+    `EditorKeyKind.CTRL, char="h"` event instead -- safe only for a
+    caller, like `edit_resource_draft`, whose own top-level dispatch
+    never needs a real Backspace (any actual typing happens inside a
+    field's own `read_line`-based sub-prompt), mirroring `read_key`'s
+    own pre-existing `HELP_KEY` carve-out for the identical byte. 0x7F
+    (`_DEL`) is unaffected either way -- it's unambiguously the "real
+    Backspace key" byte on virtually every modern terminal, never
+    itself repurposed as a Ctrl combo.
     """
     while True:
         b = await _read_byte(source)
@@ -982,6 +998,9 @@ async def read_editor_key(source: ByteSource) -> EditorKey:
             if b == _CR:
                 await _consume_optional_lf_or_nul(source)
             return EditorKey(EditorKeyKind.ENTER)
+
+        if b == _BS and distinguish_ctrl_h:
+            return EditorKey(EditorKeyKind.CTRL, char="h")
 
         if b in (_BS, _DEL):
             return EditorKey(EditorKeyKind.BACKSPACE)

@@ -184,7 +184,13 @@ async def edit_resource_draft(
     cancellation timing elsewhere in this rollout). Field rows render
     through `menu_grid` with each `FieldSpec.brief`/`.help` as the
     description text; a field with neither shows only its hotkey label,
-    identical to `description_level="off"`.
+    identical to `description_level="off"`. Unlike the paginated picker
+    screens, this one has no fallback if the whole thing doesn't fit --
+    every field's current-value line plus the (now much taller,
+    descriptive) menu row must all be visible at once, or the top of
+    the screen scrolls off (dogfood-reported regression). The menu row
+    falls back to the compact form, regardless of preference, whenever
+    the descriptive form wouldn't fit this terminal at all.
     """
     initial_draft = dict(draft)
     selected: int | None = None
@@ -202,22 +208,39 @@ async def edit_resource_draft(
             MenuEntry(label=save_menu_text, brief=_SAVE_BRIEF),
             MenuEntry(label=back_menu_text, brief=_BACK_BRIEF),
         ]
-        if description_level == "off":
+        compact_menu_line = action_bar([e.label for e in menu_entries], width=session.terminal_width)
+        menu_line = compact_menu_line
+        if description_level != "off":
             # `menu_grid` always renders one entry per line, even with
             # descriptions off -- unlike `action_bar`'s packed single-
             # line row, that's not a byte-for-byte-compatible
-            # substitute at this level. Keep `action_bar` for the
-            # (default, still most common) off case so this screen's
-            # height is completely unaffected; `menu_grid` only takes
-            # over once the caller has actually opted into descriptions.
-            menu_line = action_bar([e.label for e in menu_entries], width=session.terminal_width)
-        else:
-            menu_line = menu_grid(
+            # substitute at this level. `menu_description_level`'s real
+            # default is "brief", not "off" (every caller who hasn't
+            # touched the setting already has it on), and this screen
+            # has no pagination to fall back on the way picker.py does
+            # -- the *whole* field list plus the now much taller menu
+            # row must fit, or the top of the field list scrolls off
+            # (dogfood-reported regression). Falls back to the compact
+            # row, regardless of preference, whenever the descriptive
+            # form wouldn't fit this terminal at all -- descriptions are
+            # a nice-to-have, being able to see the whole screen is the
+            # point.
+            descriptive_menu_line = menu_grid(
                 [("", menu_entries)],
                 width=session.terminal_width,
                 height=session.terminal_height,
                 description_level=description_level,
             )
+            fixed_lines = (
+                2  # screen_title: title + underline
+                + len(fields)  # one current-value line per field
+                + 1  # blank line before the menu row
+                + (1 if any(f.help for f in fields) else 0)  # "(Ctrl-H for help...)" hint
+                + 1  # "Choice: " prompt line
+            )
+            descriptive_lines = descriptive_menu_line.count("\r\n") + 1
+            if fixed_lines + descriptive_lines <= session.terminal_height:
+                menu_line = descriptive_menu_line
         await session.write_line(f"\r\n{menu_line}")
         if any(f.help for f in fields):
             # Only hinted when at least one field actually has help
@@ -311,11 +334,23 @@ async def _read_navigable_key(session: Session) -> EditorKey:
     reader, wrapped as an `EditorKeyKind.CHAR`, for lightweight
     `Session` test doubles that predate `read_editor_key` (mirrors
     `netbbs.net.confirm.read_confirmation_choice`'s own identical
-    fallback for the exact same reason)."""
+    fallback for the exact same reason).
+
+    Dogfood-reported regression: `read_editor_key()` collapses 0x08 and
+    0x7F into one `BACKSPACE` kind by default (both fullscreen editors
+    genuinely need 0x08 to keep deleting characters), which silently
+    made this screen's own Ctrl-H dead for real terminal input -- the
+    `EditorKeyKind.CTRL, char="h"` branch in `edit_resource_draft` was
+    unreachable outside tests, which script that event directly and
+    never exercised the real byte-decoding path. `distinguish_ctrl_h`
+    is passed here because this screen's own dispatch never needs a
+    real Backspace at this level (typing happens inside each field's
+    own sub-prompt), the same carve-out `read_key()`'s pre-existing
+    `HELP_KEY` already makes for the identical byte."""
     read_editor_key = getattr(session, "read_editor_key", None)
     if read_editor_key is not None:
         try:
-            return await read_editor_key()
+            return await read_editor_key(distinguish_ctrl_h=True)
         except NotImplementedError:
             pass
     raw = await session.read_key()

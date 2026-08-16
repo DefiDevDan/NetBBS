@@ -216,7 +216,7 @@ class Session(ABC):
         """
 
     @abstractmethod
-    async def read_editor_key(self) -> EditorKey:
+    async def read_editor_key(self, *, distinguish_ctrl_h: bool = False) -> EditorKey:
         """
         Read one structured key event for a full-screen editor (design
         doc -- welcome banner, `netbbs.net.ansi_editor`).
@@ -230,6 +230,13 @@ class Session(ABC):
         ordinary characters, Enter, Backspace, Delete, Tab, and
         Ctrl+letter combos -- everything a screen editor needs that
         neither of the other two read methods has a use for.
+
+        `distinguish_ctrl_h` -- `False` by default, so every existing
+        caller (the fullscreen ANSI/prose editors, which genuinely need
+        0x08 to keep meaning real character-deleting Backspace) is
+        unaffected. See `netbbs.net.char_input.read_editor_key`'s own
+        docstring for the full rationale and why it's safe only for a
+        caller whose own dispatch never needs a real Backspace.
         """
 
     async def discard_buffered_enter(self) -> None:

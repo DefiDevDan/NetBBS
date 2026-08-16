@@ -53,11 +53,13 @@ from netbbs.rendering import (
     action_bar,
     colored,
     colored_truncate,
+    cut_to_width,
     menu_grid,
     menu_key,
     reject_keystroke,
     sanitize_text,
     screen_title,
+    visible_width,
 )
 
 T = TypeVar("T")
@@ -249,12 +251,36 @@ async def pick_item(
         # criterion) -- a permanent extra row here would shift every
         # picker's page_size by one and ripple through every existing
         # page-boundary test/assumption for a purely cosmetic addition.
-        trailer = "or type a 2-digit number to select; Ctrl-L: redraw"
-        if refresh is not None:
-            trailer += ", Ctrl-R: refresh"
+        #
+        # `sort_label` goes first, not last: it's this screen's own
+        # standing "current state" indicator (design doc -- the dogfood
+        # complaint this was built for was specifically about the
+        # active sort mode being a mystery), not a one-time hint the
+        # way the rest of this trailer is -- it must survive truncation
+        # ahead of the boilerplate instructions below it.
+        trailer = ""
         if sort_label is not None:
-            trailer += f"; Sort: {sanitize_text(sort_label())}"
-        await session.write_line(f"\r\n{nav} — {trailer}")
+            trailer = f"Sort: {sanitize_text(sort_label())}"
+        boilerplate = "or type a 2-digit number to select; Ctrl-L: redraw"
+        if refresh is not None:
+            boilerplate += ", Ctrl-R: refresh"
+        trailer = f"{trailer}; {boilerplate}" if trailer else boilerplate
+        # Dogfood-reported regression: with sort mode (and/or refresh)
+        # active, nav + separator + trailer could run past the real
+        # terminal width -- unlike every other line on this screen
+        # (each already deterministically cut via colored_truncate/
+        # menu_grid), this one wasn't clamped at all, so whichever
+        # client rendered it wrapped wherever it happened to land,
+        # sometimes mid-word. Cut the trailer to whatever room remains
+        # on the nav's own last line instead -- the nav portion itself
+        # is left intact (it's already width-aware), mirroring
+        # `menu_grid`'s own established "hard cut, not a client wrap"
+        # convention for this kind of trailing informational text.
+        separator = " — "
+        last_nav_line = nav.rsplit("\r\n", 1)[-1]
+        available_for_trailer = session.terminal_width - visible_width(last_nav_line) - visible_width(separator)
+        trailer = cut_to_width(trailer, max(0, available_for_trailer))
+        await session.write_line(f"\r\n{nav}{separator}{trailer}" if trailer else f"\r\n{nav}")
         await session.write("Choice: ")
         return page_items
 

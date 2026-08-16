@@ -605,6 +605,32 @@ def test_read_editor_key_backspace_and_delete_byte():
     asyncio.run(scenario())
 
 
+def test_read_editor_key_distinguish_ctrl_h_off_by_default():
+    """Dogfood-reported regression (netbbs.net.resource_editor.
+    edit_resource_draft's Ctrl-H): 0x08 must keep meaning BACKSPACE for
+    every caller that doesn't opt in -- the fullscreen ANSI/prose
+    editors genuinely need it for real character deletion."""
+    async def scenario():
+        source = FakeByteSource(b"\x08")
+        assert (await read_editor_key(source)).kind == EditorKeyKind.BACKSPACE
+
+    asyncio.run(scenario())
+
+
+def test_read_editor_key_distinguish_ctrl_h_splits_0x08_only():
+    """With `distinguish_ctrl_h=True`, 0x08 becomes a real Ctrl+h event
+    instead of BACKSPACE -- but 0x7F (the actual Backspace-key byte on
+    virtually every modern terminal) is unaffected either way."""
+    async def scenario():
+        source = FakeByteSource(b"\x08\x7f")
+        key = await read_editor_key(source, distinguish_ctrl_h=True)
+        assert key.kind == EditorKeyKind.CTRL
+        assert key.char == "h"
+        assert (await read_editor_key(source, distinguish_ctrl_h=True)).kind == EditorKeyKind.BACKSPACE
+
+    asyncio.run(scenario())
+
+
 def test_read_editor_key_delete_key_via_csi_tilde():
     async def scenario():
         source = FakeByteSource(b"\x1b[3~")

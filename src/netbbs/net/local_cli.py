@@ -86,8 +86,8 @@ class LocalCLISession(Session):
     async def read_key(self, echo: bool = True) -> str:
         return await char_input.read_key(self, self.write, echo)
 
-    async def read_editor_key(self) -> char_input.EditorKey:
-        return await char_input.read_editor_key(self)
+    async def read_editor_key(self, *, distinguish_ctrl_h: bool = False) -> char_input.EditorKey:
+        return await char_input.read_editor_key(self, distinguish_ctrl_h=distinguish_ctrl_h)
 
     async def discard_buffered_enter(self) -> None:
         await char_input.discard_buffered_enter(self)

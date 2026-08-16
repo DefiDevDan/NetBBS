@@ -11,6 +11,7 @@ import asyncio
 import pytest
 
 from netbbs.net.char_input import CANCEL_KEY, HELP_KEY, EditorKey, EditorKeyKind
+from netbbs.net.char_input import read_editor_key as _raw_read_editor_key
 from netbbs.net.resource_editor import (
     FieldSpec,
     bool_field,
@@ -47,7 +48,7 @@ class FakeSession(Session):
     async def read_line(self, echo: bool = True, history=None, completer=None, **kwargs) -> str:
         return self._inputs.pop(0)
 
-    async def read_editor_key(self):
+    async def read_editor_key(self, *, distinguish_ctrl_h: bool = False):
         raise NotImplementedError
 
     async def close(self) -> None:
@@ -79,13 +80,49 @@ class NavigableFakeSession(FakeSession):
     away from on purpose (proving the *fallback* still works, not the
     arrow path itself)."""
 
-    async def read_editor_key(self) -> EditorKey:
+    async def read_editor_key(self, *, distinguish_ctrl_h: bool = False) -> EditorKey:
         raw = self._inputs.pop(0)
         if raw in _EDITOR_KEY_SENTINELS:
             return EditorKey(_EDITOR_KEY_SENTINELS[raw])
         if raw.startswith("CTRL+"):
             return EditorKey(EditorKeyKind.CTRL, char=raw[len("CTRL+") :].lower())
         return EditorKey(EditorKeyKind.CHAR, char=raw)
+
+
+class _RawByteSource:
+    """Feeds a fixed sequence of bytes one at a time -- mirrors
+    `tests.test_char_input.FakeByteSource`, duplicated locally rather
+    than imported across test files for one small helper."""
+
+    def __init__(self, data: bytes):
+        self._data = data
+        self._pos = 0
+
+    async def read_byte(self) -> int | None:
+        if self._pos >= len(self._data):
+            raise AssertionError("_RawByteSource ran out of scripted bytes")
+        b = self._data[self._pos]
+        self._pos += 1
+        return b
+
+
+class RealByteFakeSession(FakeSession):
+    """Unlike `NavigableFakeSession` (which scripts structured events
+    like the literal string "CTRL+H" directly, never touching real byte
+    decoding), this wires `read_editor_key` to the actual
+    `netbbs.net.char_input.read_editor_key` against a raw byte stream --
+    the only way to prove `_read_navigable_key`'s `distinguish_ctrl_h=
+    True` argument actually reaches real terminal input. A dogfood-
+    reported regression (Ctrl-H silently dead in real use) slipped past
+    the full test suite specifically because every existing test here
+    scripts the structured event instead of a raw byte."""
+
+    def __init__(self, byte_inputs: bytes, inputs: list[str] | None = None):
+        super().__init__(inputs)
+        self._byte_source = _RawByteSource(byte_inputs)
+
+    async def read_editor_key(self, *, distinguish_ctrl_h: bool = False) -> EditorKey:
+        return await _raw_read_editor_key(self._byte_source, distinguish_ctrl_h=distinguish_ctrl_h)
 
 
 def _written_text(session: FakeSession) -> str:
@@ -769,6 +806,38 @@ def test_ctrl_h_and_ctrl_c_still_work_through_the_navigable_session():
     assert save_calls == []
 
 
+def test_real_ctrl_h_byte_shows_help_not_a_bell():
+    """Dogfood-reported regression: real terminal Ctrl-H (raw byte
+    0x08) went silently dead once this screen switched to
+    `read_editor_key` for arrow navigation -- that reader collapses
+    0x08 into plain BACKSPACE by default, and `NavigableFakeSession`'s
+    string-sentinel scripting (e.g. "CTRL+H") never exercises real byte
+    decoding, so the whole test suite passed while the real path was
+    broken. `RealByteFakeSession` wires to the actual byte decoder to
+    close that gap."""
+    async def save(draft):
+        return draft["name"]
+
+    # Every keystroke in this loop routes through read_editor_key, so
+    # both the Ctrl-H byte and the later "s" (save) hotkey are fed as
+    # raw bytes; only show_help's own dismiss prompt uses read_key
+    # (self._inputs) -- "x" there is an arbitrary dismiss keystroke.
+    session = RealByteFakeSession(b"\x08s", inputs=["x"])
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Edit thing", fields=[_name_field(), _pinned_field_with_help()], draft={"name": "lobby"},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        )
+    )
+    assert result == "lobby"
+    text = _written_text(session)
+    assert "No help is available for this screen yet." not in text
+    assert "Keeps this item at the top of every listing." in text
+    assert "\a" not in text
+
+
 # -- dogfood feature request: Ctrl-H narrows to the highlighted field ------
 
 
@@ -952,3 +1021,59 @@ def test_description_level_brief_also_describes_save_and_back():
     text = _written_text(session)
     assert "Write this draft to the database" in text
     assert "Discard the draft, nothing saved" in text
+
+
+def _brief_field(key: str, letter: str, label: str) -> FieldSpec:
+    return FieldSpec(
+        key=key, hotkey=letter.lower(), menu_text=menu_key(letter, ""), label=label,
+        render=lambda draft: draft.get(key) or "(blank)", prompt=text_field(key),
+        brief=f"Description of {label}",
+    )
+
+
+def test_description_level_brief_falls_back_to_compact_menu_row_when_the_screen_would_overflow():
+    """Dogfood-reported regression: a real board/area/channel editor
+    (10+ fields) with the real "brief" default renders far taller than
+    a standard 24-row terminal once every field's hotkey gets its own
+    description line -- the top of the field list scrolls off. Below
+    the floor, the menu row falls back to the compact form regardless
+    of preference, the same judgment call already applied to
+    picker.py's own page-size floor."""
+    async def save(draft):
+        return "saved"
+
+    many_fields = [_brief_field(f"f{i}", chr(ord("A") + i), f"Field{i}") for i in range(10)]
+    session = FakeSession(["s"])
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Edit thing", fields=many_fields, draft={},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+            description_level="brief",
+        )
+    )
+    assert result == "saved"
+    text = _written_text(session)
+    assert "Description of Field0" not in text
+
+
+def test_description_level_brief_still_shows_when_it_fits():
+    """The same screen with few enough fields to actually fit its
+    terminal keeps showing descriptions -- the floor only kicks in when
+    it's genuinely needed, not unconditionally."""
+    async def save(draft):
+        return "saved"
+
+    session = FakeSession(["s"])
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Edit thing", fields=[_pinned_field_with_brief()], draft={},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+            description_level="brief",
+        )
+    )
+    assert result == "saved"
+    assert "Shown at the top of listings" in _written_text(session)

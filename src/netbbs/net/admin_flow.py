@@ -940,7 +940,18 @@ async def _trust_subjects_screen(session: Session, lane: DatabaseLane, actor: Us
 
 
 async def _pick_trust_dimension(session: Session) -> TrustDimension | None:
-    await session.write_line("Dimension: [I]dentity integrity  [R]esource behavior  [C]ontent conduct  [B]ack")
+    await session.write_line("Dimension:")
+    await session.write_line(
+        action_bar(
+            [
+                menu_key("I", "dentity integrity"),
+                menu_key("R", "esource behavior"),
+                menu_key("C", "ontent conduct"),
+                menu_key("B", "ack"),
+            ],
+            width=session.terminal_width,
+        )
+    )
     await session.write("Choice: ")
     choice = (await session.read_key()).lower()
     return {
@@ -956,7 +967,18 @@ async def _set_trust_override_screen(
     dimension = await _pick_trust_dimension(session)
     if dimension is None:
         return
-    await session.write_line("State: [P]robationary  [E]stablished  [Q]uarantined  [B]locked")
+    await session.write_line("State:")
+    await session.write_line(
+        action_bar(
+            [
+                menu_key("P", "robationary"),
+                menu_key("E", "stablished"),
+                menu_key("Q", "uarantined"),
+                menu_key("B", "locked"),
+            ],
+            width=session.terminal_width,
+        )
+    )
     await session.write("Choice: ")
     state = {
         "p": TrustState.PROBATIONARY, "e": TrustState.ESTABLISHED,
@@ -1039,7 +1061,9 @@ async def _trust_domains_screen(session: Session, lane: DatabaseLane, actor: Use
     for domain in domains:
         await session.write_line(f"{domain.domain_id}: {domain.display_name} (weight {domain.weight:.2f})")
     while True:
-        await session.write("[A]dd/update or [B]ack: ")
+        await session.write(
+            f"{action_bar([menu_key('A', 'dd/update'), menu_key('B', 'ack')], width=session.terminal_width)}: "
+        )
         choice = (await session.read_key()).lower()
         if choice == "b":
             return
@@ -1075,7 +1099,9 @@ async def _trust_anchors_screen(session: Session, lane: DatabaseLane, actor: Use
     for anchor in anchors:
         await session.write_line(f"{anchor.fingerprint}: {anchor.reason}")
     while True:
-        await session.write("[A]dd/update  [R]emove  [B]ack: ")
+        await session.write(
+            f"{action_bar([menu_key('A', 'dd/update'), menu_key('R', 'emove'), menu_key('B', 'ack')], width=session.terminal_width)}: "
+        )
         choice = (await session.read_key()).lower()
         if choice == "b":
             return
@@ -1123,7 +1149,9 @@ async def _trust_reporters_screen(session: Session, lane: DatabaseLane, actor: U
             f"vouch(node={reporter.can_vouch_nodes}, user={reporter.can_vouch_users})"
         )
     while True:
-        await session.write("[A]dd/update  [R]emove  [B]ack: ")
+        await session.write(
+            f"{action_bar([menu_key('A', 'dd/update'), menu_key('R', 'emove'), menu_key('B', 'ack')], width=session.terminal_width)}: "
+        )
         choice = (await session.read_key()).lower()
         if choice == "b":
             return
@@ -1170,7 +1198,9 @@ async def _attestation_authorities_screen(
             colored("None. Remote attestations fail closed.", fg_color=SUCCESS_COLOR)
         )
     while True:
-        await session.write("[A]dd/update  [R]emove  [B]ack: ")
+        await session.write(
+            f"{action_bar([menu_key('A', 'dd/update'), menu_key('R', 'emove'), menu_key('B', 'ack')], width=session.terminal_width)}: "
+        )
         choice = (await session.read_key()).lower()
         if choice == "b":
             return
@@ -1215,7 +1245,13 @@ async def _remote_attestation_override_screen(
     actor: User,
     subject: TrustSubject,
 ) -> None:
-    await session.write_line("Attribute: [A]ge  [N]ame  [C]lear override  [B]ack")
+    await session.write_line("Attribute:")
+    await session.write_line(
+        action_bar(
+            [menu_key("A", "ge"), menu_key("N", "ame"), menu_key("C", "lear override"), menu_key("B", "ack")],
+            width=session.terminal_width,
+        )
+    )
     await session.write("Choice: ")
     choice = (await session.read_key()).lower()
     if choice == "c":
@@ -1249,7 +1285,13 @@ async def _remote_attestation_override_screen(
     attribute = {"a": "age", "n": "name"}.get(choice)
     if attribute is None:
         return
-    await session.write_line("Decision: [A]ccept current trusted record  [R]eject")
+    await session.write_line("Decision:")
+    await session.write_line(
+        action_bar(
+            [menu_key("A", "ccept current trusted record"), menu_key("R", "eject")],
+            width=session.terminal_width,
+        )
+    )
     await session.write("Choice: ")
     accepted_choice = (await session.read_key()).lower()
     if accepted_choice not in {"a", "r"}:
@@ -1295,7 +1337,9 @@ async def _trust_exceptions_screen(session: Session, lane: DatabaseLane, actor: 
     if not exceptions:
         await session.write_line(colored("None. Two independent domains remain required.", fg_color=SUCCESS_COLOR))
     while True:
-        await session.write("[A]dd/update  [R]emove  [B]ack: ")
+        await session.write(
+            f"{action_bar([menu_key('A', 'dd/update'), menu_key('R', 'emove'), menu_key('B', 'ack')], width=session.terminal_width)}: "
+        )
         choice = (await session.read_key()).lower()
         if choice == "b":
             return
@@ -2029,13 +2073,15 @@ async def _registration_settings_screen(session: Session, lane: DatabaseLane, ac
 
     await session.write_line(
         "\r\n"
-        + menu_key("O", "pen")
-        + "  "
-        + menu_key("A", "pproval required")
-        + "  "
-        + menu_key("C", "losed")
-        + "  "
-        + menu_key("B", "ack (leave unchanged)")
+        + action_bar(
+            [
+                menu_key("O", "pen"),
+                menu_key("A", "pproval required"),
+                menu_key("C", "losed"),
+                menu_key("B", "ack (leave unchanged)"),
+            ],
+            width=session.terminal_width,
+        )
     )
     await session.write("Choice: ")
     choice = (await session.read_key()).lower()
@@ -6154,15 +6200,25 @@ async def _pick_moderator_scope(session: Session, lane: DatabaseLane) -> tuple[s
     area/chat channel), since a specific object's own `community_id`
     already answers that question without needing it duplicated on the
     grant."""
-    await session.write(
-        "Scope: "
-        + menu_key("b", "oard", prefix="message ") + ", "
-        + menu_key("a", "rea", prefix="file ") + ", "
-        + menu_key("n", "nel", prefix="chat cha") + ", "
-        + menu_key("x", "", prefix="blanket across all boards ") + ", "
-        + menu_key("y", "", prefix="blanket across all areas ") + ", "
-        + menu_key("z", "", prefix="blanket across all channels ") + ": "
-    )
+    # Dogfood-reported regression, same shape as picker.py's own nav-
+    # trailer bug: this line used to be one hand-built, unclamped
+    # concatenation -- 147 columns wide once all six options were
+    # spelled out in full, nearly double a standard 80-column terminal
+    # -- so a real client wrapped it wherever it happened to land,
+    # mid-word. `action_bar` already wraps whole options deterministically
+    # at the terminal edge (the same primitive every other hotkey menu
+    # in this codebase uses); routing through it here instead of a raw
+    # write() fixes this the same way, not a one-off patch.
+    scope_options = [
+        menu_key("b", "oard", prefix="message "),
+        menu_key("a", "rea", prefix="file "),
+        menu_key("n", "nel", prefix="chat cha"),
+        menu_key("x", "", prefix="blanket across all boards "),
+        menu_key("y", "", prefix="blanket across all areas "),
+        menu_key("z", "", prefix="blanket across all channels "),
+    ]
+    await session.write_line("Scope:")
+    await session.write(f"{action_bar(scope_options, width=session.terminal_width)}: ")
     scope_key = (await session.read_key()).lower()
     await session.write_line("")
     if scope_key == "b":
@@ -6244,7 +6300,10 @@ async def _grant_moderator_screen(session: Session, lane: DatabaseLane, actor: U
     object_type, object_id, label, community_id = scope
 
     if object_type == "channel":
-        await session.write("Preset: [F]ull moderator (edit+moderate+manage members), [M]oderator only: ")
+        await session.write_line("Preset:")
+        await session.write(
+            f"{action_bar([menu_key('F', 'ull moderator (edit+moderate+manage members)'), menu_key('M', 'oderator only')], width=session.terminal_width)}: "
+        )
         preset_key = (await session.read_key()).lower()
         await session.write_line("")
         if preset_key == "f":
@@ -6257,7 +6316,10 @@ async def _grant_moderator_screen(session: Session, lane: DatabaseLane, actor: U
             await session.write_line(colored("Not a valid preset -- cancelled.", fg_color=MUTED_COLOR))
             return
     else:
-        await session.write("Preset: [F]ull moderator (edit+delete+approve), [A]pprover only: ")
+        await session.write_line("Preset:")
+        await session.write(
+            f"{action_bar([menu_key('F', 'ull moderator (edit+delete+approve)'), menu_key('A', 'pprover only')], width=session.terminal_width)}: "
+        )
         preset_key = (await session.read_key()).lower()
         await session.write_line("")
         if preset_key == "f":

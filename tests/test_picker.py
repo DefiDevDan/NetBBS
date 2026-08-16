@@ -1597,3 +1597,63 @@ def test_ctrl_r_refresh_resets_page_index_and_clears_search_filter():
 
     asyncio.run(scenario())
     assert result["value"] is None
+
+
+def test_nav_trailer_line_never_exceeds_the_terminal_width():
+    """Dogfood-reported regression: with sort mode and refresh both
+    active (the shape login_flow.py's board-browsing screen actually
+    uses), the nav row plus its trailing "or type a 2-digit number...;
+    Sort: ..." suffix could run past the real negotiated width -- every
+    other line on this screen is already deterministically cut
+    (colored_truncate/menu_grid), but this combined line wasn't clamped
+    at all, so a client would wrap it wherever it happened to land,
+    sometimes mid-word. At a negotiated 40-column terminal with a long
+    sort label, the uncut line would be roughly 90+ columns; verified
+    here that no line in the actual rendered output exceeds 40."""
+    result = {}
+    items = ["item1", "item2"]
+
+    async def refresh():
+        return items
+
+    async def on_sort():
+        return None
+
+    def sort_label():
+        return "A Rather Long Descriptive Sort Mode Name"
+
+    async def handler(session: Session):
+        # Mirrors realistic usage (see test_pagination_adapts_to_
+        # negotiated_terminal_height): NAWS negotiation races the
+        # client's next write, so a dummy read lets it resolve first.
+        await session.read_line()
+        result["value"] = await pick_item(
+            session, items, name_of=lambda x: x, stable_id_of=lambda x: items.index(x) + 1,
+            title="Items", empty_message="none",
+            refresh=refresh, on_sort=on_sort, sort_label=sort_label,
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await skip_initial_negotiation(reader)
+            writer.write(bytes([IAC, WILL, NAWS]))
+            writer.write(_naws_subneg(40, 24))
+            writer.write(b"x\r\n")
+            await writer.drain()
+
+            data = await _read_until_quiet(reader)
+            for line in _visible(data).decode().split("\r\n"):
+                assert len(line) <= 40, f"line exceeds 40 columns: {line!r}"
+
+            writer.write(b"b")
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert result["value"] is None

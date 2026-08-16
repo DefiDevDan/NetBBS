@@ -3926,8 +3926,9 @@ async def _render_identity_details(session: Session, db: Database, user: User) -
 async def _remote_attestation_visibility_screen(
     session: Session, db: Database, user: User
 ) -> None:
+    await session.write_line("Share which attestation with explicitly trusted remote nodes?")
     await session.write_line(
-        "Share which attestation with explicitly trusted remote nodes? [A]ge  [N]ame  [B]ack"
+        action_bar([menu_key("A", "ge"), menu_key("N", "ame"), menu_key("B", "ack")], width=session.terminal_width)
     )
     await session.write("Choice: ")
     attribute = {"a": "age", "n": "name"}.get((await session.read_key()).lower())

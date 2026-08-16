@@ -250,10 +250,10 @@ class TelnetSession(Session):
         """
         return await char_input.read_key(self, self.write, echo)
 
-    async def read_editor_key(self) -> char_input.EditorKey:
+    async def read_editor_key(self, *, distinguish_ctrl_h: bool = False) -> char_input.EditorKey:
         """See the `Session.read_editor_key` docstring — the actual
         logic lives in `netbbs.net.char_input.read_editor_key`."""
-        return await char_input.read_editor_key(self)
+        return await char_input.read_editor_key(self, distinguish_ctrl_h=distinguish_ctrl_h)
 
     async def discard_buffered_enter(self) -> None:
         await char_input.discard_buffered_enter(self)

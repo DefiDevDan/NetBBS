@@ -89,7 +89,7 @@ class FakeSession(Session):
             raise AssertionError("FakeSession ran out of scripted input (read_key)")
         return self._inputs.pop(0)
 
-    async def read_editor_key(self) -> EditorKey:
+    async def read_editor_key(self, *, distinguish_ctrl_h: bool = False) -> EditorKey:
         if not self._inputs:
             raise AssertionError("FakeSession ran out of scripted input (read_editor_key)")
         raw = self._inputs.pop(0)
@@ -309,7 +309,11 @@ def test_trust_domains_screen_writes_a_newline_before_the_next_prompt(db, lane, 
     _run(session, lane, sysop)
 
     text = _written_text(session)
-    assert "[B]ack: \r\nDomain ID: " in text
+    # "]ack: " (not "[B]ack: ") -- the hotkey letter itself now sits
+    # between ANSI color codes (menu_key(), issue #160's wrap fix for
+    # this prompt), so the literal bracket-to-letter span is no longer
+    # contiguous; the un-colored tail after it still is.
+    assert "]ack: \r\nDomain ID: " in text
 
 
 def test_trust_domains_screen_rejects_an_unrecognized_key_and_reprompts_instead_of_exiting(
@@ -327,7 +331,11 @@ def test_trust_domains_screen_rejects_an_unrecognized_key_and_reprompts_instead_
     # Re-prompted on the same screen rather than falling straight back
     # to the parent menu -- the prompt appears twice: once before the
     # rejected "q", once more before the "b" that actually exits.
-    assert text.count("[A]dd/update or [B]ack:") == 2
+    # "]dd/update  [" (not the full "[A]dd/update  [B]ack:") -- both
+    # hotkey letters now sit between ANSI color codes (menu_key(),
+    # issue #160's wrap fix for this prompt), so this un-colored middle
+    # span is the largest contiguous, distinctive substring left.
+    assert text.count("]dd/update  [") == 2
     assert list_trust_domains(db) == []
 
 

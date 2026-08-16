@@ -556,7 +556,7 @@ class WebSession(Session):
             await self.write(char if echo else "*")
             return char
 
-    async def read_editor_key(self) -> EditorKey:
+    async def read_editor_key(self, *, distinguish_ctrl_h: bool = False) -> EditorKey:
         """
         See the `Session.read_editor_key` docstring. Built directly on
         `_read_item` (the same queue `read_line`'s cursor-aware path
@@ -572,17 +572,24 @@ class WebSession(Session):
         already-working decoding. `_SPECIAL_TO_EDITOR_KIND` is the
         translation from this module's own `_SpecialKey` vocabulary to
         the shared `EditorKey` type both transports expose.
+
+        `distinguish_ctrl_h` -- see `netbbs.net.char_input.
+        read_editor_key`'s own docstring; `_BS` (0x08) specifically
+        becomes `EditorKeyKind.CTRL, char="h"` instead of BACKSPACE
+        when set, `_DEL` (0x7F) is unaffected either way.
         """
         item = await self._read_item()
         if isinstance(item, _SpecialKey):
             kind = _SPECIAL_TO_EDITOR_KIND.get(item.name)
             if kind is not None:
                 return EditorKey(kind)
-            return await self.read_editor_key()  # e.g. INSERT -- not surfaced, keep reading
+            return await self.read_editor_key(distinguish_ctrl_h=distinguish_ctrl_h)  # e.g. INSERT -- not surfaced, keep reading
 
         char = item
         if char in (_CR, _LF):
             return EditorKey(EditorKeyKind.ENTER)
+        if char == _BS and distinguish_ctrl_h:
+            return EditorKey(EditorKeyKind.CTRL, char="h")
         if char in (_BS, _DEL):
             return EditorKey(EditorKeyKind.BACKSPACE)
         if char == _TAB:
