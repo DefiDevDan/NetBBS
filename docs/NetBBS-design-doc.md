@@ -18,6 +18,12 @@ Use project sources in this order:
 When these sources disagree, investigate and update the stale source. Do not
 choose whichever answer is most convenient.
 
+This ordering is for developers changing NetBBS. A SysOp running a node, not
+modifying it, wants `docs/NetBBS-operator-guide.md` (install/deploy/upgrade)
+and `docs/NetBBS-SysOp-Handbook.md` (day-to-day administration) instead —
+both stay consistent with the normative decisions here, but neither requires
+reading this document first.
+
 ## Current status
 
 - Phases 1 and 2 are complete as working standalone BBS software.

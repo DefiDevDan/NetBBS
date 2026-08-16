@@ -131,6 +131,12 @@ it does. This is the real, supported bootstrap path; the `scripts/
 create_test_user.py`-style helpers elsewhere in this repository are
 development conveniences, not an operator-facing tool.
 
+Once that account can log in, `docs/NetBBS-SysOp-Handbook.md` is the
+reference for actually running the node day to day — accounts,
+permissions and moderation, content areas, identity attestation and name
+requirements, node/session operations, and trust policy. This guide stays
+focused on the install/deploy/upgrade lifecycle below.
+
 ## 3. Running as a service
 
 Copy the example unit for your platform from `examples/` (see that

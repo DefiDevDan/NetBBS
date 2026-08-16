@@ -301,6 +301,11 @@ persistent state paths, upgrading, and uninstalling without losing
 data. The rest of this section is the quick, source-checkout version
 for trying NetBBS out or developing on it.
 
+**Already running and need to actually administer it?** See
+[`docs/NetBBS-SysOp-Handbook.md`](docs/NetBBS-SysOp-Handbook.md) — what
+every SysOp-facing feature is for and how to use it, written for someone
+with no NetBBS development history.
+
 `python -m netbbs` is configuration-driven (design doc round 28), not a
 positional `db_path` argument anymore. What listens where, and the
 login-throttling policy protecting it, come from an optional TOML config
