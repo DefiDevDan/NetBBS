@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import re
 
 import nacl.signing
 import pytest
@@ -113,6 +114,19 @@ class FakeSession(Session):
 
 def _written_text(session: FakeSession) -> str:
     return "".join(session.written)
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _visible(text: str) -> str:
+    """Strip SGR escapes -- these breadcrumb screens render with
+    unicode_style on by default (test users take the preference's own
+    default, per netbbs.net.unicode_style_preference), which colors the
+    "NetBBS / Section / Title" breadcrumb's ancestor and final segments
+    separately (see netbbs.rendering.layout.screen_title), so a literal
+    text assertion has to look past the color codes between segments."""
+    return _ANSI_RE.sub("", text)
 
 
 def _openssh_line(verify_key: nacl.signing.VerifyKey) -> str:
@@ -256,7 +270,7 @@ def test_operations_are_a_coherent_top_level_console_area(db, lane, sysop):
     _run(session, lane, sysop)
 
     text = _written_text(session)
-    assert "NetBBS / SysOp / Operations" in text
+    assert "NetBBS › SysOp › Operations" in _visible(text)
     assert "Observe the running node, investigate trouble, and recover work." in text
     # "Bac[K]up status", not "[K]backup status" -- K isn't backup's first
     # letter, so the hotkey is picked out from inside the word via
@@ -292,7 +306,7 @@ def test_sysop_menu_reaches_trust_domain_configuration(db, lane, sysop):
     domains = list_trust_domains(db)
     assert [(item.domain_id, item.weight) for item in domains] == [("friends", 0.75)]
     text = _written_text(session)
-    assert "NetBBS / System / Trust policy" in text
+    assert "NetBBS › System › Trust policy" in _visible(text)
     assert "Trust domain saved and audited." in text
 
 

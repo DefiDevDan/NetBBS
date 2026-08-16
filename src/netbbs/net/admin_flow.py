@@ -226,6 +226,7 @@ from netbbs.net.shutdown import (
 )
 from netbbs.net.menu_description_preference import menu_description_level
 from netbbs.net.redraw_preference import redraw_in_place_enabled, redraw_in_place_ever_set
+from netbbs.net.unicode_style_preference import unicode_style_enabled
 from netbbs.operational_history import list_operational_run_history
 from netbbs.selfupdate import (
     UpdateError,
@@ -642,6 +643,7 @@ async def _operations_menu(
     """Operational observation and intervention, separate from durable settings."""
     description_level = await lane.run(menu_description_level, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
     while True:
         await session.write_line(
             "\r\n" + screen_title(
@@ -650,6 +652,7 @@ async def _operations_menu(
                 subtitle="Observe the running node, investigate trouble, and recover work.",
                 width=session.terminal_width,
                 clear=redraw_in_place,
+                unicode_style=unicode_style,
             )
         )
         options = [
@@ -795,6 +798,7 @@ async def _draw_system_menu(
 async def _trust_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
     description_level = await lane.run(menu_description_level, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
     while True:
         authorities = await lane.run(list_sole_authorities)
         await session.write_line(
@@ -805,6 +809,7 @@ async def _trust_menu(session: Session, lane: DatabaseLane, actor: User) -> None
                 subtitle="Inspect policy, explain restrictions, and manage trusted authorities.",
                 width=session.terminal_width,
                 clear=redraw_in_place,
+                unicode_style=unicode_style,
             )
         )
         options = [
@@ -2157,6 +2162,7 @@ async def _update_settings_screen(session: Session, lane: DatabaseLane, actor: U
 
     auto_enabled, checked_at, outcome = await lane.run(_load)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
 
     await session.write_line(
         "\r\n"
@@ -2166,6 +2172,7 @@ async def _update_settings_screen(session: Session, lane: DatabaseLane, actor: U
             subtitle="Release checks only; applying an update remains an operator action.",
             width=session.terminal_width,
             clear=redraw_in_place,
+            unicode_style=unicode_style,
         )
     )
     await session.write_line(
@@ -2261,6 +2268,7 @@ async def _backup_status_screen(session: Session, lane: DatabaseLane, actor: Use
     checked_at, path = await lane.run(get_last_backup_summary)
     history = await lane.run(list_operational_run_history, "backup", limit=5)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
 
     await session.write_line(
         "\r\n"
@@ -2270,6 +2278,7 @@ async def _backup_status_screen(session: Session, lane: DatabaseLane, actor: Use
             subtitle="Last recorded operator backup for this node.",
             width=session.terminal_width,
             clear=redraw_in_place,
+            unicode_style=unicode_style,
         )
     )
     if checked_at is not None:
@@ -2391,6 +2400,7 @@ async def _link_status_screen(
     node = link_context.link_node
     config = link_context.link_config
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
 
     await session.write_line(
         "\r\n"
@@ -2400,6 +2410,7 @@ async def _link_status_screen(
             subtitle="Identity, capacity, relay activity, and verified peers.",
             width=session.terminal_width,
             clear=redraw_in_place,
+            unicode_style=unicode_style,
         )
     )
     await session.write_line(
