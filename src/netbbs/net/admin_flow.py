@@ -201,7 +201,7 @@ from netbbs.moderation.roles import (
 from netbbs.net.char_input import REDRAW_KEY, REFRESH_KEY, reject_unhandled_key
 from netbbs.net.confirm import prompt_yes_no, prompt_yes_no_or_keep
 from netbbs.net.picker import pick_item
-from netbbs.net.resource_editor import FieldSpec, bool_field, edit_resource_draft, text_field
+from netbbs.net.resource_editor import FieldSpec, bool_field, choice_field, edit_resource_draft, text_field
 from netbbs.net.session import Session
 from netbbs.net.session_registry import SessionSummary
 from netbbs.net.shutdown import (
@@ -3475,12 +3475,14 @@ def _min_age_field(key: str = "min_age") -> Callable[[Session, DatabaseLane, dic
 
 
 def _name_requirement_field(key: str = "name_requirement") -> Callable[[Session, DatabaseLane, dict], Awaitable[None]]:
-    async def prompt(session: Session, lane: DatabaseLane, draft: dict) -> None:
-        value, ok = await _prompt_name_requirement(session, current=draft.get(key))
-        if ok:
-            draft[key] = value
-
-    return prompt
+    """Cycles none -> verified -> verified_and_displayed -> none on
+    each hotkey press (dogfood feature request, issue #153) instead of
+    requiring the SysOp to type the literal string
+    `verified_and_displayed`. Only this draft-editor field changes --
+    `_prompt_name_requirement` itself stays typed-text for its other
+    (non-draft-editor, "recommend a value for Link" wizard) callers,
+    which weren't part of the reported complaint."""
+    return choice_field(key, [None, "verified", "verified_and_displayed"])
 
 
 def _community_field(key: str = "community_id") -> Callable[[Session, DatabaseLane, dict], Awaitable[None]]:

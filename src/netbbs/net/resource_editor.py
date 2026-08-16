@@ -166,3 +166,31 @@ def bool_field(key: str, prompt_text: str) -> FieldPrompt:
         draft[key] = await prompt_yes_no_or_keep(session, prompt_text, current=bool(draft.get(key)))
 
     return prompt
+
+
+def choice_field(key: str, values: list[Any]) -> FieldPrompt:
+    """A cycling multi-value toggle field (dogfood feature request,
+    issue #153) -- `bool_field`'s "press the hotkey, no typing" shape
+    generalized past two states: each press of the field's own hotkey
+    advances `draft[key]` to the next entry in `values`, wrapping back
+    to the first after the last. No sub-prompt, no I/O beyond the
+    immediate advance -- exactly one keystroke changes the value, the
+    same way `edit_resource_draft`'s outer loop already redraws the
+    field's current value (via `render`) after every field
+    interaction, so the caller sees each step of the cycle in turn.
+
+    `values[0]` is the fallback starting point both when the draft
+    doesn't yet contain `key` at all and when it holds a value that
+    isn't one of `values` (defensive only -- every field-list caller
+    seeds `key` from a real current/default value, this never happens
+    in practice)."""
+
+    async def prompt(session: Session, lane: DatabaseLane, draft: Draft) -> None:
+        current = draft.get(key, values[0])
+        try:
+            index = values.index(current)
+        except ValueError:
+            index = -1
+        draft[key] = values[(index + 1) % len(values)]
+
+    return prompt

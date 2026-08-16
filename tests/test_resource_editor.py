@@ -10,7 +10,7 @@ import asyncio
 
 import pytest
 
-from netbbs.net.resource_editor import FieldSpec, bool_field, edit_resource_draft, text_field
+from netbbs.net.resource_editor import FieldSpec, bool_field, choice_field, edit_resource_draft, text_field
 from netbbs.net.session import Session
 from netbbs.rendering import menu_key
 
@@ -75,6 +75,17 @@ def _pinned_field() -> FieldSpec:
         label="Pinned",
         render=lambda draft: "yes" if draft.get("pinned") else "no",
         prompt=bool_field("pinned", "Pinned?"),
+    )
+
+
+def _name_requirement_field() -> FieldSpec:
+    return FieldSpec(
+        key="name_requirement",
+        hotkey="q",
+        menu_text=menu_key("Q", "uirement", prefix="Name req"),
+        label="Name requirement",
+        render=lambda draft: draft.get("name_requirement") or "none",
+        prompt=choice_field("name_requirement", [None, "verified", "verified_and_displayed"]),
     )
 
 
@@ -235,6 +246,42 @@ def test_bool_field_bare_enter_keeps_the_current_value():
         )
     )
     assert result is True
+
+
+def test_choice_field_cycles_one_step_per_hotkey_press_without_typing():
+    async def save(draft):
+        return draft["name_requirement"]
+
+    # "q" presses cycle none -> verified -> verified_and_displayed, no
+    # typed input at all (dogfood feature request, issue #153).
+    session = FakeSession(["q", "q", "s"])
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Edit thing", fields=[_name_requirement_field()], draft={"name_requirement": None},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        )
+    )
+    assert result == "verified_and_displayed"
+
+
+def test_choice_field_wraps_back_to_the_first_value():
+    async def save(draft):
+        return draft["name_requirement"]
+
+    session = FakeSession(["q", "s"])  # one press past the last value wraps to none
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Edit thing",
+            fields=[_name_requirement_field()],
+            draft={"name_requirement": "verified_and_displayed"},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        )
+    )
+    assert result is None
 
 
 def test_multiple_fields_render_together_and_can_be_edited_in_any_order():
