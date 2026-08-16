@@ -29,7 +29,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from netbbs.net.char_input import reject_unhandled_key
+from netbbs.net.char_input import HELP_KEY, reject_unhandled_key
+from netbbs.net.help_overlay import show_help
 from netbbs.net.session import Session
 from netbbs.rendering import HEADER_COLOR, MUTED_COLOR, colored, sanitize_text
 from netbbs.storage.execution import DatabaseLane
@@ -62,6 +63,12 @@ class FieldSpec:
     opinion on hotkey/prefix choices. `render(draft)` is called fresh
     on every redraw and must be a pure, cheap read of the draft, no I/O
     -- the "current value" line shown above the menu.
+
+    `help` (dogfood feature request, issue #150), if given, is a short
+    plain-text explanation shown when the caller presses Ctrl-H --
+    optional and `None` by default, since authoring it for every field
+    on day one isn't required (issue's own scope note); a field with no
+    `help` is simply omitted from that screen.
     """
 
     key: str
@@ -70,6 +77,7 @@ class FieldSpec:
     label: str
     render: Callable[[Draft], str]
     prompt: FieldPrompt
+    help: str | None = None
 
 
 async def edit_resource_draft(
@@ -111,9 +119,19 @@ async def edit_resource_draft(
             await session.write_line(f"  {f.label}: {colored(value, fg_color=MUTED_COLOR)}")
         menu_line = "  ".join([f.menu_text for f in fields] + [save_menu_text, back_menu_text])
         await session.write_line(f"\r\n{menu_line}")
+        if any(f.help for f in fields):
+            # Only hinted when at least one field actually has help
+            # authored -- otherwise Ctrl-H would be an undiscoverable
+            # dead end advertised on every screen (issue #150's own
+            # "does not need to cover every existing feature on day
+            # one" scope extends to which screens mention it at all).
+            await session.write_line(colored("(Ctrl-H for help on these fields)", fg_color=MUTED_COLOR))
         await session.write("Choice: ")
         choice = (await session.read_key()).lower()
 
+        if choice == HELP_KEY:
+            await _show_field_help(session, fields)
+            continue
         if choice == back_hotkey:
             await session.write_line("")
             return None
@@ -131,6 +149,25 @@ async def edit_resource_draft(
             continue
         await session.write_line("")
         await field.prompt(session, lane, draft)
+
+
+async def _show_field_help(session: Session, fields: list[FieldSpec]) -> None:
+    """Ctrl-H's own content (issue #150): every field with a `help`
+    string authored, one after another -- not "whichever field the
+    caller's cursor happens to be on," since this screen has no cursor
+    concept at all (every field is always independently addressable by
+    its own hotkey, see this module's own docstring). A reasonable
+    reading of "contextual" for a screen shaped like this one."""
+    documented = [f for f in fields if f.help]
+    if not documented:
+        await show_help(session, "Field help", ["No help is available for this screen yet."])
+        return
+    lines: list[str] = []
+    for f in documented:
+        lines.append(colored(f.label, fg_color=HEADER_COLOR, bold=True))
+        lines.append(f"  {f.help}")
+        lines.append("")
+    await show_help(session, "Field help", lines[:-1])
 
 
 def text_field(key: str, *, required: bool = False) -> FieldPrompt:

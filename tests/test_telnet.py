@@ -935,12 +935,15 @@ def test_read_key_returns_immediately_no_enter_needed():
     assert received == ["b"]
 
 
-def test_read_key_skips_backspace_and_enter_bytes():
+def test_read_key_skips_enter_bytes():
     """
-    Junk control bytes (Backspace, CR, LF) sent before a real key press
-    are silently skipped, not returned as "the key" — there's no line
-    being built here to backspace within, and Enter has no special
-    meaning when already responding to the very next keystroke.
+    Junk control bytes (CR, LF) sent before a real key press are
+    silently skipped, not returned as "the key" — Enter has no special
+    meaning when already responding to the very next keystroke. (0x08/
+    Backspace used to be part of this same "junk, skip it" set, but
+    issue #150 gave it real meaning -- see HELP_KEY's own tests in
+    tests/test_char_input.py and tests/test_telnet.py's own
+    test_read_key_returns_help_key_for_backspace_byte below.)
     """
     received = []
 
@@ -952,7 +955,7 @@ def test_read_key_skips_backspace_and_enter_bytes():
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
             await skip_initial_negotiation(reader)
-            writer.write(bytes([0x08, 0x0D, 0x0A]))
+            writer.write(bytes([0x0D, 0x0A]))
             await writer.drain()
             await asyncio.sleep(0.05)
             writer.write(b"q")
@@ -965,6 +968,34 @@ def test_read_key_skips_backspace_and_enter_bytes():
 
     asyncio.run(scenario())
     assert received == ["q"]
+
+
+def test_read_key_returns_help_key_for_backspace_byte():
+    """Issue #150: 0x08 (Backspace) is repurposed as HELP_KEY at this
+    single-keystroke layer, unechoed -- see char_input.HELP_KEY's own
+    docstring for why this is safe specifically here."""
+    from netbbs.net.char_input import HELP_KEY
+
+    received = []
+
+    async def handler(session: Session):
+        received.append(await session.read_key())
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await skip_initial_negotiation(reader)
+            writer.write(bytes([0x08]))
+            await writer.drain()
+            await asyncio.sleep(0.05)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert received == [HELP_KEY]
 
 
 def test_read_key_echo_false_masks_with_asterisk():

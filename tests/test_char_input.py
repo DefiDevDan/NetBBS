@@ -19,6 +19,7 @@ import pytest
 
 import netbbs.net.char_input as char_input_module
 from netbbs.net.char_input import (
+    HELP_KEY,
     REDRAW_KEY,
     REFRESH_KEY,
     EditorKeyKind,
@@ -239,7 +240,10 @@ def test_read_key_returns_immediately_no_enter_needed():
 
 def test_read_key_skips_control_bytes_and_returns_next_real_key():
     async def scenario():
-        source = FakeByteSource(b"\r\n\x08\x7fz")
+        # \x08 (Backspace) deliberately excluded here -- issue #150
+        # gave it new meaning (HELP_KEY) at this exact layer; its own
+        # dedicated tests above cover that.
+        source = FakeByteSource(b"\r\n\x7fz")
         writer = Writer()
         key = await read_key(source, writer)
         assert key == "z"
@@ -304,6 +308,43 @@ def test_read_key_still_skips_other_control_bytes_as_before():
     asyncio.run(scenario())
 
 
+# -- issue #150: Ctrl-H as a returnable key, reusing Backspace's byte ----
+
+
+def test_read_key_returns_ctrl_h_as_help_key():
+    async def scenario():
+        source = FakeByteSource(b"\x08")
+        writer = Writer()
+        key = await read_key(source, writer)
+        assert key == HELP_KEY == "\x08"
+
+    asyncio.run(scenario())
+
+
+def test_read_key_does_not_echo_ctrl_h():
+    async def scenario():
+        source = FakeByteSource(b"\x08")
+        writer = Writer()
+        await read_key(source, writer)
+        assert writer.joined == ""
+
+    asyncio.run(scenario())
+
+
+def test_read_line_still_treats_the_same_byte_as_real_backspace():
+    """The HELP_KEY carve-out is read_key()-only -- 0x08 must keep
+    deleting a character in the editable read_line() path, unlike the
+    single-keystroke menu context where Backspace already had no
+    meaning to take away."""
+    async def scenario():
+        source = FakeByteSource(b"abc\x08\r\n")  # "abc" then real backspace
+        writer = Writer()
+        return await read_line(source, writer)
+
+    line = asyncio.run(scenario())
+    assert line == "ab"
+
+
 # -- reject_unhandled_key: real dogfood-reported bug fix -----------------
 # -- (Ctrl-L/Ctrl-R erasing the previous on-screen character on a menu ---
 # -- that doesn't specifically support them) ------------------------------
@@ -318,6 +359,12 @@ def test_reject_unhandled_key_bells_only_for_redraw_key():
 def test_reject_unhandled_key_bells_only_for_refresh_key():
     """Same reasoning as REDRAW_KEY -- REFRESH_KEY is also unechoed."""
     assert reject_unhandled_key(REFRESH_KEY) == "\a"
+
+
+def test_reject_unhandled_key_bells_only_for_help_key():
+    """Same reasoning as REDRAW_KEY/REFRESH_KEY -- HELP_KEY is also
+    unechoed, for a menu that doesn't specifically support it."""
+    assert reject_unhandled_key(HELP_KEY) == "\a"
 
 
 def test_reject_unhandled_key_matches_reject_keystroke_for_ordinary_keys():

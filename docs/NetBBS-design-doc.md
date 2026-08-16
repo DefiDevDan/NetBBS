@@ -258,6 +258,19 @@ crash-recovery prompt already did. Mail composition and other callers that
 never opt into a draft target keep exactly the old discard-only behavior --
 `/exit`/`/quit` are not recognized there at all.
 
+In-context help is a single shared rendering primitive
+(`netbbs.net.help_overlay.show_help`) reused by two different key
+conventions rather than one universal key: Ctrl+G inside the fullscreen
+prose editor (nano's own Help convention, listing its keybinds and
+explaining save-draft/resume), and Ctrl-H at ordinary hotkey-menu SysOp
+screens built on the shared draft-based field editor
+(`netbbs.net.resource_editor`), showing whichever fields on that screen
+have help text authored. The two keys differ because Ctrl-H and Backspace
+share one byte (0x08): safe to repurpose at a single-keystroke menu, where
+Backspace already has nothing to act on, but not inside a real text editor,
+where 0x08 is live backspace-editing. Authoring help text per field is
+incremental, not required for every field up front.
+
 Conventional yes/no prompts act on one key: `Y`/`N` immediately, or Enter for
 the displayed default/current value. This uses a confirmation-specific input
 primitive; generic single-key menus retain their deliberate rule that Enter is

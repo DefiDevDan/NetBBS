@@ -195,6 +195,26 @@ def test_quit_after_editing_keep_choice_leaves_the_draft_and_returns_none(tmp_pa
     assert draft.read_text(encoding="utf-8") == "x"
 
 
+def test_ctrl_g_shows_help_then_returns_to_editing_unharmed(tmp_path):
+    """Dogfood feature request, issue #150: Ctrl+G (nano's own Help
+    convention) shows the keybind list and a "Keep draft & exit"
+    explanation, then editing continues exactly as if it had never
+    been pressed -- proves the full-redraw-after-help path doesn't
+    corrupt in-progress state."""
+
+    async def scenario():
+        session = FakeSession(_type("ab") + ["CTRL+G", " "] + _type("c") + ["CTRL+O"])
+        result = await edit_prose(session, initial_text=None, draft_path=tmp_path / "d.draft", max_bytes=100_000)
+        return session, result
+
+    session, result = asyncio.run(scenario())
+    assert result == "abc"
+    text = _written_text(session)
+    assert "Fullscreen editor keys" in text
+    assert "Ctrl+X" in text
+    assert "Keep draft & exit" in text
+
+
 def test_quit_after_editing_save_choice_saves_and_returns_text(tmp_path):
     async def scenario():
         session = FakeSession(_type("hello") + ["CTRL+X", "s"])

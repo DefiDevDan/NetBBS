@@ -2570,6 +2570,29 @@ whatever later re-enters the editor) always consumes it -- while a
 counterpart at all and is only ever recoverable through the editor's own
 crash-recovery path when that exact post is reopened.
 
+**Ctrl-H cannot be given new meaning inside any `read_line()`-editable
+context, only at `read_key()`'s single-keystroke layer -- both send the
+identical byte (0x08) as Backspace, and only the latter has nothing real
+for that byte to mean.** Issue #150's contextual-help key was suggested as
+Ctrl-H, and `char_input.read_key()` previously discarded 0x08 exactly like
+every other "no meaning as a standalone key" control byte (same bucket
+Backspace/Delete/CR/LF already sat in) -- safe to repurpose there
+specifically because a single-keystroke menu has no in-progress typed text
+for Backspace to delete in the first place, so nothing is actually taken
+away from a client whose own Backspace key happens to send 0x08. The
+*editable* `read_line()` path (real free-text input, real in-progress
+buffer) cannot make the same trade -- 0x08 there is live, load-bearing
+backspace-editing and must stay exactly that, so `HELP_KEY`'s carve-out is
+deliberately narrower than `REDRAW_KEY`/`REFRESH_KEY`'s own issue #102
+precedent: added only to `read_key()`, `_read_line_editable`'s own
+`_BS`/`_DEL` handling is untouched. This is also why the fullscreen prose
+editor's own help key is Ctrl+G, not Ctrl-H, despite both editors sharing
+one nano-derived keybinding scheme (`netbbs.net.ansi_editor`'s module
+docstring) -- `read_editor_key()`'s structured `EditorKeyKind.BACKSPACE`
+already claims 0x08 unconditionally for real backspacing inside a
+fullscreen editor, so reusing it there the way `read_key()` safely can
+would break actual editing, not just look inconsistent.
+
 **A manual `BLOCKED` trust verdict on `HELLO` doesn't just refuse the
 request -- `LinkServer._handle_hello` actively evicts the peer from
 `self._node.peers` (`self._node.peers.pop(peer.fingerprint, None)`) the

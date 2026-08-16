@@ -33,6 +33,7 @@ from pathlib import Path
 
 from netbbs.net.char_input import EditorKey, EditorKeyKind
 from netbbs.net.draft_storage import delete_draft, offer_draft_recovery, save_draft
+from netbbs.net.help_overlay import show_help
 from netbbs.net.session import Session, SessionClosedError
 from netbbs.rendering import (
     MUTED_COLOR,
@@ -125,14 +126,52 @@ async def edit_prose(
 
     state = _EditorState(buffer=ProseBuffer.from_text(loaded_text or ""), max_bytes=max_bytes)
     autosave_task = asyncio.create_task(_autosave_loop(state, draft_path, autosave_interval_seconds))
-    try:
+    async def _full_redraw() -> Snapshot:
+        """Clear-and-repaint from scratch, not a diff against the
+        editor's own last-known snapshot -- needed both at entry and
+        after Ctrl+G's help block (issue #150), which writes plain
+        scrolled text the diff machinery has no record of, unlike
+        every other in-loop redraw (`_redraw`), which can assume the
+        real terminal still matches `previous`."""
         await session.write(clear_screen())
-        previous = _render(state, width, height)
-        await session.write(full_render_ansi(previous))
+        current = _render(state, width, height)
+        await session.write(full_render_ansi(current))
         await _flush(session, state, width, height)
+        return current
+
+    try:
+        previous = await _full_redraw()
 
         while True:
             key = await session.read_editor_key()
+
+            if key.kind == EditorKeyKind.CTRL and key.char == "g":
+                # Ctrl+G, nano's own Help convention -- deliberately
+                # reserved for this and left unused elsewhere in both
+                # fullscreen editors (see netbbs.net.ansi_editor's own
+                # module docstring).
+                await show_help(
+                    session,
+                    "Fullscreen editor keys",
+                    [
+                        "  Arrows         move the cursor",
+                        "  Home / End     start / end of the current line",
+                        "  Page Up/Down   scroll by a screenful",
+                        "  Enter          new line",
+                        "  Backspace/Del  delete before / at the cursor",
+                        "  Ctrl+O         save and finish",
+                        "  Ctrl+X         quit -- Save, Keep draft & exit, Discard, or Cancel",
+                        "  Ctrl+G         this help",
+                        "",
+                        '"Keep draft & exit" saves what you have typed so far without',
+                        "submitting it, then leaves -- nothing is lost. You'll be offered",
+                        "the choice to resume, delete, or ignore it the next time you're",
+                        "somewhere this draft can come back (e.g. next time you visit the",
+                        "board it belongs to).",
+                    ],
+                )
+                previous = await _full_redraw()
+                continue
 
             if key.kind == EditorKeyKind.CTRL and key.char == "x":
                 if not state.dirty:

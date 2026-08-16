@@ -3485,6 +3485,18 @@ def _name_requirement_field(key: str = "name_requirement") -> Callable[[Session,
     return choice_field(key, [None, "verified", "verified_and_displayed"])
 
 
+# Dogfood feature request, issue #150's own concrete example ("new
+# SysOps have absolutely no clue what name requirements do"): Ctrl-H
+# help text for every FieldSpec below that exposes this field. One
+# shared string so the four call sites (board/area/channel plus
+# Community's own cascading default) can never drift apart.
+_NAME_REQUIREMENT_HELP = (
+    "Gates posting/joining on identity: 'none' has no gate. 'verified' requires "
+    "attestation but shows nothing about it. 'verified_and_displayed' also shows the "
+    "caller's attested real name alongside their posts here."
+)
+
+
 def _community_field(key: str = "community_id") -> Callable[[Session, DatabaseLane, dict], Awaitable[None]]:
     """Also stashes the chosen Community's own name into
     `draft[f"{key}_label"]` -- the field's `render` callback must stay
@@ -3609,6 +3621,8 @@ def _community_field_specs() -> list[FieldSpec]:
             label="Default name requirement",
             render=lambda d: d.get("default_name_requirement") or "none",
             prompt=_name_requirement_field("default_name_requirement"),
+            help=_NAME_REQUIREMENT_HELP + " Boards/areas/channels in this Community "
+            "inherit this unless they set their own.",
         ),
     ]
 
@@ -3868,6 +3882,7 @@ def _board_field_specs() -> list[FieldSpec]:
             label="Name requirement",
             render=lambda d: d.get("name_requirement") or "none",
             prompt=_name_requirement_field(),
+            help=_NAME_REQUIREMENT_HELP,
         ),
     ]
 
@@ -4627,6 +4642,7 @@ def _area_field_specs() -> list[FieldSpec]:
             label="Name requirement",
             render=lambda d: d.get("name_requirement") or "none",
             prompt=_name_requirement_field(),
+            help=_NAME_REQUIREMENT_HELP,
         ),
     ]
 
@@ -5043,6 +5059,7 @@ def _channel_field_specs() -> list[FieldSpec]:
             label="Name requirement",
             render=lambda d: d.get("name_requirement") or "none",
             prompt=_name_requirement_field(),
+            help=_NAME_REQUIREMENT_HELP,
         ),
     ]
 

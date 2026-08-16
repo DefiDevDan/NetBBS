@@ -56,37 +56,47 @@ _DEL = 0x7F  # Delete — many terminals send this for the Backspace key
 _ESC = 0x1B
 _TAB = 0x09
 
-# Issue #102: the two control bytes `read_key()` recognizes and returns
-# as their own distinct keys, rather than the generic "no meaning as a
+# Issue #102: the control bytes `read_key()` recognizes and returns as
+# their own distinct keys, rather than the generic "no meaning as a
 # standalone key, skip it and keep reading" treatment every other
 # control byte still gets below. Exported (not `_`-prefixed) since a
-# menu loop comparing `key == REDRAW_KEY`/`REFRESH_KEY` needs these same
-# values — a raw `"\x0c"`/`"\x12"` literal at every call site would be
-# both unreadable and easy to typo.
+# menu loop comparing `key == REDRAW_KEY`/`REFRESH_KEY`/`HELP_KEY`
+# needs these same values — a raw `"\x0c"`/`"\x12"`/`"\x08"` literal at
+# every call site would be both unreadable and easy to typo.
 #
-# Deliberately narrow: only these two bytes get this treatment, not a
-# blanket "pass every control byte through" -- CR/LF/BS/DEL/ESC above
-# keep their own existing special handling, and every other control
-# byte remains silently swallowed exactly as before, matching this
+# Deliberately narrow: only these bytes get this treatment, not a
+# blanket "pass every control byte through" -- CR/LF/DEL/ESC above keep
+# their own existing special handling, and every other control byte
+# remains silently swallowed exactly as before, matching this
 # function's own documented "not a standalone key" contract.
 REDRAW_KEY = "\x0c"  # Ctrl-L
 REFRESH_KEY = "\x12"  # Ctrl-R
+# Issue #150: Ctrl-H, same byte (0x08) as Backspace. Safe specifically
+# because read_key() already treats Backspace as "no meaning, discard"
+# in a single-keystroke menu (there's no in-progress typed text for it
+# to delete) -- reusing that already-inert byte for a real, useful
+# action here doesn't take anything away from a client whose Backspace
+# key happens to send it. Unlike REDRAW_KEY/REFRESH_KEY, read_line()'s
+# own editable path must keep treating 0x08 as real backspace-editing
+# (see _read_line_editable's unchanged _BS handling) -- this carve-out
+# is read_key()-only, the same way REDRAW_KEY/REFRESH_KEY already are.
+HELP_KEY = "\x08"  # Ctrl-H
 
 
 def reject_unhandled_key(key: str, *, count: int = 1) -> str:
     """
     Like `netbbs.rendering.ansi.reject_keystroke`, but aware that
-    `REDRAW_KEY`/`REFRESH_KEY` are returned *unechoed* by `read_key()`
-    above (a real dogfood-reported bug this fixes): `reject_keystroke()`
-    unconditionally erases "the last echoed character" before ringing
-    the bell, an assumption that's wrong for these two -- since nothing
-    was echoed for this particular keystroke, that erase instead deletes
-    whatever real character was last drawn on screen, once per press. A
-    menu loop that doesn't specifically support Ctrl-L/Ctrl-R just bells
-    for them instead; every other unrecognized key keeps today's
-    erase-and-bell behavior unchanged.
+    `REDRAW_KEY`/`REFRESH_KEY`/`HELP_KEY` are returned *unechoed* by
+    `read_key()` above (a real dogfood-reported bug this fixes):
+    `reject_keystroke()` unconditionally erases "the last echoed
+    character" before ringing the bell, an assumption that's wrong for
+    these -- since nothing was echoed for this particular keystroke,
+    that erase instead deletes whatever real character was last drawn
+    on screen, once per press. A menu loop that doesn't specifically
+    support one of these just bells for it instead; every other
+    unrecognized key keeps today's erase-and-bell behavior unchanged.
     """
-    if key in (REDRAW_KEY, REFRESH_KEY):
+    if key in (REDRAW_KEY, REFRESH_KEY, HELP_KEY):
         return "\a"
     return reject_keystroke(count)
 
@@ -822,25 +832,28 @@ async def read_key(source: ByteSource, write: WriteFunc, echo: bool = True) -> s
     single-choice menu selections, not free-text input, which should keep
     using `read_line`.
 
-    Control bytes with no meaning as a standalone "key" — Backspace/
-    Delete, CR/LF, escape sequences (recognized or not; there's no line
-    here for Left/Right/Home/End/Delete to act within, and Up/Down have
-    no history to recall in a single-keystroke menu) — are silently
+    Control bytes with no meaning as a standalone "key" — Delete, CR/LF,
+    escape sequences (recognized or not; there's no line here for
+    Left/Right/Home/End/Delete to act within, and Up/Down have no
+    history to recall in a single-keystroke menu) — are silently
     skipped and reading continues, rather than being returned as a key
-    in their own right. Two narrow exceptions (issue #102): Ctrl-L and
-    Ctrl-R are returned as `REDRAW_KEY`/`REFRESH_KEY`, unechoed (unlike
-    every other returned key below) — echoing a raw Ctrl-L byte back to
-    a real terminal risks triggering its own local form-feed/clear
-    behavior, fighting whatever redraw the caller is about to do on
-    purpose. Every *other* control byte keeps the plain "no meaning,
-    keep reading" treatment unchanged.
+    in their own right. Three narrow exceptions: Ctrl-L and Ctrl-R
+    (issue #102) are returned as `REDRAW_KEY`/`REFRESH_KEY`, unechoed
+    (unlike every other returned key below) — echoing a raw Ctrl-L byte
+    back to a real terminal risks triggering its own local
+    form-feed/clear behavior, fighting whatever redraw the caller is
+    about to do on purpose. Ctrl-H (issue #150) is returned as
+    `HELP_KEY`, also unechoed, for the same reason -- see that
+    constant's own docstring for why reusing Backspace's byte here is
+    safe. Every *other* control byte, Backspace included, keeps the
+    plain "no meaning, keep reading" treatment unchanged.
     """
     while True:
         b = await _read_byte(source)
         if b is None:
             continue  # pure transport-level action, no data produced
 
-        if b in (_CR, _LF, _BS, _DEL):
+        if b in (_CR, _LF, _DEL):
             continue
 
         if b == _ESC:
@@ -851,6 +864,8 @@ async def read_key(source: ByteSource, write: WriteFunc, echo: bool = True) -> s
             return REDRAW_KEY
         if b == ord(REFRESH_KEY):
             return REFRESH_KEY
+        if b == ord(HELP_KEY):
+            return HELP_KEY
 
         if b < 0x20:
             continue

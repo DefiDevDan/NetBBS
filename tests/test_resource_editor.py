@@ -10,6 +10,7 @@ import asyncio
 
 import pytest
 
+from netbbs.net.char_input import HELP_KEY
 from netbbs.net.resource_editor import FieldSpec, bool_field, choice_field, edit_resource_draft, text_field
 from netbbs.net.session import Session
 from netbbs.rendering import menu_key
@@ -302,3 +303,104 @@ def test_multiple_fields_render_together_and_can_be_edited_in_any_order():
         )
     )
     assert result == {"name": "general", "pinned": True}
+
+
+# -- Ctrl-H field help (dogfood feature request, issue #150) ----------------
+
+
+def _pinned_field_with_help() -> FieldSpec:
+    return FieldSpec(
+        key="pinned",
+        hotkey="p",
+        menu_text=menu_key("P", "inned"),
+        label="Pinned",
+        render=lambda draft: "yes" if draft.get("pinned") else "no",
+        prompt=bool_field("pinned", "Pinned?"),
+        help="Keeps this item at the top of every listing.",
+    )
+
+
+def test_ctrl_h_shows_help_for_fields_that_have_it():
+    async def save(draft):
+        return draft["name"]
+
+    session = FakeSession([HELP_KEY, "x", "s"])
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Edit thing", fields=[_name_field(), _pinned_field_with_help()], draft={"name": "lobby"},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        )
+    )
+    assert result == "lobby"
+    text = _written_text(session)
+    assert "Pinned" in text
+    assert "Keeps this item at the top of every listing." in text
+
+
+def test_ctrl_h_omits_fields_with_no_help_authored():
+    async def save(draft):
+        return draft["name"]
+
+    # _name_field() has no `help` -- only Pinned's should appear.
+    session = FakeSession([HELP_KEY, "x", "s"])
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Edit thing", fields=[_name_field(), _pinned_field_with_help()], draft={"name": "lobby"},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        )
+    )
+    assert result == "lobby"
+    text = _written_text(session)
+    # "Name" appears as the field's own current-value line either way,
+    # so check specifically that no standalone "Name" help heading was
+    # printed by the help block itself.
+    assert "Keeps this item at the top of every listing." in text
+    assert text.count("Pinned") >= 1
+
+
+def test_ctrl_h_falls_back_to_a_message_when_nothing_has_help():
+    async def save(draft):
+        return draft["name"]
+
+    session = FakeSession([HELP_KEY, "x", "s"])
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Edit thing", fields=[_name_field()], draft={"name": "lobby"},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        )
+    )
+    assert result == "lobby"
+    assert "No help is available for this screen yet." in _written_text(session)
+
+
+def test_ctrl_h_hint_only_shown_when_some_field_has_help():
+    async def save(draft):
+        return draft["name"]
+
+    with_help = FakeSession(["s"])
+    asyncio.run(
+        edit_resource_draft(
+            with_help, None,
+            title="Edit thing", fields=[_pinned_field_with_help()], draft={"name": "lobby", "pinned": False},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        )
+    )
+    assert "Ctrl-H for help" in _written_text(with_help)
+
+    without_help = FakeSession(["s"])
+    asyncio.run(
+        edit_resource_draft(
+            without_help, None,
+            title="Edit thing", fields=[_name_field()], draft={"name": "lobby"},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        )
+    )
+    assert "Ctrl-H for help" not in _written_text(without_help)
