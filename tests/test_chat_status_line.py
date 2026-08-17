@@ -474,8 +474,8 @@ def test_chat_loop_clears_the_screen_on_entry(lane, hub, presence, mailbox, chan
 
 def test_chat_loop_opens_with_location_and_live_transition(lane, hub, presence, mailbox, channel, alice):
     session, _ = asyncio.run(_run(lane, hub, presence, mailbox, channel, alice, ["/quit"]))
-    text = _written_text(session)
-    assert "NetBBS / Chat / #lobby" in text
+    text = _visible_text(session)
+    assert "NetBBS › Chat › #lobby" in text
     assert "Live conversation" in text
     assert "LIVE" in text
 

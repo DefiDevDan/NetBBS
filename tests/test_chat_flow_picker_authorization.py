@@ -17,6 +17,7 @@ mixed-input scenario (menu keys plus a fullscreen editor).
 from __future__ import annotations
 
 import asyncio
+import re
 
 import pytest
 
@@ -83,6 +84,13 @@ class FakeSession(Session):
 
 def _written_text(session: FakeSession) -> str:
     return "".join(session.written)
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _visible_text(session: FakeSession) -> str:
+    return _ANSI_ESCAPE_RE.sub("", _written_text(session))
 
 
 @pytest.fixture
@@ -227,7 +235,7 @@ def test_picker_order_ignores_node_local_activity_and_stays_alphabetical(db, lan
         return await _run(lane, hub, presence, alice, ["0", "1", "/quit"])
 
     session = asyncio.run(scenario())
-    assert "NetBBS / Chat / #apple" in _written_text(session)
+    assert "NetBBS › Chat › #apple" in _visible_text(session)
 
 
 # -- identity attestation: age/name gating on channel entry (design doc §18) --

@@ -11,6 +11,7 @@ netbbs.net.login_flow entry points.
 from __future__ import annotations
 
 import asyncio
+import re
 
 from netbbs.auth.users import SYSOP_LEVEL, create_user
 from netbbs.boards.boards import create_board
@@ -59,6 +60,13 @@ class FakeSession:
 
 def _written_text(session: FakeSession) -> str:
     return "".join(session.written)
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _visible_text(session: FakeSession) -> str:
+    return _ANSI_ESCAPE_RE.sub("", _written_text(session))
 
 
 def _run_main_menu(session, db, user):
@@ -172,8 +180,8 @@ def test_entering_a_community_only_offers_resource_types_with_matching_items(tmp
 
     _run_main_menu(session, db, bob)
 
-    text = _written_text(session)
-    assert "NetBBS / Communities / Vintage Computing" in text
+    text = _visible_text(session)
+    assert "NetBBS › Communities › Vintage Computing" in text
     assert "Choose a space to explore" in text
     assert "essage Boards" in text
     assert "hat" not in text  # [C]hat never rendered -- no channel in this Community

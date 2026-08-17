@@ -257,6 +257,7 @@ async def review_composition(
     commit_brief: str | None = None,
     description_level: str = "off",
     redraw_in_place: bool = False,
+    unicode_style: bool = False,
 ) -> ReviewAction:
     """Render a complete draft and return one explicit review action.
 
@@ -276,6 +277,7 @@ async def review_composition(
         subtitle="Check the draft before continuing",
         width=session.terminal_width,
         clear=redraw_in_place,
+        unicode_style=unicode_style,
     )
     await session.write_line(f"\r\n{heading}")
     if recipient is not None:

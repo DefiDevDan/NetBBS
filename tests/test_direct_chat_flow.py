@@ -175,7 +175,7 @@ def test_invite_interrupts_an_idle_main_menu_and_completes_a_round_trip(tmp_path
             # recover its name from ChatHub itself to wait for that.
             room = next(name for name in hub._channels if name.startswith(chat_flow._DM_CHANNEL_PREFIX))
             await _run_until(lambda: hub.participant_count(room) == 2)
-            assert "NetBBS / Direct chat / Invitation sent" in _written_text(alice_session)
+            assert "NetBBS › Direct chat › Invitation sent" in _plain(_written_text(alice_session))
             assert "Private, ephemeral conversation" in _written_text(alice_session)
             assert "Private, ephemeral conversation" in _written_text(bob_session)
 

@@ -11,6 +11,7 @@ board.
 from __future__ import annotations
 
 import asyncio
+import re
 
 from netbbs.activity import record_board_seen, unread_post_count
 from netbbs.auth.users import create_user
@@ -59,6 +60,10 @@ class FakeSession:
     @property
     def output(self) -> str:
         return "".join(self.written)
+
+    @property
+    def visible_output(self) -> str:
+        return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", self.output)
 
 
 def _make_board_with_posts(db, count: int, monkeypatch):
@@ -221,7 +226,7 @@ def test_board_page_has_location_post_count_and_actions(tmp_path, monkeypatch):
 
     asyncio.run(_show_board(session, db, board, user))
 
-    assert "NetBBS / Message boards / general" in session.output
+    assert "NetBBS › Message boards › general" in session.visible_output
     assert "2 posts on this page" in session.output
     assert "]ost" in session.output
     assert "]ack" in session.output

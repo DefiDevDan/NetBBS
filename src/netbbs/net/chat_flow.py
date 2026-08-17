@@ -145,6 +145,7 @@ from netbbs.net.char_input import Completer, InputHistory, LiveInputBuffer, reje
 from netbbs.net.char_input import move_cursor as relative_move_cursor
 from netbbs.net.picker import pick_item
 from netbbs.net.redraw_preference import redraw_in_place_enabled
+from netbbs.net.unicode_style_preference import unicode_style_enabled
 from netbbs.net.session import Session, SessionClosedError
 from netbbs.net.session_registry import ActiveSessionRegistry
 from netbbs.net.sort_ui import SORT_MODE_LABELS, prompt_sort_change
@@ -3203,6 +3204,7 @@ async def _chat_loop(
             subtitle=sanitize_text(channel.topic or channel.description or "Live conversation"),
             width=session.terminal_width,
             clear=await lane.run(redraw_in_place_enabled, user),
+            unicode_style=await lane.run(unicode_style_enabled, user),
         )
         await session.write_line(f"\r\n{heading}")
 
@@ -3957,6 +3959,7 @@ async def run_direct_chat_loop(
     room_token: str,
     *,
     redraw_in_place: bool = False,
+    unicode_style: bool = False,
 ) -> None:
     """
     Real-time 1:1 direct chat, until either side types `/close`, the
@@ -4023,6 +4026,7 @@ async def run_direct_chat_loop(
             subtitle="Private, ephemeral conversation",
             width=session.terminal_width,
             clear=redraw_in_place,
+            unicode_style=unicode_style,
         )
         await session.write_line(f"\r\n{heading}")
         await session.write_line(f"Type {close_hint}.")
@@ -4217,6 +4221,7 @@ async def run_direct_chat_invite_flow(
         subtitle=f"Waiting for {sanitize_text(target.username)} to respond",
         width=session.terminal_width,
         clear=await lane.run(redraw_in_place_enabled, user),
+        unicode_style=await lane.run(unicode_style_enabled, user),
     )
     await session.write_line(f"\r\n{heading}")
     await session.write(f"{menu_key('C', 'ancel')}: ")
@@ -4292,6 +4297,7 @@ async def run_direct_chat_invite_flow(
         await run_direct_chat_loop(
             session, hub, presence, user, target, invites[accepted_session].room_token,
             redraw_in_place=await lane.run(redraw_in_place_enabled, user),
+            unicode_style=await lane.run(unicode_style_enabled, user),
         )
     elif outcome == "declined":
         await session.write_line(colored(f"\r\n{sanitize_text(target.username)} declined.", fg_color=MUTED_COLOR))

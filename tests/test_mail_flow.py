@@ -18,6 +18,7 @@ style: only the call *into* mail_flow.py/`_main_menu` needs a lane.
 from __future__ import annotations
 
 import asyncio
+import re
 
 from netbbs.auth.users import create_user
 from netbbs.chat.hub import ChatHub
@@ -72,6 +73,13 @@ class FakeSession:
 
 def _written_text(session: FakeSession) -> str:
     return "".join(session.written)
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _visible_text(session: FakeSession) -> str:
+    return _ANSI_ESCAPE_RE.sub("", _written_text(session))
 
 
 # -- main menu integration ---------------------------------------------------
@@ -204,7 +212,7 @@ def test_inbox_shows_unread_marker_and_opening_marks_read(tmp_path):
     assert "[NEW] Hello" in text  # explicit unread marker on the inbox listing
     assert "1 unread message" in text
     assert "How are you?" in text
-    assert "NetBBS / Mail / Inbox / Hello" in text
+    assert "NetBBS › Mail › Inbox › Hello" in _visible_text(session)
     assert colored("From: ", fg_color=LABEL_COLOR) in text
     assert colored("alice", fg_color=ACCENT_COLOR) in text
     assert colored("Date: ", fg_color=LABEL_COLOR) in text
@@ -306,7 +314,7 @@ def test_sent_lists_recipient_and_delete_removes_it(tmp_path):
 
     text = _written_text(session)
     assert "to bob" in text
-    assert "NetBBS / Mail / Sent / Hello" in text
+    assert "NetBBS › Mail › Sent › Hello" in _visible_text(session)
     assert "Message deleted." in text
     assert list_sent(db, alice) == []
     lane.close()

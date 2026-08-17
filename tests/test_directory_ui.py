@@ -10,6 +10,7 @@ ABC — these functions only ever call the methods they actually use).
 from __future__ import annotations
 
 import asyncio
+import re
 
 from netbbs.auth.users import create_user
 from netbbs.directory import get_bio, is_bio_visible, set_bio, set_bio_visible
@@ -51,6 +52,10 @@ class FakeSession:
     @property
     def output(self) -> str:
         return "".join(self.written)
+
+    @property
+    def visible_output(self) -> str:
+        return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", self.output)
 
 
 # -- _browse_directory ------------------------------------------------------
@@ -129,8 +134,8 @@ def test_browse_directory_loops_back_to_the_listing_after_viewing_someone(tmp_pa
 
     asyncio.run(_browse_directory(session, db, viewer))
 
-    assert "NetBBS / Directory / bob" in session.output
-    assert "NetBBS / Directory / alice" in session.output
+    assert "NetBBS › Directory › bob" in session.visible_output
+    assert "NetBBS › Directory › alice" in session.visible_output
     db.close()
 
 
@@ -149,7 +154,7 @@ def test_selecting_a_directory_entry_shows_their_vcard(tmp_path):
     asyncio.run(_browse_directory(session, db, viewer))
 
     assert "Retro computing enthusiast" in session.output
-    assert "NetBBS / Directory / bob" in session.output
+    assert "NetBBS › Directory › bob" in session.visible_output
     assert colored("Member since: ", fg_color=LABEL_COLOR) in session.output
     assert colored("Retro computing enthusiast", fg_color=VALUE_COLOR) in session.output
     db.close()

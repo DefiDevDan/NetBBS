@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import re
 from pathlib import Path
 
 import pytest
@@ -134,6 +135,13 @@ def _written_text(session: _ServerSession) -> str:
     return "".join(session.written)
 
 
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _visible_text(session: _ServerSession) -> str:
+    return _ANSI_ESCAPE_RE.sub("", _written_text(session))
+
+
 @pytest.fixture
 def db(tmp_path):
     database = Database(tmp_path / "node.db")
@@ -177,7 +185,7 @@ def test_upload_via_show_area_streams_to_storage_with_no_leftover_temp_file(db, 
     asyncio.run(scenario())
 
     assert "Uploaded" in _written_text(server_session)
-    assert "NetBBS / Files / docs / Upload" in _written_text(server_session)
+    assert "NetBBS › Files › docs › Upload" in _visible_text(server_session)
     page = list_files_page(db, area, alice)
     assert len(page.entries) == 1
     entry = page.entries[0]

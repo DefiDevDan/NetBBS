@@ -17,6 +17,7 @@ file's style -- only the call *into* file_flow.py needs a lane.
 from __future__ import annotations
 
 import asyncio
+import re
 
 from netbbs.activity import record_file_area_seen, unread_file_count
 from netbbs.auth.users import create_user
@@ -62,6 +63,10 @@ class FakeSession:
     def output(self) -> str:
         return "".join(self.written)
 
+    @property
+    def visible_output(self) -> str:
+        return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", self.output)
+
 
 def _make_area_with_files(db, count: int, monkeypatch):
     user = create_user(db, "alice", password="hunter2", user_level=10)
@@ -83,7 +88,7 @@ def test_opening_a_multi_page_area_shows_only_the_newest_page(tmp_path, monkeypa
 
     asyncio.run(_show_area(session, lane, area, user))
 
-    assert "NetBBS / Files / docs" in session.output
+    assert "NetBBS › Files › docs" in session.visible_output
     assert f"{_PAGE_SIZE} files on this page" in session.output
     shown = sum(1 for i in range(total) if f"file{i}.txt " in session.output)
     assert shown == _PAGE_SIZE
@@ -158,7 +163,7 @@ def test_empty_area_has_a_guided_empty_state(tmp_path):
 
     asyncio.run(_show_area(session, lane, area, user))
 
-    assert "NetBBS / Files / docs" in session.output
+    assert "NetBBS › Files › docs" in session.visible_output
     assert "This file area has no files yet" in session.output
     assert "Uploads and fetched Link files will appear here" in session.output
     lane.close()

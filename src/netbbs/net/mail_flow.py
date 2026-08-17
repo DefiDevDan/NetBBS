@@ -63,6 +63,7 @@ from netbbs.net.confirm import prompt_yes_no
 from netbbs.net.editor_preference import fullscreen_editor_enabled
 from netbbs.net.menu_description_preference import menu_description_level
 from netbbs.net.redraw_preference import redraw_in_place_enabled
+from netbbs.net.unicode_style_preference import unicode_style_enabled
 from netbbs.net.picker import pick_item
 from netbbs.net.prose_editor import edit_prose
 from netbbs.net.session import Session
@@ -244,6 +245,7 @@ async def _render_message(
     message: MailMessage,
     to_label: str | None,
     redraw_in_place: bool = False,
+    unicode_style: bool = False,
 ) -> None:
     mailbox = "Sent" if to_label is not None else "Inbox"
     header = screen_title(
@@ -251,6 +253,7 @@ async def _render_message(
         breadcrumb=("NetBBS", "Mail", mailbox),
         width=session.terminal_width,
         clear=redraw_in_place,
+        unicode_style=unicode_style,
     )
     await session.write_line(f"\r\n{header}")
     if to_label is not None:
@@ -281,6 +284,7 @@ async def _show_inbox_message(session: Session, lane: DatabaseLane, user: User, 
     await _render_message(
         session, lane, message=message, to_label=None,
         redraw_in_place=await lane.run(redraw_in_place_enabled, user),
+        unicode_style=await lane.run(unicode_style_enabled, user),
     )
     description_level = await lane.run(menu_description_level, user)
 
@@ -330,6 +334,7 @@ async def _show_sent_message(session: Session, lane: DatabaseLane, user: User, m
     await _render_message(
         session, lane, message=message, to_label=to_label,
         redraw_in_place=await lane.run(redraw_in_place_enabled, user),
+        unicode_style=await lane.run(unicode_style_enabled, user),
     )
     description_level = await lane.run(menu_description_level, user)
 
@@ -434,6 +439,7 @@ async def _compose_mail(
 
     review_description_level = await lane.run(menu_description_level, user)
     review_redraw_in_place = await lane.run(redraw_in_place_enabled, user)
+    review_unicode_style = await lane.run(unicode_style_enabled, user)
     while True:
         action = await review_composition(
             session,
@@ -445,6 +451,7 @@ async def _compose_mail(
             commit_brief="Send this message",
             description_level=review_description_level,
             redraw_in_place=review_redraw_in_place,
+            unicode_style=review_unicode_style,
         )
         if action is ReviewAction.CANCEL:
             await session.write_line(colored("Message cancelled.", fg_color=MUTED_COLOR))

@@ -1462,6 +1462,7 @@ async def _handle_incoming_invite(
         await run_direct_chat_loop(
             session, hub, presence, user, invite.inviter, invite.room_token,
             redraw_in_place=redraw_in_place_enabled(db, user),
+            unicode_style=unicode_style_enabled(db, user),
         )
     else:
         await session.write_line(colored("Declined.", fg_color=MUTED_COLOR))
@@ -2251,6 +2252,7 @@ async def _resource_type_menu(
     """
     description_level = menu_description_level(db, user)
     redraw_in_place = redraw_in_place_enabled(db, user)
+    unicode_style = unicode_style_enabled(db, user)
     while True:
         show_boards = not community_scoped or _has_visible_boards(
             db, user, community_id=community_id, community_scoped=community_scoped
@@ -2276,6 +2278,7 @@ async def _resource_type_menu(
             subtitle="Choose a space to explore",
             width=session.terminal_width,
             clear=redraw_in_place,
+            unicode_style=unicode_style,
         )
         await session.write_line(f"\r\n{heading}")
         await session.write_line(
@@ -2679,13 +2682,15 @@ async def _render_board_page(
     name_requirement: str | None,
     description_level: str,
     redraw_in_place: bool,
+    unicode_style: bool = False,
 ) -> None:
     """Renders one page of posts plus its navigation options — the unit
     that should be redrawn on an actual page change (initial entry,
     Older/Newer/Recent), not on every loop iteration regardless of
     whether anything changed."""
     await _render_post_page(
-        session, db, board_name, page, name_requirement=name_requirement, redraw_in_place=redraw_in_place
+        session, db, board_name, page, name_requirement=name_requirement, redraw_in_place=redraw_in_place,
+        unicode_style=unicode_style,
     )
     options = []
     if page.has_older:
@@ -2748,6 +2753,7 @@ async def _show_board(
     )
     description_level = menu_description_level(db, user)
     redraw_in_place = redraw_in_place_enabled(db, user)
+    unicode_style = unicode_style_enabled(db, user)
 
     def _refetch_current_page() -> PostPage:
         """Re-fetches whichever page is currently on screen, using the
@@ -2773,6 +2779,7 @@ async def _show_board(
             name_requirement=get_effective_name_requirement(db, board),
             description_level=description_level,
             redraw_in_place=redraw_in_place,
+            unicode_style=unicode_style,
         )
         if current_page.posts:
             record_board_seen(db, user, board, current_page.posts[-1])
@@ -2808,6 +2815,7 @@ async def _show_board(
                 commit_brief="Publish this post",
                 description_level=description_level,
                 redraw_in_place=redraw_in_place,
+                unicode_style=unicode_style,
             )
             if action is ReviewAction.CANCEL:
                 await session.write_line(colored("Post cancelled.", fg_color=MUTED_COLOR))
@@ -2914,7 +2922,7 @@ async def _show_board(
         # navigation loop (nothing to browse either way), but offers the
         # same explicit choice before composing anything.
         await session.write_line(
-            f"\r\n{screen_title(board_name, breadcrumb=('NetBBS', 'Message boards'), width=session.terminal_width, clear=redraw_in_place)}"
+            f"\r\n{screen_title(board_name, breadcrumb=('NetBBS', 'Message boards'), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style)}"
         )
         await session.write_line(
             f"\r\n{empty_state('This message board has no posts yet', detail='It is ready for its first conversation.', width=session.terminal_width)}"
@@ -3200,6 +3208,7 @@ async def _render_post_page(
     *,
     name_requirement: str | None,
     redraw_in_place: bool = False,
+    unicode_style: bool = False,
 ) -> None:
     header = screen_title(
         board_name,
@@ -3207,6 +3216,7 @@ async def _render_post_page(
         subtitle=f"{len(page.posts)} post{'s' if len(page.posts) != 1 else ''} on this page",
         width=session.terminal_width,
         clear=redraw_in_place,
+        unicode_style=unicode_style,
     )
     await session.write_line(f"\r\n{header}")
     for position, post in enumerate(page.posts, start=1):
@@ -3315,6 +3325,7 @@ async def _show_vcard(session: Session, db: Database, target: User, requesting_u
             subtitle="Member profile",
             width=session.terminal_width,
             clear=redraw_in_place_enabled(db, requesting_user),
+            unicode_style=unicode_style_enabled(db, requesting_user),
         )
     )
     await session.write_line(
@@ -3430,6 +3441,7 @@ async def _caller_who_screen(
             subtitle="Choose how you would like to connect.",
             width=session.terminal_width,
             clear=redraw_in_place_enabled(db, user),
+            unicode_style=unicode_style_enabled(db, user),
         )
     )
     options = [MenuEntry(label=menu_key("M", "essage"), brief="Send a one-off message")]

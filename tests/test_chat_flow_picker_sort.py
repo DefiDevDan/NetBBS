@@ -150,9 +150,9 @@ def test_order_command_resorts_the_flat_channel_list_and_persists_globally(db, l
     session = asyncio.run(
         _run(lane, hub, presence, alice, ["o", "r", "g", "0", "1", "/quit"])
     )
-    text = _written_text(session)
+    text = _visible_text(session)
     assert "Sort: Recently added" in text
-    assert "NetBBS / Chat / #zebra" in text  # position 01 after re-sort
+    assert "NetBBS › Chat › #zebra" in text  # position 01 after re-sort
     assert get_effective_sort_mode(db, alice, "channel") == "recent"
 
 
@@ -165,7 +165,7 @@ def test_order_command_choosing_just_this_time_does_not_persist(db, lane, hub, p
     session = asyncio.run(
         _run(lane, hub, presence, alice, ["o", "r", "j", "0", "1", "/quit"])
     )
-    assert "NetBBS / Chat / #zebra" in _written_text(session)
+    assert "NetBBS › Chat › #zebra" in _visible_text(session)
     assert get_effective_sort_mode(db, alice, "channel") == "alphabetical"
 
 
@@ -196,7 +196,7 @@ def test_order_command_activity_mode_reflects_live_hub_state(db, lane, hub, pres
         return await _run(lane, hub, presence, alice, ["o", "a", "j", "0", "1", "/quit"])
 
     session = asyncio.run(scenario())
-    assert "NetBBS / Chat / #zebra" in _written_text(session)
+    assert "NetBBS › Chat › #zebra" in _visible_text(session)
 
 
 def test_order_command_volume_mode_uses_participant_count_for_channels(db, lane, hub, presence, alice):
@@ -213,9 +213,9 @@ def test_order_command_volume_mode_uses_participant_count_for_channels(db, lane,
     session = asyncio.run(
         _run(lane, hub, presence, alice, ["o", "p", "j", "0", "1", "/quit"])
     )
-    text = _written_text(session)
+    text = _visible_text(session)
     assert "Sort: Participants" in text
-    assert "NetBBS / Chat / #zebra" in text
+    assert "NetBBS › Chat › #zebra" in text
 
 
 def test_community_scoped_order_offers_a_whole_community_save_option(db, lane, hub, presence, alice):
