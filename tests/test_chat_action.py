@@ -4,6 +4,7 @@ tests/test_chat_dispatch.py's dispatcher-level coverage."""
 from __future__ import annotations
 
 import asyncio
+import re
 
 import pytest
 
@@ -73,6 +74,16 @@ def _written_text(session: FakeSession) -> str:
     return "\n".join(session.written)
 
 
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _visible(session: FakeSession) -> str:
+    """Strip SGR escapes -- real DB-backed test users take
+    unicode_style_enabled's own on-by-default preference, so /me's
+    action bullet renders as "• ", not the plain-ASCII "* " literal."""
+    return _ANSI_ESCAPE_RE.sub("", _written_text(session))
+
+
 def test_me_shows_action_to_the_actor(lane, hub, presence, mailbox, history, alice, channel):
     async def scenario():
         session = FakeSession(["/me waves", "/quit"])
@@ -80,7 +91,7 @@ def test_me_shows_action_to_the_actor(lane, hub, presence, mailbox, history, ali
         return session
 
     session = asyncio.run(scenario())
-    assert "* alice waves" in _written_text(session)
+    assert "• alice waves" in _visible(session)
 
 
 def test_me_is_broadcast_to_others(lane, hub, presence, mailbox, history, alice, bob, channel):
@@ -97,7 +108,7 @@ def test_me_is_broadcast_to_others(lane, hub, presence, mailbox, history, alice,
         return bystander
 
     bystander = asyncio.run(scenario())
-    assert "* alice waves" in _written_text(bystander)
+    assert "• alice waves" in _visible(bystander)
 
 
 def test_me_is_recorded_as_an_action_in_scrollback(db, lane, hub, presence, mailbox, history, alice, channel):
@@ -135,4 +146,4 @@ def test_me_replays_correctly_from_scrollback(lane, hub, presence, mailbox, hist
 
     asyncio.run(first_session())
     session = asyncio.run(second_session())
-    assert "* alice waves" in _written_text(session)
+    assert "• alice waves" in _visible(session)

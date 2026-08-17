@@ -823,8 +823,9 @@ def _render_channel_message(
     elif message.kind == "leave":
         line = _colored_around("*** ", author_label, " has left the channel.", fg_color=MUTED_COLOR)
     elif message.kind == "action":
+        bullet = "• " if unicode_style_enabled(db, viewer) else "* "
         line = _colored_around(
-            "* ", author_label, f" {sanitize_text(message.body)}", fg_color=MUTED_COLOR
+            bullet, author_label, f" {sanitize_text(message.body)}", fg_color=MUTED_COLOR
         )
     else:  # "message"
         color = SELF_COLOR if self_message else ACCENT_COLOR

@@ -246,10 +246,12 @@ from netbbs.net.welcome_banner import (
     welcome_banner_status,
 )
 from netbbs.rendering import (
+    ACCENT_COLOR,
     ALERT_COLOR,
     ERROR_COLOR,
     HEADER_COLOR,
     LABEL_COLOR,
+    MENU_KEY_COLOR,
     METADATA_COLOR,
     MUTED_COLOR,
     SUCCESS_COLOR,
@@ -864,6 +866,14 @@ def _trust_subject_name(subject: TrustSubject) -> str:
     return f"user:{subject.node_fingerprint}/{subject.opaque_user_id}"
 
 
+_TRUST_STATE_TONE = {
+    TrustState.ESTABLISHED: "success",
+    TrustState.PROBATIONARY: "neutral",
+    TrustState.QUARANTINED: "warning",
+    TrustState.BLOCKED: "error",
+}
+
+
 def _trust_subject_stable_id(subject: TrustSubject) -> int:
     return int(subject.subject_id[:12], 16)
 
@@ -890,7 +900,7 @@ async def _trust_subjects_screen(session: Session, lane: DatabaseLane, actor: Us
         await session.write_line(colored(f"\r\n{_trust_subject_name(selected)}", fg_color=HEADER_COLOR, bold=True))
         for state in states:
             await session.write_line(
-                f"{state.dimension.value}: {state.state.value} ({state.reason_code})"
+                f"{state.dimension.value}: {badge(state.state.value, tone=_TRUST_STATE_TONE[state.state])} ({state.reason_code})"
             )
             await session.write_line(
                 colored(
@@ -903,9 +913,13 @@ async def _trust_subjects_screen(session: Session, lane: DatabaseLane, actor: Us
                 attestation_state = await lane.run(
                     get_remote_attestation_state, selected, attribute
                 )
+                accepted_badge = (
+                    badge("accepted", tone="success")
+                    if attestation_state.accepted
+                    else badge("not accepted", tone="error")
+                )
                 await session.write_line(
-                    f"remote {attribute} attestation: "
-                    f"{'accepted' if attestation_state.accepted else 'not accepted'} "
+                    f"remote {attribute} attestation: {accepted_badge} "
                     f"({attestation_state.reason_code})"
                 )
                 await session.write_line(
@@ -1620,6 +1634,7 @@ async def _pick_target_user(session: Session, lane: DatabaseLane, actor: User, *
         await session.write_line("\r\nNo registered users yet.")
         return None
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
 
     def _total_pages() -> int:
         return max(1, math.ceil(len(working_set) / _user_picker_page_size(session)))
@@ -1633,7 +1648,10 @@ async def _pick_target_user(session: Session, lane: DatabaseLane, actor: User, *
         page_users = working_set[start : start + page_size]
 
         label, _, _ = _USER_SORT_MODES[mode]
-        arrow = "↓" if descending else "↑"
+        if unicode_style:
+            arrow = "↓" if descending else "↑"
+        else:
+            arrow = "desc" if descending else "asc"
         await session.write_line(
             "\r\n" + screen_title(
                 title,
@@ -1647,8 +1665,13 @@ async def _pick_target_user(session: Session, lane: DatabaseLane, actor: User, *
             colored(f"Showing: {_USER_VISIBILITY_LABELS[visibility]}", fg_color=MUTED_COLOR)
         )
         for position, user in enumerate(page_users, start=1):
-            line = f"  {position:02d}. (#{user.id}) {sanitize_text(user.username)} - {_user_description(user)}"
-            await session.write_line(truncate(line, session.terminal_width))
+            segments: list[tuple[str, int | None]] = [
+                (f"  {position:02d}. ", MENU_KEY_COLOR),
+                (f"(#{user.id}) ", MUTED_COLOR),
+                (sanitize_text(user.username), ACCENT_COLOR),
+                (f" - {_user_description(user)}", MUTED_COLOR),
+            ]
+            await session.write_line(colored_truncate(segments, session.terminal_width))
 
         nav = _user_picker_nav(session)
         await session.write_line(f"\r\n{nav} — or type a 2-digit number to select")
@@ -2573,9 +2596,11 @@ async def _outbox_screen(session: Session, lane: DatabaseLane, actor: User) -> N
     await session.write_line(", ".join(f"{status}: {count}" for status, count in sorted(counts.items())))
 
     actionable = [item for item in items if item.status in ("retrying", "dead_lettered")]
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    arrow = " → " if unicode_style else " -> "
     selected = await pick_item(
         session, actionable,
-        name_of=lambda item: f"{item.kind} -> {item.target_fingerprint}",
+        name_of=lambda item: f"{item.kind}{arrow}{item.target_fingerprint}",
         stable_id_of=lambda item: item.id,
         description_of=lambda item: f"{item.status}, {item.attempts} attempt(s)",
         title="Retrying/dead-lettered work items",
