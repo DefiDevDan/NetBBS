@@ -51,7 +51,7 @@ dashboard, not a plain menu: it shows node mode (ONLINE/MAINTENANCE/
 LOCKDOWN), active session count, Link health (if Link is enabled),
 moderation queue totals (pending users/posts/files), backup and update-
 check recency, and recent Link diagnostics, all before you pick anything.
-Press `[D]` to refresh it after taking an action elsewhere.
+Press `[R]` to refresh it after taking an action elsewhere.
 
 From the console:
 
@@ -450,6 +450,12 @@ shows how many files and how much space would be freed first, asks
 separately before actually deleting. A draft still within the 30-day
 window is never touched, no matter how often you run this.
 
+`[O]perations` → `[A]udit log` (also always present) is the node-wide,
+read-only moderation/admin action trail — "did anything happen on this
+node recently," not scoped to a specific account/board/channel the way
+a per-account or per-object history view is. Toggle newest-first/
+oldest-first, then pick an entry for its full detail.
+
 ---
 
 ## 12. Trust policy and Link federation admin
@@ -583,6 +589,12 @@ before assuming something is broken — most "this shouldn't be denied"
 reports turn out to be an inherited Community default the SysOp forgot
 was in effect, not a bug.
 
+If something happened on the node and you're not sure who did it or
+when: `[O]perations` → `[A]udit log` (§11) is node-wide and always
+present, unlike the account/resource-scoped history views elsewhere —
+the right first stop for "did anything happen here recently" rather than
+"what happened to this specific thing."
+
 ---
 
 ## 16. Getting more help
@@ -593,6 +605,14 @@ was in effect, not a bug.
   incrementally, starting with name requirements (§3).
 - **Ctrl+G**, inside the fullscreen post/bio editor — its keybind list,
   plus what "Keep draft & exit" does and how a saved draft comes back.
+- **Arrow keys**, on any field-editor screen (create/edit board, file
+  area, channel, Community, and similar draft-based screens) — Up/Down
+  move a `>` cursor over the field list, Space/Enter activates whichever
+  field it's on (identical to pressing that field's own hotkey letter),
+  and Left/Right step a cycling field's value in place without opening a
+  sub-prompt, where that field supports it. Purely additive — every
+  existing hotkey keeps working exactly as before, and the screen looks
+  identical until you actually press an arrow key.
 - `docs/NetBBS-design-doc.md` — the authoritative "why," and the exact
   rules for anything this handbook only summarizes.
 - `docs/NetBBS-worklog.md` — developer-facing engineering invariants; only
