@@ -118,6 +118,7 @@ class FieldSpec:
 
 _SAVE_BRIEF = "Write this draft to the database"
 _BACK_BRIEF = "Discard the draft, nothing saved"
+_BACK_BRIEF_IMMEDIATE = "Nothing pending -- already saved"
 
 
 async def edit_resource_draft(
@@ -125,17 +126,20 @@ async def edit_resource_draft(
     lane: DatabaseLane,
     *,
     title: str,
+    subtitle: str | None = None,
     fields: list[FieldSpec],
     draft: Draft,
-    save: Callable[[Draft], Awaitable[Any]],
-    error_type: type[Exception],
-    save_menu_text: str,
+    save: Callable[[Draft], Awaitable[Any]] | None = None,
+    error_type: type[Exception] = Exception,
+    save_menu_text: str | None = None,
     back_menu_text: str,
     save_hotkey: str = "s",
     back_hotkey: str = "b",
     description_level: str = "off",
     redraw_in_place: bool = False,
     redraw_hint: bool = False,
+    preamble: str | Callable[[Draft], str] | None = None,
+    unicode_style: bool = False,
 ) -> Any | None:
     """
     Drives one draft-based create/edit screen: renders `title` plus
@@ -209,14 +213,55 @@ async def edit_resource_draft(
     now that they've actually felt the thing it fixes; the caller is
     responsible for only passing `True` when `redraw_in_place` is off
     and unset, not this function.
+
+    `subtitle`, if given, is passed straight through to `screen_title`'s
+    own `subtitle` parameter -- one line under the title, above the
+    underline.
+
+    `unicode_style` (issue #160's own breadcrumb-arrow rollout, Stage 2)
+    is passed straight through to `screen_title` too -- fetched once by
+    the caller via `unicode_style_enabled(...)`, same "resolve once,
+    pass down" shape as `description_level`/`redraw_in_place`. `False`
+    by default, matching `screen_title`'s own conservative local default
+    (see that function's docstring for why) -- every existing caller
+    keeps today's plain "NetBBS / Title" breadcrumb until it's updated
+    to pass this explicitly.
+
+    `preamble`, if given, is shown after the title and before the field
+    list -- for read-only context a screen needs above its editable
+    fields (a text preview, a diagnostic line) that isn't itself one of
+    `fields` because there's nothing to prompt for. Either a plain
+    pre-rendered string (already `\r\n`-joined, same convention as
+    `screen_title`'s own return value), or a `render(draft)`-shaped
+    callable for content that must stay live across redraws the same
+    way a field's own `render` does (e.g. a text preview that changes
+    once its own field is edited) -- a plain string would go stale after
+    the first redraw following such an edit.
+
+    `save=None` (the default) switches this screen to *immediate* mode
+    (netbbs.net.login_flow's own profile screen, issue #160's
+    cursor-nav follow-up): no `[S]ave` entry is offered, and `[B]ack`/
+    Ctrl-C never show the "discard unsaved changes?" confirmation --
+    there is nothing pending to discard, because every field on an
+    immediate-mode screen is expected to persist itself the instant
+    it's activated (see `live_choice_field`) rather than waiting for a
+    Save step that doesn't exist here. Every other caller keeps passing
+    a real `save`/`error_type`/`save_menu_text` exactly as before; nothing
+    changes for them.
     """
     initial_draft = dict(draft)
     selected: int | None = None
     redraw_count = 0
     while True:
         await session.write_line(
-            "\r\n" + screen_title(title, width=session.terminal_width, clear=redraw_in_place)
+            "\r\n" + screen_title(
+                title, subtitle=subtitle, width=session.terminal_width, clear=redraw_in_place,
+                unicode_style=unicode_style,
+            )
         )
+        preamble_text = preamble(draft) if callable(preamble) else preamble
+        if preamble_text:
+            await session.write_line(preamble_text)
         for i, f in enumerate(fields):
             value = sanitize_text(f.render(draft))
             # One colored() call, not marker/label separately -- two
@@ -225,10 +270,11 @@ async def edit_resource_draft(
             # highlighted run.
             prefix = colored(f"> {f.label}", fg_color=ACCENT_COLOR, bold=True) if i == selected else f"  {f.label}"
             await session.write_line(f"{prefix}: {colored(value, fg_color=MUTED_COLOR)}")
-        menu_entries = [MenuEntry(label=f.menu_text, brief=f.brief, detailed=f.help) for f in fields] + [
-            MenuEntry(label=save_menu_text, brief=_SAVE_BRIEF),
-            MenuEntry(label=back_menu_text, brief=_BACK_BRIEF),
-        ]
+        menu_entries = [MenuEntry(label=f.menu_text, brief=f.brief, detailed=f.help) for f in fields]
+        if save is not None:
+            menu_entries.append(MenuEntry(label=save_menu_text, brief=_SAVE_BRIEF))
+        back_brief = _BACK_BRIEF if save is not None else _BACK_BRIEF_IMMEDIATE
+        menu_entries.append(MenuEntry(label=back_menu_text, brief=back_brief))
         compact_menu_line = action_bar([e.label for e in menu_entries], width=session.terminal_width)
         menu_line = compact_menu_line
         if description_level != "off":
@@ -253,7 +299,8 @@ async def edit_resource_draft(
                 description_level=description_level,
             )
             fixed_lines = (
-                2  # screen_title: title + underline
+                (3 if subtitle else 2)  # screen_title: title [+ subtitle] + underline
+                + (preamble_text.count("\r\n") + 1 if preamble_text else 0)
                 + len(fields)  # one current-value line per field
                 + 1  # blank line before the menu row
                 + (1 if any(f.help for f in fields) else 0)  # "(Ctrl-H for help...)" hint
@@ -299,9 +346,12 @@ async def edit_resource_draft(
             continue
         if key.kind == EditorKeyKind.CTRL and key.char == "c":
             # Issue #157: Ctrl-C as an incremental alias for [B]ack --
-            # this screen's own "discard the draft" action.
+            # this screen's own "discard the draft" action. Immediate
+            # mode (save=None) never confirms here: every field already
+            # persisted itself on activation, so there is nothing left
+            # to discard.
             await session.write_line("")
-            if draft != initial_draft:
+            if save is not None and draft != initial_draft:
                 if not await prompt_yes_no(session, "Discard unsaved changes?", default=False):
                     continue
             return None
@@ -335,11 +385,11 @@ async def edit_resource_draft(
             continue
         if choice == back_hotkey or choice == CANCEL_KEY:
             await session.write_line("")
-            if draft != initial_draft:
+            if save is not None and draft != initial_draft:
                 if not await prompt_yes_no(session, "Discard unsaved changes?", default=False):
                     continue
             return None
-        if choice == save_hotkey:
+        if save is not None and choice == save_hotkey:
             await session.write_line("")
             try:
                 return await save(draft)
@@ -486,6 +536,31 @@ def choice_field(key: str, values: list[Any]) -> FieldPrompt:
 
     async def prompt(session: Session, lane: DatabaseLane, draft: Draft) -> None:
         _advance_choice(key, values, draft, 1)
+
+    return prompt
+
+
+def live_choice_field(
+    key: str, values: list[Any], *, persist: Callable[[DatabaseLane, Any], Awaitable[None]]
+) -> FieldPrompt:
+    """`choice_field`'s counterpart for an immediate-mode screen
+    (`edit_resource_draft` called with `save=None`, netbbs.net.
+    login_flow's own profile screen) -- there is no later Save point
+    where a deferred draft value would otherwise get written, so each
+    press both advances `draft[key]` to the next entry in `values` (same
+    wrapping-cycle shape as `choice_field`) AND immediately persists it
+    via `persist(lane, draft[key])`.
+
+    Deliberately has no `FieldSpec.step` counterpart, unlike
+    `choice_field`/`choice_step` -- `step` stays synchronous and no-I/O
+    for every field across this module (see `bool_field`'s own docstring
+    for the same reasoning applied to instant toggling); a live field's
+    value only ever changes on Space/Enter/its hotkey, exactly like
+    `choice_field` without `choice_step`."""
+
+    async def prompt(session: Session, lane: DatabaseLane, draft: Draft) -> None:
+        _advance_choice(key, values, draft, 1)
+        await persist(lane, draft[key])
 
     return prompt
 

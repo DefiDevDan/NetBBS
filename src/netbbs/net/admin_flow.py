@@ -4252,6 +4252,7 @@ async def _community_screen(
         save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
         description_level=await lane.run(menu_description_level, actor),
         redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
+        unicode_style=await lane.run(unicode_style_enabled, actor),
     )
     if community is not None:
         verb = "Updated" if existing is not None else "Created Community"
@@ -4559,6 +4560,7 @@ async def _board_screen(
         save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
         description_level=await lane.run(menu_description_level, actor),
         redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
+        unicode_style=await lane.run(unicode_style_enabled, actor),
     )
     if board is not None:
         verb = "Updated" if existing is not None else "Created message board"
@@ -5388,6 +5390,7 @@ async def _area_screen(
         save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
         description_level=await lane.run(menu_description_level, actor),
         redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
+        unicode_style=await lane.run(unicode_style_enabled, actor),
     )
     if area is not None:
         verb = "Updated" if existing is not None else "Created file area"
@@ -5859,6 +5862,7 @@ async def _channel_screen(
         save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
         description_level=await lane.run(menu_description_level, actor),
         redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
+        unicode_style=await lane.run(unicode_style_enabled, actor),
     )
     if channel is not None:
         verb = "Updated" if existing is not None else "Created chat channel"

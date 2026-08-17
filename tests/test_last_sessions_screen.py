@@ -19,6 +19,7 @@ from netbbs.rendering import (
     ACCENT_COLOR,
     LABEL_COLOR,
     METADATA_COLOR,
+    MUTED_COLOR,
     SUCCESS_COLOR,
     colored,
 )
@@ -29,6 +30,7 @@ from netbbs.session_history import (
     set_session_history_name_visible,
 )
 from netbbs.storage.database import Database
+from netbbs.storage.execution import DatabaseLane
 
 
 class FakeSession:
@@ -61,8 +63,17 @@ def _written_text(session: FakeSession) -> str:
     return "".join(session.written)
 
 
-async def _run_main_menu(session, db, user):
-    await _main_menu(session, db, ChatHub(), PresenceRegistry(), MessageMailbox(), InputHistory(), user)
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _visible(session: FakeSession) -> str:
+    return _ANSI_ESCAPE_RE.sub("", _written_text(session))
+
+
+async def _run_main_menu(session, db, user, *, lane=None):
+    await _main_menu(
+        session, db, ChatHub(), PresenceRegistry(), MessageMailbox(), InputHistory(), user, lane=lane
+    )
 
 
 def db_(tmp_path):
@@ -237,29 +248,36 @@ def test_history_screen_sysop_sees_real_name_even_for_a_deleted_opted_out_accoun
 
 def test_profile_screen_toggles_session_history_name_visibility(tmp_path):
     database = db_(tmp_path)
+    lane = DatabaseLane(database.path)
     alice = create_user(database, "alice", password="hunter2", user_level=10)
     assert session_history_name_visible(database, alice) is True  # default
 
     session = FakeSession(["p", "h", "b", "l", "y"])
-    asyncio.run(_run_main_menu(session, database, alice))
+    asyncio.run(_run_main_menu(session, database, alice, lane=lane))
 
     assert session_history_name_visible(database, alice) is False
-    assert "Name in Last sessions is now hidden." in _written_text(session)
+    # live_choice_field (issue #160's cursor-nav follow-up) has no
+    # separate "X is now Y" confirmation of its own -- the redrawn
+    # field's own "label: value" line is the confirmation.
+    assert "Name shown in Last sessions: no (hidden)" in _visible(session)
+    lane.close()
     database.close()
 
 
 def test_profile_shows_color_capability_provenance(tmp_path):
     database = db_(tmp_path)
+    lane = DatabaseLane(database.path)
     alice = create_user(database, "alice", password="hunter2", user_level=10)
     session = FakeSession(["p", "b", "l", "y"])
     session.truecolor_diagnostic = "SSH client did not forward COLORTERM; using 256-color"
 
-    asyncio.run(_run_main_menu(session, database, alice))
+    asyncio.run(_run_main_menu(session, database, alice, lane=lane))
 
     text = _written_text(session)
-    assert colored("Color depth: ", fg_color=LABEL_COLOR) in text
+    assert "  Color depth: " in text
     assert colored("Transport report: ", fg_color=LABEL_COLOR) in text
     assert colored(session.truecolor_diagnostic, fg_color=METADATA_COLOR) in text
+    lane.close()
     database.close()
 
 

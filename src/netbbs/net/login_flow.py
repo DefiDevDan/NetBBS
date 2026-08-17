@@ -159,6 +159,7 @@ from netbbs.net.maintenance import LOCKDOWN_MESSAGE, LOCKDOWN_NOTICE, MAINTENANC
 from netbbs.net.nodeconfig import ThrottleConfig
 from netbbs.net.picker import pick_item
 from netbbs.net.prose_editor import edit_prose
+from netbbs.net.resource_editor import Draft, FieldSpec, edit_resource_draft, live_choice_field
 from netbbs.net.session import Session, SessionClosedError
 from netbbs.net.session_registry import ActiveSessionRegistry, SessionSummary
 from netbbs.net.shutdown import NodeControls, SequenceScheduler, format_remaining_seconds
@@ -1364,7 +1365,16 @@ async def _main_menu(
             await _draw_main_menu(session, db, mailbox, user, node_controls=node_controls)
         elif choice == "p":
             await session.write_line("")
-            await _edit_profile(session, db, user)
+            # Issue #160's cursor-nav follow-up: the profile screen is
+            # now built on edit_resource_draft, which needs a real
+            # DatabaseLane -- see the "e" (mail) branch above for the
+            # identical lane-is-None degrade-gracefully reasoning.
+            if lane is not None:
+                await _edit_profile(session, lane, user)
+            else:
+                await session.write_line(
+                    colored("Your profile is not available in this context.", fg_color=MUTED_COLOR)
+                )
             await _draw_main_menu(session, db, mailbox, user, node_controls=node_controls)
         elif choice == "e":
             await session.write_line("")
@@ -3606,7 +3616,7 @@ def _sort_preference_scope_label(db: Database, pref: SortPreference) -> str:
     return "Global default"
 
 
-async def _sort_preferences_screen(session: Session, db: Database, user: User) -> None:
+async def _sort_preferences_screen(session: Session, lane: DatabaseLane, user: User) -> None:
     """
     Review/clear your saved sort-mode overrides (design doc, dogfood
     feature request) -- the discoverability half of the `[O]rder`
@@ -3619,9 +3629,16 @@ async def _sort_preferences_screen(session: Session, db: Database, user: User) -
     resolution happens, since no other screen needs to enumerate a
     user's *entire* set of overrides across all three resource kinds
     and every scope at once.
+
+    `pick_item`'s `name_of`/`description_of` must stay plain, synchronous,
+    no-I/O lambdas (its own established contract, matched by every other
+    caller in this codebase) -- so scope labels are resolved once via
+    `lane.run` into a `pref.id`-keyed dict before entering the picker,
+    not lazily per item inside the lambda the way the pre-lane version
+    could when it held a bare `db` directly.
     """
     while True:
-        prefs = list_sort_preferences(db, user)
+        prefs = await lane.run(list_sort_preferences, user)
         if not prefs:
             await session.write_line(
                 colored("\r\nYou have no saved sort preferences yet.", fg_color=MUTED_COLOR)
@@ -3634,10 +3651,14 @@ async def _sort_preferences_screen(session: Session, db: Database, user: User) -
             )
             return
 
+        labels: dict[int, str] = {}
+        for pref in prefs:
+            labels[pref.id] = await lane.run(_sort_preference_scope_label, pref)
+
         selected = await pick_item(
             session,
             prefs,
-            name_of=lambda p: f"{_SORT_PREFERENCE_KIND_LABELS[p.resource_kind]} — {_sort_preference_scope_label(db, p)}",
+            name_of=lambda p: f"{_SORT_PREFERENCE_KIND_LABELS[p.resource_kind]} — {labels[p.id]}",
             stable_id_of=lambda p: p.id,
             description_of=lambda p: SORT_MODE_LABELS[p.sort_mode],
             title="Your sort preferences",
@@ -3648,13 +3669,14 @@ async def _sort_preferences_screen(session: Session, db: Database, user: User) -
 
         clear = await prompt_yes_no(
             session,
-            f"Clear this override ({_sort_preference_scope_label(db, selected)}, "
+            f"Clear this override ({labels[selected.id]}, "
             f"{SORT_MODE_LABELS[selected.sort_mode]})?",
             default=False,
         )
         if clear:
-            clear_sort_preference(
-                db, user, selected.resource_kind,
+            await lane.run(
+                clear_sort_preference,
+                user, selected.resource_kind,
                 community_id=selected.community_id, category_id=selected.category_id,
             )
             await session.write_line(colored("Cleared.", fg_color=MUTED_COLOR))
@@ -3667,185 +3689,180 @@ def _profile_field(label: str, value: str, *, value_color: int = VALUE_COLOR) ->
     )
 
 
-async def _render_profile(session: Session, db: Database, user: User) -> bool:
-    """Renders the profile state plus its option line — the unit that
-    should be redrawn on an actual state change (initial entry, an edit
-    or a visibility toggle), not on every loop iteration regardless of
-    whether anything changed. Returns the current visibility, needed by
-    the caller to pass into `_toggle_bio_visibility`."""
-    current_bio = get_bio(db, user)
-    visible = is_bio_visible(db, user)
-    editor_on = fullscreen_editor_enabled(db, user)
-    accepts_dm = accepts_direct_messages(db, user)
-    history_name_visible = session_history_name_visible(db, user)
-    color_override = color_depth_override(db, user)
-
-    await session.write_line(
-        "\r\n" + screen_title(
-            "Your profile",
-            subtitle="Your public identity and caller preferences.",
-            width=session.terminal_width,
-            clear=redraw_in_place_enabled(db, user),
-        )
-    )
-    await session.write_line(colored("BIO", fg_color=METADATA_COLOR, bold=True))
-    if current_bio:
-        await session.write_line(
-            reflow(sanitize_text(current_bio, allow_newlines=True), width=session.terminal_width)
-        )
-    else:
-        await session.write_line(colored("(no bio set)", fg_color=MUTED_COLOR))
-    await session.write_line(_profile_field("Visibility", "public" if visible else "private"))
-    await session.write_line(_profile_field("Fullscreen editor for posts/bio", "on" if editor_on else "off"))
-    await session.write_line(
-        _profile_field("Direct messages (Who's online)", "accepted" if accepts_dm else "not accepted")
-    )
-    await session.write_line(
-        _profile_field("Name shown in Last sessions", "yes" if history_name_visible else "no (hidden)")
-    )
-    if color_override is None:
-        detected = "truecolor" if session.supports_truecolor else "256-color"
-        color_status = f"auto (detected: {detected})"
-    else:
-        color_status = f"{color_override} (forced)"
-    await session.write_line(_profile_field("Color depth", color_status))
-    await session.write_line(
-        _profile_field(
-            "Transport report",
-            getattr(session, "truecolor_diagnostic", "capability report unavailable"),
-            value_color=METADATA_COLOR,
-        )
-    )
-    sort_preference_count = len(list_sort_preferences(db, user))
-    await session.write_line(
-        _profile_field(
-            "Sort preferences",
-            f"{sort_preference_count} saved" if sort_preference_count else "none saved",
-        )
-    )
-    # GitHub issue #160: one setting, three states -- off/brief/detailed
-    # -- controlling whether menu_grid shows each entry's short
-    # description underneath it.
-    description_level = menu_description_level(db, user)
-    await session.write_line(_profile_field("Menu descriptions", description_level))
-    # Dogfood feature request: whether a menu-driven screen clears the
-    # terminal before reprinting itself instead of scrolling -- off by
-    # default (see netbbs.net.redraw_preference's own docstring for why
-    # this isn't asked at registration the way most other preferences
-    # aren't either).
-    redraw_on = redraw_in_place_enabled(db, user)
-    await session.write_line(_profile_field("In-place redraw", "on" if redraw_on else "off"))
-
-    options = [
-            MenuEntry(label=menu_key("E", "dit bio"), brief="Change your public bio text"),
-            MenuEntry(label=menu_key("V", "isibility"), brief="Toggle bio public/private"),
-            MenuEntry(label=menu_key("F", "ullscreen editor"), brief="Toggle the fullscreen editor"),
-            MenuEntry(label=menu_key("M", "essages"), brief="Direct-message preferences"),
-            MenuEntry(label=menu_key("H", "istory visibility"), brief="Show your name in Last sessions"),
-            MenuEntry(label=menu_key("C", "olor depth"), brief="Force a terminal color depth"),
-            MenuEntry(label=menu_key("D", "escriptions"), brief="Off/brief/detailed menu text"),
-            MenuEntry(label=menu_key("R", "edraw style"), brief="Clear screen instead of scrolling"),
-            MenuEntry(label=menu_key("N", "ame & details"), brief="Display name, location, age"),
-            MenuEntry(label=menu_key("S", "ort preferences"), brief="Manage saved sort orders"),
-            MenuEntry(label=menu_key("B", "ack"), brief="Return to the main menu"),
-        ]
-    await session.write_line(
-        "\r\n" + _menu_row(
-            options, width=session.terminal_width, height=session.terminal_height,
-            description_level=description_level,
-        )
-    )
-    await session.write("Choice: ")
-    return visible
-
-
-async def _edit_profile(session: Session, db: Database, user: User) -> None:
+async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> None:
     """
-    Edit your own vCard: the bio, its visibility toggle, and the
-    fullscreen-editor composition preference (design doc). Shows the
-    current state first, then a small
-    sub-menu — matches this codebase's existing "show state, then
-    offer actions" shape (e.g. `netbbs.net.file_flow._show_area`)
-    rather than jumping straight into an edit prompt.
+    Edit your own vCard and caller preferences (design doc) --
+    `edit_resource_draft` in immediate mode (issue #160's cursor-nav
+    follow-up; see that function's own `save=None` docstring): every
+    field here already persists itself the instant it's activated (see
+    `live_choice_field`), unlike a resource create/edit screen's own
+    draft/Save step, so there is nothing to discard on `[B]ack` and no
+    `[S]ave` entry is offered.
 
-    Redraws the (possibly just-updated) state only after an edit or
-    toggle actually happens, not on every loop iteration — mirrors
-    `_show_board`'s `_render_board_page` split. An unrecognized key
-    sounds a bell and leaves the screen exactly as it was, no reprinted
-    prompt (design doc), same as the main menu and the picker.
+    `description_level`/`redraw_in_place` are fetched once, same as
+    every other `edit_resource_draft` caller (see that parameter's own
+    docstring for why a per-redraw lookup is deliberately avoided).
+    One consequence worth calling out because it's new to this specific
+    screen: toggling the "Descriptions" field updates *that field's*
+    own displayed value immediately, but this same screen's own menu-row
+    layout only starts using the new level the next time "Your profile"
+    is entered, not mid-visit -- every other `edit_resource_draft`
+    caller doesn't expose this preference as one of its own fields, so
+    this self-referential case doesn't come up for them.
     """
-    visible = await _render_profile(session, db, user)
-    while True:
-        choice = (await session.read_key()).lower()
+    description_level = await lane.run(menu_description_level, user)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, user)
+    unicode_style = await lane.run(unicode_style_enabled, user)
 
-        if choice == "b":
-            await session.write_line("")
-            return
-        elif choice == "e":
-            await session.write_line("")
-            await _edit_bio(session, db, user)
-            visible = await _render_profile(session, db, user)
-        elif choice == "v":
-            await session.write_line("")
-            await _toggle_bio_visibility(session, db, user, currently_visible=visible)
-            visible = await _render_profile(session, db, user)
-        elif choice == "f":
-            await session.write_line("")
-            set_fullscreen_editor_enabled(db, user, not fullscreen_editor_enabled(db, user))
-            await session.write_line(
-                f"Fullscreen editor is now {'on' if fullscreen_editor_enabled(db, user) else 'off'}."
-            )
-            visible = await _render_profile(session, db, user)
-        elif choice == "m":
-            await session.write_line("")
-            set_accepts_direct_messages(db, user, not accepts_direct_messages(db, user))
-            await session.write_line(
-                f"Direct messages are now "
-                f"{'accepted' if accepts_direct_messages(db, user) else 'not accepted'}."
-            )
-            visible = await _render_profile(session, db, user)
-        elif choice == "h":
-            await session.write_line("")
-            set_session_history_name_visible(db, user, not session_history_name_visible(db, user))
-            await session.write_line(
-                f"Name in Last sessions is now "
-                f"{'visible' if session_history_name_visible(db, user) else 'hidden'}."
-            )
-            visible = await _render_profile(session, db, user)
-        elif choice == "c":
-            await session.write_line("")
-            current = color_depth_override(db, user) or "auto"
-            next_value = {"auto": "truecolor", "truecolor": "256", "256": "auto"}[current]
-            set_color_depth_override(db, user, next_value)
-            await session.write_line(f"Color depth is now {next_value}.")
-            visible = await _render_profile(session, db, user)
-        elif choice == "n":
-            await session.write_line("")
-            await _identity_details_screen(session, db, user)
-            visible = await _render_profile(session, db, user)
-        elif choice == "s":
-            await session.write_line("")
-            await _sort_preferences_screen(session, db, user)
-            visible = await _render_profile(session, db, user)
-        elif choice == "d":
-            await session.write_line("")
-            current = menu_description_level(db, user)
-            next_value = {"off": "brief", "brief": "detailed", "detailed": "off"}[current]
-            set_menu_description_level(db, user, next_value)
-            await session.write_line(f"Menu descriptions are now {next_value}.")
-            visible = await _render_profile(session, db, user)
-        elif choice == "r":
-            await session.write_line("")
-            set_redraw_in_place_enabled(db, user, not redraw_in_place_enabled(db, user))
-            await session.write_line(
-                f"In-place redraw is now {'on' if redraw_in_place_enabled(db, user) else 'off'}."
-            )
-            visible = await _render_profile(session, db, user)
+    draft: Draft = {
+        "bio": await lane.run(get_bio, user) or "",
+        "bio_visible": await lane.run(is_bio_visible, user),
+        "fullscreen_editor": await lane.run(fullscreen_editor_enabled, user),
+        "accepts_dm": await lane.run(accepts_direct_messages, user),
+        "history_name_visible": await lane.run(session_history_name_visible, user),
+        "color_depth": await lane.run(color_depth_override, user) or "auto",
+        "description_level": description_level,
+        "redraw_in_place": redraw_in_place,
+        "sort_preference_count": len(await lane.run(list_sort_preferences, user)),
+    }
+
+    async def _bio_prompt(session: Session, lane: DatabaseLane, draft: Draft) -> None:
+        await _edit_bio(session, lane, user)
+        draft["bio"] = await lane.run(get_bio, user) or ""
+
+    async def _identity_details_prompt(session: Session, lane: DatabaseLane, draft: Draft) -> None:
+        await _identity_details_screen(session, lane, user)
+
+    async def _sort_preferences_prompt(session: Session, lane: DatabaseLane, draft: Draft) -> None:
+        await _sort_preferences_screen(session, lane, user)
+        draft["sort_preference_count"] = len(await lane.run(list_sort_preferences, user))
+
+    def _color_depth_render(d: Draft) -> str:
+        value = d["color_depth"]
+        if value == "auto":
+            detected = "truecolor" if session.supports_truecolor else "256-color"
+            return f"auto (detected: {detected})"
+        return f"{value} (forced)"
+
+    def _preamble(d: Draft) -> str:
+        lines = [colored("BIO", fg_color=METADATA_COLOR, bold=True)]
+        if d["bio"]:
+            lines.append(reflow(sanitize_text(d["bio"], allow_newlines=True), width=session.terminal_width))
         else:
-            await session.write(reject_unhandled_key(choice))
+            lines.append(colored("(no bio set)", fg_color=MUTED_COLOR))
+        lines.append(
+            _profile_field(
+                "Transport report",
+                getattr(session, "truecolor_diagnostic", "capability report unavailable"),
+                value_color=METADATA_COLOR,
+            )
+        )
+        return "\r\n".join(lines)
+
+    fields = [
+        FieldSpec(
+            key="bio", hotkey="e", menu_text=menu_key("E", "dit bio"), label="Bio",
+            render=lambda d: f"{len(d['bio'].splitlines())} line(s)" if d["bio"] else "(no bio set)",
+            prompt=_bio_prompt,
+            brief="Change your public bio text",
+        ),
+        FieldSpec(
+            key="bio_visible", hotkey="v", menu_text=menu_key("V", "isibility"), label="Visibility",
+            render=lambda d: "public" if d["bio_visible"] else "private",
+            prompt=live_choice_field(
+                "bio_visible", [False, True], persist=lambda lane, v: lane.run(set_bio_visible, user, v)
+            ),
+            brief="Toggle bio public/private",
+        ),
+        FieldSpec(
+            key="fullscreen_editor", hotkey="f", menu_text=menu_key("F", "ullscreen editor"),
+            label="Fullscreen editor for posts/bio",
+            render=lambda d: "on" if d["fullscreen_editor"] else "off",
+            prompt=live_choice_field(
+                "fullscreen_editor", [False, True],
+                persist=lambda lane, v: lane.run(set_fullscreen_editor_enabled, user, v),
+            ),
+            brief="Toggle the fullscreen editor",
+        ),
+        FieldSpec(
+            key="accepts_dm", hotkey="m", menu_text=menu_key("M", "essages"),
+            label="Direct messages (Who's online)",
+            render=lambda d: "accepted" if d["accepts_dm"] else "not accepted",
+            prompt=live_choice_field(
+                "accepts_dm", [False, True],
+                persist=lambda lane, v: lane.run(set_accepts_direct_messages, user, v),
+            ),
+            brief="Direct-message preferences",
+        ),
+        FieldSpec(
+            key="history_name_visible", hotkey="h", menu_text=menu_key("H", "istory visibility"),
+            label="Name shown in Last sessions",
+            render=lambda d: "yes" if d["history_name_visible"] else "no (hidden)",
+            prompt=live_choice_field(
+                "history_name_visible", [False, True],
+                persist=lambda lane, v: lane.run(set_session_history_name_visible, user, v),
+            ),
+            brief="Show your name in Last sessions",
+        ),
+        FieldSpec(
+            key="color_depth", hotkey="c", menu_text=menu_key("C", "olor depth"), label="Color depth",
+            render=_color_depth_render,
+            prompt=live_choice_field(
+                "color_depth", ["auto", "truecolor", "256"],
+                persist=lambda lane, v: lane.run(set_color_depth_override, user, v),
+            ),
+            brief="Force a terminal color depth",
+        ),
+        FieldSpec(
+            key="description_level", hotkey="d", menu_text=menu_key("D", "escriptions"),
+            label="Menu descriptions",
+            render=lambda d: d["description_level"],
+            prompt=live_choice_field(
+                "description_level", ["off", "brief", "detailed"],
+                persist=lambda lane, v: lane.run(set_menu_description_level, user, v),
+            ),
+            brief="Off/brief/detailed menu text",
+        ),
+        FieldSpec(
+            key="redraw_in_place", hotkey="r", menu_text=menu_key("R", "edraw style"), label="In-place redraw",
+            render=lambda d: "on" if d["redraw_in_place"] else "off",
+            prompt=live_choice_field(
+                "redraw_in_place", [False, True],
+                persist=lambda lane, v: lane.run(set_redraw_in_place_enabled, user, v),
+            ),
+            brief="Clear screen instead of scrolling",
+        ),
+        FieldSpec(
+            key="identity_details", hotkey="n", menu_text=menu_key("N", "ame & details"),
+            label="Name & details",
+            render=lambda d: "(edit)",
+            prompt=_identity_details_prompt,
+            brief="Display name, location, age",
+        ),
+        FieldSpec(
+            key="sort_preferences", hotkey="s", menu_text=menu_key("S", "ort preferences"),
+            label="Sort preferences",
+            render=lambda d: f"{d['sort_preference_count']} saved" if d["sort_preference_count"] else "none saved",
+            prompt=_sort_preferences_prompt,
+            brief="Manage saved sort orders",
+        ),
+    ]
+
+    await edit_resource_draft(
+        session, lane,
+        title="Your profile",
+        subtitle="Your public identity and caller preferences.",
+        fields=fields,
+        draft=draft,
+        back_menu_text=menu_key("B", "ack"),
+        description_level=description_level,
+        redraw_in_place=redraw_in_place,
+        preamble=_preamble,
+        unicode_style=unicode_style,
+    )
 
 
-async def _edit_bio(session: Session, db: Database, user: User) -> None:
+async def _edit_bio(session: Session, lane: DatabaseLane, user: User) -> None:
     """
     Edits the bio via the fullscreen prose editor if `user` has opted
     in (`netbbs.net.editor_preference`), otherwise `netbbs.net.
@@ -3874,18 +3891,18 @@ async def _edit_bio(session: Session, db: Database, user: User) -> None:
     confirmed step instead, only offered when there's an existing bio
     to lose.
     """
-    if fullscreen_editor_enabled(db, user):
-        current = get_bio(db, user) or ""
+    if await lane.run(fullscreen_editor_enabled, user):
+        current = await lane.run(get_bio, user) or ""
         result = await edit_prose(
-            session, initial_text=current, draft_path=_bio_draft_path(db, user), max_bytes=MAX_BIO_BYTES
+            session, initial_text=current, draft_path=await lane.run(_bio_draft_path, user), max_bytes=MAX_BIO_BYTES
         )
         if result is None:
             return
         text = result
     else:
-        current = get_bio(db, user)
+        current = await lane.run(get_bio, user)
         if current and await prompt_yes_no(session, "Clear your bio instead of editing it?", default=False):
-            set_bio(db, user, "")
+            await lane.run(set_bio, user, "")
             await session.write_line("Bio cleared.")
             return
         result = await edit_line_body(
@@ -3893,14 +3910,14 @@ async def _edit_bio(session: Session, db: Database, user: User) -> None:
             initial_text=current,
             max_bytes=MAX_BIO_BYTES,
             max_lines=MAX_BIO_LINES,
-            draft_path=_bio_draft_path(db, user),
+            draft_path=await lane.run(_bio_draft_path, user),
         )
         if result is None:
             return
         text = result
 
     try:
-        set_bio(db, user, text)
+        await lane.run(set_bio, user, text)
     except BioError as exc:
         await session.write_line(colored(f"Could not save bio: {exc}", fg_color=MUTED_COLOR))
         return
@@ -3911,18 +3928,10 @@ def _bio_draft_path(db: Database, user: User) -> Path:
     return drafts_directory(db) / f"bio_{user.id}.draft"
 
 
-async def _toggle_bio_visibility(
-    session: Session, db: Database, user: User, *, currently_visible: bool
-) -> None:
-    new_value = not currently_visible
-    set_bio_visible(db, user, new_value)
-    await session.write_line(f"Bio is now {'public' if new_value else 'private'}.")
-
-
 # -- identity attestation: self-reported profile fields (design doc §18) --
 
 
-async def _identity_details_screen(session: Session, db: Database, user: User) -> None:
+async def _identity_details_screen(session: Session, lane: DatabaseLane, user: User) -> None:
     """
     Self-reported `display_name`/`location`/`birthdate` plus the general
     "verified" badge visibility toggle (design doc §18) -- a separate
@@ -3933,110 +3942,164 @@ async def _identity_details_screen(session: Session, db: Database, user: User) -
     separate edit/visibility actions) specifically to avoid needing
     eight top-level options for three fields.
     """
-    await _render_identity_details(session, db, user)
-    while True:
-        choice = (await session.read_key()).lower()
+    description_level = await lane.run(menu_description_level, user)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, user)
+    unicode_style = await lane.run(unicode_style_enabled, user)
 
-        if choice == "b":
-            await session.write_line("")
-            return
-        elif choice == "d":
-            await session.write_line("")
-            await _edit_display_name(session, db, user)
-            await _render_identity_details(session, db, user)
-        elif choice == "l":
-            await session.write_line("")
-            await _edit_location(session, db, user)
-            await _render_identity_details(session, db, user)
-        elif choice == "a":
-            await session.write_line("")
-            await _edit_birthdate(session, db, user)
-            await _render_identity_details(session, db, user)
-        elif choice == "v":
-            await session.write_line("")
-            new_value = not is_verified_badge_visible(db, user)
-            set_verified_badge_visible(db, user, new_value)
-            await session.write_line(f"Verified badge is now {'public' if new_value else 'private'}.")
-            await _render_identity_details(session, db, user)
-        elif choice == "r":
-            await session.write_line("")
-            await _remote_attestation_visibility_screen(session, db, user)
-            await _render_identity_details(session, db, user)
-        else:
-            await session.write(reject_unhandled_key(choice))
+    draft: Draft = {
+        "display_name": await lane.run(get_display_name, user),
+        "display_name_visible": await lane.run(is_display_name_visible, user),
+        "location": await lane.run(get_location, user),
+        "location_visible": await lane.run(is_location_visible, user),
+        "birthdate": await lane.run(get_birthdate, user),
+        "birthdate_visible": await lane.run(is_birthdate_visible, user),
+        "verified_badge_visible": await lane.run(is_verified_badge_visible, user),
+        "age_attestation": await lane.run(get_attestation, user, "age"),
+        "name_attestation": await lane.run(get_attestation, user, "name"),
+    }
 
+    async def _display_name_prompt(session: Session, lane: DatabaseLane, draft: Draft) -> None:
+        current = draft["display_name"]
+        await session.write(f"\r\nDisplay name [{current or '(not set)'}] -- new value (blank to keep): ")
+        new_value = (await session.read_line()).strip()
+        if new_value:
+            try:
+                await lane.run(set_display_name, user, new_value)
+            except ProfileFieldError as exc:
+                await session.write_line(colored(f"Could not save display name: {exc}", fg_color=MUTED_COLOR))
+                return
+            draft["display_name"] = new_value
+            await session.write_line("Display name updated.")
+        visible = await prompt_yes_no(session, "Show it publicly?", default=False)
+        await lane.run(set_display_name_visible, user, visible)
+        draft["display_name_visible"] = visible
 
-async def _render_identity_details(session: Session, db: Database, user: User) -> None:
-    display_name = get_display_name(db, user)
-    location = get_location(db, user)
-    birthdate = get_birthdate(db, user)
-    age_attestation = get_attestation(db, user, "age")
-    name_attestation = get_attestation(db, user, "name")
+    async def _location_prompt(session: Session, lane: DatabaseLane, draft: Draft) -> None:
+        current = draft["location"]
+        await session.write(f"\r\nLocation [{current or '(not set)'}] -- new value (blank to keep): ")
+        new_value = (await session.read_line()).strip()
+        if new_value:
+            try:
+                await lane.run(set_location, user, new_value)
+            except ProfileFieldError as exc:
+                await session.write_line(colored(f"Could not save location: {exc}", fg_color=MUTED_COLOR))
+                return
+            draft["location"] = new_value
+            await session.write_line("Location updated.")
+        visible = await prompt_yes_no(session, "Show it publicly?", default=False)
+        await lane.run(set_location_visible, user, visible)
+        draft["location_visible"] = visible
 
-    await session.write_line(
-        "\r\n" + screen_title(
-            "Name & details", width=session.terminal_width, clear=redraw_in_place_enabled(db, user)
+    async def _birthdate_prompt(session: Session, lane: DatabaseLane, draft: Draft) -> None:
+        current = draft["birthdate"]
+        await session.write(
+            f"\r\nBirthdate [{current.isoformat() if current else '(not set)'}] "
+            "-- new value as YYYY-MM-DD (blank to keep): "
         )
-    )
-    await session.write_line(
-        f"Display name: {sanitize_text(display_name) if display_name else '(not set)'} "
-        f"({'public' if is_display_name_visible(db, user) else 'private'})"
-    )
-    await session.write_line(
-        f"Location: {sanitize_text(location) if location else '(not set)'} "
-        f"({'public' if is_location_visible(db, user) else 'private'})"
-    )
-    if birthdate is not None:
-        await session.write_line(
-            f"Birthdate: {birthdate.isoformat()} (age {compute_age(birthdate)}) "
-            f"({'public' if is_birthdate_visible(db, user) else 'private'})"
-        )
-    else:
-        await session.write_line(
-            f"Birthdate: (not set) ({'public' if is_birthdate_visible(db, user) else 'private'})"
-        )
-    if age_attestation is not None or name_attestation is not None:
-        verified_parts = []
-        if age_attestation is not None:
-            verified_parts.append("age")
-        if name_attestation is not None:
-            verified_parts.append("name")
-        await session.write_line(
-            colored(
-                f"Verified: {', '.join(verified_parts)} "
-                f"({'public' if is_verified_badge_visible(db, user) else 'private'})",
-                fg_color=ACCENT_COLOR,
-            )
-        )
-    else:
-        await session.write_line(colored("Verified: (none)", fg_color=MUTED_COLOR))
-    shared = [
-        attribute for attribute, attestation in
-        (("age", age_attestation), ("name", name_attestation))
-        if attestation is not None and attestation.link_visible
+        raw = (await session.read_line()).strip()
+        if raw:
+            try:
+                new_birthdate = date.fromisoformat(raw)
+            except ValueError:
+                await session.write_line(colored("Not a valid date (expected YYYY-MM-DD).", fg_color=MUTED_COLOR))
+                return
+            try:
+                await lane.run(set_birthdate, user, new_birthdate)
+            except ProfileFieldError as exc:
+                await session.write_line(colored(f"Could not save birthdate: {exc}", fg_color=MUTED_COLOR))
+                return
+            draft["birthdate"] = new_birthdate
+            await session.write_line("Birthdate updated.")
+        visible = await prompt_yes_no(session, "Show it publicly?", default=False)
+        await lane.run(set_birthdate_visible, user, visible)
+        draft["birthdate_visible"] = visible
+
+    async def _remote_attestation_prompt(session: Session, lane: DatabaseLane, draft: Draft) -> None:
+        await _remote_attestation_visibility_screen(session, lane, user)
+        draft["age_attestation"] = await lane.run(get_attestation, user, "age")
+        draft["name_attestation"] = await lane.run(get_attestation, user, "name")
+
+    def _birthdate_render(d: Draft) -> str:
+        birthdate = d["birthdate"]
+        visibility = "public" if d["birthdate_visible"] else "private"
+        if birthdate is None:
+            return f"(not set) ({visibility})"
+        return f"{birthdate.isoformat()} (age {compute_age(birthdate)}) ({visibility})"
+
+    def _shared_render(d: Draft) -> str:
+        shared = [
+            attribute for attribute, attestation in
+            (("age", d["age_attestation"]), ("name", d["name_attestation"]))
+            if attestation is not None and attestation.link_visible
+        ]
+        return ", ".join(shared) if shared else "off"
+
+    def _preamble(d: Draft) -> str:
+        age_attestation, name_attestation = d["age_attestation"], d["name_attestation"]
+        if age_attestation is None and name_attestation is None:
+            return colored("Verified: (none)", fg_color=MUTED_COLOR)
+        parts = [attr for attr, att in (("age", age_attestation), ("name", name_attestation)) if att is not None]
+        return colored(f"Verified: {', '.join(parts)}", fg_color=ACCENT_COLOR)
+
+    fields = [
+        FieldSpec(
+            key="display_name", hotkey="d", menu_text=menu_key("D", "isplay name"), label="Display name",
+            render=lambda d: (
+                f"{sanitize_text(d['display_name']) if d['display_name'] else '(not set)'} "
+                f"({'public' if d['display_name_visible'] else 'private'})"
+            ),
+            prompt=_display_name_prompt,
+            brief="Set your shown display name",
+        ),
+        FieldSpec(
+            key="location", hotkey="l", menu_text=menu_key("L", "ocation"), label="Location",
+            render=lambda d: (
+                f"{sanitize_text(d['location']) if d['location'] else '(not set)'} "
+                f"({'public' if d['location_visible'] else 'private'})"
+            ),
+            prompt=_location_prompt,
+            brief="Set your shown location",
+        ),
+        FieldSpec(
+            key="birthdate", hotkey="a", menu_text=menu_key("A", "ge/birthdate"), label="Birthdate",
+            render=_birthdate_render,
+            prompt=_birthdate_prompt,
+            brief="Set your birthdate",
+        ),
+        FieldSpec(
+            key="verified_badge_visible", hotkey="v", menu_text=menu_key("V", "erified badge visibility"),
+            label="Verified badge",
+            render=lambda d: "public" if d["verified_badge_visible"] else "private",
+            prompt=live_choice_field(
+                "verified_badge_visible", [False, True],
+                persist=lambda lane, v: lane.run(set_verified_badge_visible, user, v),
+            ),
+            brief="Show/hide your verified badge",
+        ),
+        FieldSpec(
+            key="link_sharing", hotkey="r", menu_text=menu_key("R", "emote Link sharing"),
+            label="Link attestation sharing",
+            render=_shared_render,
+            prompt=_remote_attestation_prompt,
+            brief="Share attestations over Link",
+        ),
     ]
-    await session.write_line(
-        f"Link attestation sharing: {', '.join(shared) if shared else 'off'}"
-    )
 
-    options = _menu_row(
-        [
-            MenuEntry(label=menu_key("D", "isplay name"), brief="Set your shown display name"),
-            MenuEntry(label=menu_key("L", "ocation"), brief="Set your shown location"),
-            MenuEntry(label=menu_key("A", "ge/birthdate"), brief="Set your birthdate"),
-            MenuEntry(label=menu_key("V", "erified badge visibility"), brief="Show/hide your verified badge"),
-            MenuEntry(label=menu_key("R", "emote Link sharing"), brief="Share attestations over Link"),
-            MenuEntry(label=menu_key("B", "ack"), brief="Return to the previous menu"),
-        ],
-        width=session.terminal_width, height=session.terminal_height,
-        description_level=menu_description_level(db, user),
+    await edit_resource_draft(
+        session, lane,
+        title="Name & details",
+        fields=fields,
+        draft=draft,
+        back_menu_text=menu_key("B", "ack"),
+        description_level=description_level,
+        redraw_in_place=redraw_in_place,
+        preamble=_preamble,
+        unicode_style=unicode_style,
     )
-    await session.write_line(f"\r\n{options}")
-    await session.write("Choice: ")
 
 
 async def _remote_attestation_visibility_screen(
-    session: Session, db: Database, user: User
+    session: Session, lane: DatabaseLane, user: User
 ) -> None:
     await session.write_line("Share which attestation with explicitly trusted remote nodes?")
     await session.write_line(
@@ -4046,12 +4109,12 @@ async def _remote_attestation_visibility_screen(
     attribute = {"a": "age", "n": "name"}.get((await session.read_key()).lower())
     if attribute is None:
         return
-    attestation = get_attestation(db, user, attribute)
+    attestation = await lane.run(get_attestation, user, attribute)
     if attestation is None:
         await session.write_line(colored(f"No {attribute} attestation exists.", fg_color=ERROR_COLOR))
         return
     if attestation.link_visible:
-        set_attestation_link_visible(db, user, attribute, False)
+        await lane.run(set_attestation_link_visible, user, attribute, False)
         await session.write_line(colored(f"{attribute.title()} attestation Link sharing disabled.", fg_color=SUCCESS_COLOR))
         return
     if await prompt_yes_no(
@@ -4059,60 +4122,10 @@ async def _remote_attestation_visibility_screen(
         f"Allow this verified {attribute} value to be sent over NetBBS Link?",
         default=False,
     ):
-        set_attestation_link_visible(db, user, attribute, True)
+        await lane.run(set_attestation_link_visible, user, attribute, True)
         await session.write_line(colored(f"{attribute.title()} attestation Link sharing enabled.", fg_color=SUCCESS_COLOR))
     else:
         await session.write_line(colored("Sharing remains disabled.", fg_color=MUTED_COLOR))
-
-
-async def _edit_display_name(session: Session, db: Database, user: User) -> None:
-    current = get_display_name(db, user)
-    await session.write(f"\r\nDisplay name [{current or '(not set)'}] -- new value (blank to keep): ")
-    new_value = (await session.read_line()).strip()
-    if new_value:
-        try:
-            set_display_name(db, user, new_value)
-        except ProfileFieldError as exc:
-            await session.write_line(colored(f"Could not save display name: {exc}", fg_color=MUTED_COLOR))
-            return
-        await session.write_line("Display name updated.")
-    set_display_name_visible(db, user, await prompt_yes_no(session, "Show it publicly?", default=False))
-
-
-async def _edit_location(session: Session, db: Database, user: User) -> None:
-    current = get_location(db, user)
-    await session.write(f"\r\nLocation [{current or '(not set)'}] -- new value (blank to keep): ")
-    new_value = (await session.read_line()).strip()
-    if new_value:
-        try:
-            set_location(db, user, new_value)
-        except ProfileFieldError as exc:
-            await session.write_line(colored(f"Could not save location: {exc}", fg_color=MUTED_COLOR))
-            return
-        await session.write_line("Location updated.")
-    set_location_visible(db, user, await prompt_yes_no(session, "Show it publicly?", default=False))
-
-
-async def _edit_birthdate(session: Session, db: Database, user: User) -> None:
-    current = get_birthdate(db, user)
-    await session.write(
-        f"\r\nBirthdate [{current.isoformat() if current else '(not set)'}] "
-        "-- new value as YYYY-MM-DD (blank to keep): "
-    )
-    raw = (await session.read_line()).strip()
-    if raw:
-        try:
-            new_birthdate = date.fromisoformat(raw)
-        except ValueError:
-            await session.write_line(colored("Not a valid date (expected YYYY-MM-DD).", fg_color=MUTED_COLOR))
-            return
-        try:
-            set_birthdate(db, user, new_birthdate)
-        except ProfileFieldError as exc:
-            await session.write_line(colored(f"Could not save birthdate: {exc}", fg_color=MUTED_COLOR))
-            return
-        await session.write_line("Birthdate updated.")
-    set_birthdate_visible(db, user, await prompt_yes_no(session, "Show it publicly?", default=False))
 
 
 # -- identity attestation: the [V]erify main-menu screen (design doc §18) --

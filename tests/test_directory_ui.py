@@ -15,8 +15,9 @@ import re
 from netbbs.auth.users import create_user
 from netbbs.directory import get_bio, is_bio_visible, set_bio, set_bio_visible
 from netbbs.net.login_flow import _browse_directory, _edit_profile
-from netbbs.rendering import LABEL_COLOR, VALUE_COLOR, colored
+from netbbs.rendering import LABEL_COLOR, MUTED_COLOR, VALUE_COLOR, colored
 from netbbs.storage.database import Database
+from netbbs.storage.execution import DatabaseLane
 
 
 class FakeSession:
@@ -195,25 +196,29 @@ def test_directory_of_one_still_lists_the_viewer_themselves(tmp_path):
 
 def test_edit_profile_shows_current_state(tmp_path):
     db = Database(tmp_path / "node.db")
+    lane = DatabaseLane(db.path)
     user = create_user(db, "alice", password="hunter2", user_level=10)
     session = FakeSession(keys=["b"])
 
-    asyncio.run(_edit_profile(session, db, user))
+    asyncio.run(_edit_profile(session, lane, user))
 
     assert "no bio set" in session.output
-    assert colored("Visibility: ", fg_color=LABEL_COLOR) in session.output
-    assert colored("private", fg_color=VALUE_COLOR) in session.output
+    assert "  Visibility: " in session.output
+    assert colored("private", fg_color=MUTED_COLOR) in session.output
+    lane.close()
     db.close()
 
 
 def test_edit_profile_bio_updates_stored_bio(tmp_path):
     db = Database(tmp_path / "node.db")
+    lane = DatabaseLane(db.path)
     user = create_user(db, "alice", password="hunter2", user_level=10)
     session = FakeSession(keys=["e", "b"], lines=["Hi, I'm Alice.", "I collect old modems.", ""])
 
-    asyncio.run(_edit_profile(session, db, user))
+    asyncio.run(_edit_profile(session, lane, user))
 
     assert get_bio(db, user) == "Hi, I'm Alice.\nI collect old modems."
+    lane.close()
 
 
 def test_edit_profile_bio_confirming_the_clear_prompt_clears_it(tmp_path):
@@ -223,18 +228,21 @@ def test_edit_profile_bio_confirming_the_clear_prompt_clears_it(tmp_path):
     # now this explicit, confirmed step instead of an accidental blank
     # first line.
     db = Database(tmp_path / "node.db")
+    lane = DatabaseLane(db.path)
     user = create_user(db, "alice", password="hunter2", user_level=10)
     set_bio(db, user, "Old bio")
     session = FakeSession(keys=["e", "b"], lines=["y"])
 
-    asyncio.run(_edit_profile(session, db, user))
+    asyncio.run(_edit_profile(session, lane, user))
 
     assert get_bio(db, user) == ""
     assert "Bio cleared." in session.output
+    lane.close()
 
 
 def test_edit_profile_bio_declining_the_clear_prompt_proceeds_to_edit(tmp_path):
     db = Database(tmp_path / "node.db")
+    lane = DatabaseLane(db.path)
     user = create_user(db, "alice", password="hunter2", user_level=10)
     set_bio(db, user, "Old bio")
     # Bare Enter at the clear prompt selects its default (No, per
@@ -243,9 +251,10 @@ def test_edit_profile_bio_declining_the_clear_prompt_proceeds_to_edit(tmp_path):
     # (unchanged) -- keeping the existing bio, not clearing it.
     session = FakeSession(keys=["e", "b"], lines=["", ""])
 
-    asyncio.run(_edit_profile(session, db, user))
+    asyncio.run(_edit_profile(session, lane, user))
 
     assert get_bio(db, user) == "Old bio"
+    lane.close()
 
 
 def test_edit_profile_bio_keeps_accepted_lines_when_a_later_one_exceeds_the_byte_cap(tmp_path):
@@ -257,47 +266,60 @@ def test_edit_profile_bio_keeps_accepted_lines_when_a_later_one_exceeds_the_byte
     from netbbs.directory import MAX_BIO_BYTES
 
     db = Database(tmp_path / "node.db")
+    lane = DatabaseLane(db.path)
     user = create_user(db, "alice", password="hunter2", user_level=10)
     too_long = "B" * MAX_BIO_BYTES
     session = FakeSession(keys=["e", "b"], lines=["A short first line.", too_long, ""])
 
-    asyncio.run(_edit_profile(session, db, user))
+    asyncio.run(_edit_profile(session, lane, user))
 
     assert get_bio(db, user) == "A short first line."
     assert "cannot exceed" in session.output
+    lane.close()
 
 
 def test_edit_profile_visibility_toggles_from_private_to_public(tmp_path):
     db = Database(tmp_path / "node.db")
+    lane = DatabaseLane(db.path)
     user = create_user(db, "alice", password="hunter2", user_level=10)
     session = FakeSession(keys=["v", "b"])
 
-    asyncio.run(_edit_profile(session, db, user))
+    asyncio.run(_edit_profile(session, lane, user))
 
     assert is_bio_visible(db, user) is True
+    lane.close()
 
 
 def test_edit_profile_visibility_toggles_from_public_to_private(tmp_path):
     db = Database(tmp_path / "node.db")
+    lane = DatabaseLane(db.path)
     user = create_user(db, "alice", password="hunter2", user_level=10)
     set_bio_visible(db, user, True)
     session = FakeSession(keys=["v", "b"])
 
-    asyncio.run(_edit_profile(session, db, user))
+    asyncio.run(_edit_profile(session, lane, user))
 
     assert is_bio_visible(db, user) is False
+    lane.close()
 
 
-def test_edit_profile_invalid_key_does_not_redraw_the_screen(tmp_path):
-    # Regression test: reprinting the "Choice: " prompt after the bell
-    # would add no value -- an unrecognized key must produce genuinely
-    # nothing beyond the bell, not even a fresh prompt line.
+def test_edit_profile_invalid_key_is_rejected_and_the_screen_stays_functional(tmp_path):
+    # `edit_resource_draft` (issue #160's cursor-nav follow-up) redraws
+    # on every keypress including an unrecognized one, matching every
+    # other resource-editor screen's own established behavior (see
+    # tests/test_resource_editor.py::
+    # test_an_unrecognized_key_is_rejected_and_the_menu_stays_active) --
+    # unlike this screen's pre-conversion hand-rolled dispatch, which
+    # deliberately skipped the redraw. What still matters is that the
+    # bad key is rejected (a bell, not silently swallowed) and the
+    # screen keeps working afterward.
     db = Database(tmp_path / "node.db")
+    lane = DatabaseLane(db.path)
     user = create_user(db, "alice", password="hunter2", user_level=10)
-    session = FakeSession(keys=["z", "b"])
+    session = FakeSession(keys=["z", "v", "b"])
 
-    asyncio.run(_edit_profile(session, db, user))
+    asyncio.run(_edit_profile(session, lane, user))
 
-    assert session.output.count("NetBBS / Your profile") == 1
-    assert session.output.count("Choice: ") == 1
     assert "\a" in session.output
+    assert is_bio_visible(db, user) is True
+    lane.close()

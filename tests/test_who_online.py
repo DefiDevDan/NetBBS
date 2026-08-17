@@ -12,6 +12,7 @@ opt-out.
 from __future__ import annotations
 
 import asyncio
+import re
 
 from netbbs.auth.users import create_user
 from netbbs.chat import ChatHub, MessageMailbox, PresenceRegistry
@@ -24,6 +25,7 @@ from netbbs.net.session_registry import ActiveSessionRegistry
 from netbbs.net.shutdown import NodeControls
 from netbbs.rendering import ACCENT_COLOR, MENU_KEY_COLOR, METADATA_COLOR, colored
 from netbbs.storage.database import Database
+from netbbs.storage.execution import DatabaseLane
 
 
 class FakeSession(Session):
@@ -59,12 +61,19 @@ class FakeSession(Session):
     async def write_raw(self, data: bytes) -> None:
         raise NotImplementedError
 
-    async def read_editor_key(self):
+    async def read_editor_key(self, *, distinguish_ctrl_h: bool = False):
         raise NotImplementedError
 
 
 def _written_text(session: FakeSession) -> str:
     return "".join(session.written)
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _visible(session: FakeSession) -> str:
+    return _ANSI_ESCAPE_RE.sub("", _written_text(session))
 
 
 async def _hold_registered(registry: ActiveSessionRegistry, session: Session, username: str) -> None:
@@ -337,6 +346,7 @@ def test_who_screen_refuses_to_message_an_opted_out_user(tmp_path):
 
 def test_profile_screen_toggles_direct_message_acceptance(tmp_path):
     database = db(tmp_path)
+    lane = DatabaseLane(database.path)
     alice = create_user(database, "alice", password="hunter2", user_level=10)
     assert accepts_direct_messages(database, alice) is True  # default
 
@@ -344,9 +354,14 @@ def test_profile_screen_toggles_direct_message_acceptance(tmp_path):
     asyncio.run(
         _main_menu(
             session, database, ChatHub(), PresenceRegistry(), MessageMailbox(), InputHistory(), alice,
+            lane=lane,
         )
     )
 
     assert accepts_direct_messages(database, alice) is False
-    assert "Direct messages are now not accepted." in _written_text(session)
+    # live_choice_field (issue #160's cursor-nav follow-up) has no
+    # separate "X is now Y" confirmation of its own -- the redrawn
+    # field's own "label: value" line is the confirmation.
+    assert "Direct messages (Who's online): not accepted" in _visible(session)
+    lane.close()
     database.close()

@@ -19,6 +19,7 @@ from netbbs.net import login_flow
 from netbbs.net.session import Session
 from netbbs.sort_preferences import get_effective_sort_mode, set_sort_preference
 from netbbs.storage.database import Database
+from netbbs.storage.execution import DatabaseLane
 
 
 class FakeSession(Session):
@@ -47,7 +48,7 @@ class FakeSession(Session):
     async def read_line(self, echo: bool = True, history=None, completer=None, **kwargs) -> str:
         return self._inputs.pop(0)
 
-    async def read_editor_key(self):
+    async def read_editor_key(self, *, distinguish_ctrl_h: bool = False):
         raise NotImplementedError
 
     async def close(self) -> None:
@@ -83,61 +84,68 @@ def alice(db):
     return create_user(db, "alice", password="hunter2", user_level=10)
 
 
-def test_no_preferences_shows_a_friendly_empty_message(db, alice):
+@pytest.fixture
+def lane(db):
+    database_lane = DatabaseLane(db.path)
+    yield database_lane
+    database_lane.close()
+
+
+def test_no_preferences_shows_a_friendly_empty_message(db, lane, alice):
     session = FakeSession([])
-    asyncio.run(login_flow._sort_preferences_screen(session, db, alice))
+    asyncio.run(login_flow._sort_preferences_screen(session, lane, alice))
     text = _written_text(session)
     assert "no saved sort preferences" in text
 
 
-def test_global_preference_is_listed_and_can_be_cleared(db, alice):
+def test_global_preference_is_listed_and_can_be_cleared(db, lane, alice):
     # "board" (default "activity"), not "channel" -- channels default to
     # "alphabetical" (DEFAULT_SORT_MODE_BY_KIND), so setting that exact
     # mode wouldn't let clearing be observed against the fallback.
     set_sort_preference(db, alice, "board", "alphabetical")
     session = FakeSession(["0", "1", "y"])
-    asyncio.run(login_flow._sort_preferences_screen(session, db, alice))
+    asyncio.run(login_flow._sort_preferences_screen(session, lane, alice))
     text = _written_text(session)
     assert "Message boards" in text
     assert "Global default" in text
     assert get_effective_sort_mode(db, alice, "board") == "activity"  # cleared, back to default
 
 
-def test_declining_the_clear_confirmation_leaves_the_preference_intact(db, alice):
+def test_declining_the_clear_confirmation_leaves_the_preference_intact(db, lane, alice):
     set_sort_preference(db, alice, "board", "alphabetical")
     # The screen loops back to the picker after a decline (the
     # preference is still there to show) -- "b" backs out of that
     # second pass.
     session = FakeSession(["0", "1", "n", "b"])
-    asyncio.run(login_flow._sort_preferences_screen(session, db, alice))
+    asyncio.run(login_flow._sort_preferences_screen(session, lane, alice))
     assert get_effective_sort_mode(db, alice, "board") == "alphabetical"  # not cleared
 
 
-def test_community_scoped_preference_shows_the_communitys_real_name(db, alice):
+def test_community_scoped_preference_shows_the_communitys_real_name(db, lane, alice):
     community = create_community(db, "Retro Computing", creator=alice)
     set_sort_preference(db, alice, "board", "volume", community_id=community.id)
     session = FakeSession(["b"])
-    asyncio.run(login_flow._sort_preferences_screen(session, db, alice))
+    asyncio.run(login_flow._sort_preferences_screen(session, lane, alice))
     text = _written_text(session)
     assert "Community: Retro Computing" in text
 
 
-def test_category_scoped_preference_shows_the_categorys_real_name(db, alice):
+def test_category_scoped_preference_shows_the_categorys_real_name(db, lane, alice):
     from netbbs.boards.categories import create_category
 
     category = create_category(db, "Amiga", created_by=alice)
     set_sort_preference(db, alice, "board", "recent", category_id=category.id)
     session = FakeSession(["b"])
-    asyncio.run(login_flow._sort_preferences_screen(session, db, alice))
+    asyncio.run(login_flow._sort_preferences_screen(session, lane, alice))
     text = _written_text(session)
     assert "Category: Amiga" in text
 
 
-def test_profile_screen_shows_the_saved_preference_count_and_offers_the_menu_option(db, alice):
+def test_profile_screen_shows_the_saved_preference_count_and_offers_the_menu_option(db, lane, alice):
     set_sort_preference(db, alice, "channel", "alphabetical")
     set_sort_preference(db, alice, "board", "volume")
     session = FakeSession(["b"])
-    asyncio.run(login_flow._edit_profile(session, db, alice))
+    asyncio.run(login_flow._edit_profile(session, lane, alice))
     text = _visible_text(session)
     assert "Sort preferences: 2 saved" in text
     assert "ort preferences" in text  # the [S]ort preferences menu option itself

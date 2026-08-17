@@ -11,6 +11,7 @@ test_board_pagination_ui.py/test_directory_ui.py suites).
 from __future__ import annotations
 
 import asyncio
+import re
 
 import pytest
 
@@ -23,6 +24,7 @@ from netbbs.net.char_input import EditorKey, EditorKeyKind
 from netbbs.net.editor_preference import fullscreen_editor_enabled, set_fullscreen_editor_enabled
 from netbbs.net.session import Session
 from netbbs.storage.database import Database
+from netbbs.storage.execution import DatabaseLane
 
 _EDITOR_KEY_SENTINELS: dict[str, EditorKeyKind] = {
     "ENTER": EditorKeyKind.ENTER,
@@ -67,7 +69,7 @@ class FakeSession(Session):
             raise AssertionError("FakeSession ran out of scripted input (read_key)")
         return self._inputs.pop(0)
 
-    async def read_editor_key(self) -> EditorKey:
+    async def read_editor_key(self, *, distinguish_ctrl_h: bool = False) -> EditorKey:
         if not self._inputs:
             await asyncio.Event().wait()
             raise AssertionError("unreachable")
@@ -92,6 +94,19 @@ def _written_text(session: FakeSession) -> str:
     return "".join(session.written)
 
 
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _visible(session: FakeSession) -> str:
+    """Strip SGR escapes -- a live_choice_field toggle/cycle (issue #160's
+    cursor-nav follow-up) has no separate "X is now Y" confirmation
+    sentence of its own, unlike the pre-conversion hand-rolled dispatch
+    this screen used to have; the redrawn field's own "label: value" line
+    is the confirmation, matching choice_field's existing convention
+    everywhere else edit_resource_draft is used."""
+    return _ANSI_ESCAPE_RE.sub("", _written_text(session))
+
+
 @pytest.fixture
 def db(tmp_path):
     database = Database(tmp_path / "node.db")
@@ -104,6 +119,13 @@ def alice(db):
     return create_user(db, "alice", password="hunter2", user_level=10)
 
 
+@pytest.fixture
+def lane(db):
+    database_lane = DatabaseLane(db.path)
+    yield database_lane
+    database_lane.close()
+
+
 def _type(text: str) -> list[str]:
     return list(text)
 
@@ -111,52 +133,54 @@ def _type(text: str) -> list[str]:
 # -- Profile screen toggle ------------------------------------------------
 
 
-def test_profile_toggle_switches_the_preference_on_and_off(db, alice):
+def test_profile_toggle_switches_the_preference_on_and_off(db, lane, alice):
     session = FakeSession(["f", "f", "b"])
-    asyncio.run(login_flow._edit_profile(session, db, alice))
+    asyncio.run(login_flow._edit_profile(session, lane, alice))
     # First "f" turns it on, second turns it back off.
     assert fullscreen_editor_enabled(db, alice) is False
-    assert "now on" in _written_text(session)
-    assert "now off" in _written_text(session)
+    text = _visible(session)
+    assert "Fullscreen editor for posts/bio: on" in text
+    assert "Fullscreen editor for posts/bio: off" in text
 
 
-def test_profile_color_depth_toggle_cycles_auto_truecolor_256(db, alice):
+def test_profile_color_depth_toggle_cycles_auto_truecolor_256(db, lane, alice):
     from netbbs.net.color_depth_preference import color_depth_override
 
     session = FakeSession(["c", "c", "c", "b"])
-    asyncio.run(login_flow._edit_profile(session, db, alice))
-    text = _written_text(session)
-    assert "Color depth is now truecolor" in text
-    assert "Color depth is now 256" in text
-    assert "Color depth is now auto" in text
+    asyncio.run(login_flow._edit_profile(session, lane, alice))
+    text = _visible(session)
+    assert "Color depth: truecolor (forced)" in text
+    assert "Color depth: 256 (forced)" in text
+    assert "Color depth: auto (detected:" in text
     # Three presses of a 3-state cycle return to the starting state.
     assert color_depth_override(db, alice) is None
 
 
-def test_profile_menu_descriptions_toggle_cycles_off_brief_detailed(db, alice):
+def test_profile_menu_descriptions_toggle_cycles_off_brief_detailed(db, lane, alice):
     from netbbs.net.menu_description_preference import menu_description_level
 
     assert menu_description_level(db, alice) == "brief"  # default
     session = FakeSession(["d", "d", "d", "b"])
-    asyncio.run(login_flow._edit_profile(session, db, alice))
-    text = _written_text(session)
-    assert "Menu descriptions are now detailed" in text
-    assert "Menu descriptions are now off" in text
-    assert "Menu descriptions are now brief" in text
+    asyncio.run(login_flow._edit_profile(session, lane, alice))
+    text = _visible(session)
+    assert "Menu descriptions: detailed" in text
+    assert "Menu descriptions: off" in text
+    assert "Menu descriptions: brief" in text
     # Three presses of a 3-state cycle starting from "brief" return to it.
     assert menu_description_level(db, alice) == "brief"
 
 
-def test_profile_redraw_in_place_toggle_switches_on_and_off(db, alice):
+def test_profile_redraw_in_place_toggle_switches_on_and_off(db, lane, alice):
     from netbbs.net.redraw_preference import redraw_in_place_enabled
 
     assert redraw_in_place_enabled(db, alice) is False  # default
     session = FakeSession(["r", "r", "b"])
-    asyncio.run(login_flow._edit_profile(session, db, alice))
+    asyncio.run(login_flow._edit_profile(session, lane, alice))
     # First "r" turns it on, second turns it back off.
     assert redraw_in_place_enabled(db, alice) is False
-    assert "In-place redraw is now on" in _written_text(session)
-    assert "In-place redraw is now off" in _written_text(session)
+    text = _visible(session)
+    assert "In-place redraw: on" in text
+    assert "In-place redraw: off" in text
 
 
 # -- composing a new post ---------------------------------------------------
@@ -399,19 +423,19 @@ def test_tombstone_existing_post_cancelled_leaves_it_unchanged(db, alice):
 # -- editing the bio ---------------------------------------------------------
 
 
-def test_edit_bio_uses_fullscreen_editor_once_opted_in(db, alice):
+def test_edit_bio_uses_fullscreen_editor_once_opted_in(db, lane, alice):
     set_fullscreen_editor_enabled(db, alice, True)
     session = FakeSession(["e"] + _type("My new bio") + ["CTRL+O", "b"])
-    asyncio.run(login_flow._edit_profile(session, db, alice))
+    asyncio.run(login_flow._edit_profile(session, lane, alice))
     assert get_bio(db, alice) == "My new bio"
     assert "Bio updated" in _written_text(session)
 
 
-def test_edit_bio_prefills_the_fullscreen_editor_with_the_current_bio(db, alice):
+def test_edit_bio_prefills_the_fullscreen_editor_with_the_current_bio(db, lane, alice):
     from netbbs.directory import set_bio
 
     set_bio(db, alice, "Original bio")
     set_fullscreen_editor_enabled(db, alice, True)
     session = FakeSession(["e", "END"] + _type(" - updated") + ["CTRL+O", "b"])
-    asyncio.run(login_flow._edit_profile(session, db, alice))
+    asyncio.run(login_flow._edit_profile(session, lane, alice))
     assert get_bio(db, alice) == "Original bio - updated"
