@@ -1,10 +1,46 @@
 # NetBBS
 
-A modern, TCP/IP-native BBS package: not stuck at 80x24, not stuck on an
-EOL operating system, and built around **NetBBS Link** — an ad-hoc mesh
-network that lets independent NetBBS nodes discover each other, exchange
-message boards and personal messages, and (later) real-time chat, without
-requiring any central authority.
+NetBBS is a bulletin board system (BBS) — the dial-up-era style of
+text-based, multi-user server where people read message boards, chat in
+real time, exchange mail, and trade files — rebuilt for the modern
+TCP/IP internet instead of a modem bank. Callers connect over Telnet,
+SSH, or a plain web browser (via xterm.js); there's no client software
+to install. Independent NetBBS nodes can also mesh together over
+**NetBBS Link**, an ad-hoc peer network that lets them discover each
+other and share boards, channels, and mail across nodes — without any
+central server or registry — so a small, independent BBS doesn't have
+to stay an island.
+
+**Why run one?** You want a small, self-hosted community space you
+actually own and moderate, instead of one more account living behind
+someone else's terms of service. NetBBS runs comfortably on modest
+hardware, needs no paid hosting or container platform, and — once
+you're ready — Link lets your node reach other independent NetBBS
+communities on your own terms, without handing your data or moderation
+over to anyone.
+
+**Try it right now** — a real, from-source node running in a couple of
+minutes (see [Running a node](#running-a-node) below for a proper
+persistent install once you've had a look around):
+
+```sh
+git clone https://github.com/Thiesi/NetBBS.git
+cd NetBBS
+python3 -m venv .venv && . .venv/bin/activate
+pip install -e ".[dev]"
+python scripts/create_test_user.py netbbs.db yourname yourpassword 255  # 255 = SysOp
+python -m netbbs --db netbbs.db --enable-telnet
+```
+
+Then, from another terminal: `telnet localhost 2323`, log in as the
+user you just created, and look around — you're a SysOp on your own
+node. When you're ready to run a real, persistent node other people
+connect to, see
+[`docs/NetBBS-operator-guide.md`](docs/NetBBS-operator-guide.md) for
+the complete install-through-running path instead of this quick
+source-checkout version.
+
+---
 
 **Platform support (design doc §2.1):** NetBSD is Tier 1/primary — every
 design and dependency choice must work there. GitHub Releases and tagged
