@@ -1,9 +1,12 @@
 # NetBBS — developer project notes
 
 NetBBS is a modern, TCP/IP-native BBS with an ad-hoc mesh network
-(**NetBBS Link**). Phases 1–2 are complete; Phase 3 is active and already
-includes working Link identity, transport, persistence, seed synchronization,
-linked-board event propagation, and tier-1 Link messages.
+(**NetBBS Link**). Phases 1–3 are complete. Phase 4 (trust, reputation, and
+public-readiness) is implemented; its public-readiness gate (issue #131)
+stays open pending human/operational validation, not further code-level
+work. Phase 5 (real-time Link chat) is active: Noise XX transport
+authentication and the first real-time linked-channel chat vertical
+(issue #148) are shipped, released as v5.0.0.
 
 ## Start here
 
@@ -125,8 +128,8 @@ The standing principle is:
 - PyNaCl/libsodium for core cryptography; the optional SSH extra's
   `cryptography` source build requires Rust on NetBSD.
 - User transports: Telnet, SSH, web/xterm.js.
-- NetBBS Link transport: signed HTTP+JSON for asynchronous federation; Noise
-  remains planned for later real-time Link chat.
+- NetBBS Link transport: signed HTTP+JSON for asynchronous federation;
+  Noise XX authenticates the real-time Link chat transport (Phase 5).
 
 ## Current scope summary
 
@@ -134,27 +137,35 @@ The local BBS includes boards, files, chat, mail, Communities, permissions,
 moderation, identity attestation, SysOp tools, ANSI/TUI editors, registration,
 and update infrastructure.
 
-Current Phase 3 includes:
+Phase 3 (Link connectivity and asynchronous services) is complete: node-key
+lifecycle, canonical event bytes, hello/endpoint protocol, configured-seed
+sync and peer exchange, persistent peer/event state with restart
+reconstruction, foreground/background database lanes, linked boards/
+channels/file areas/mail with genesis/materialization/origin-succession
+where applicable, tier-1 Link messages, authenticated inventory/pull catch-up
+across every content kind, and WAN reachability (reliability scoring, relay
+consent/selection, bounded relay mailboxes).
 
-- root and operational node keys with signed transitions;
-- canonical Link event bytes;
-- hello/endpoint protocol and `aiohttp` adapter;
-- configured-seed background synchronization, peer-list exchange, and live
-  seed-list refresh;
-- persistent peers/events and restart reconstruction;
-- foreground/background database lanes;
-- deterministic multi-node fault injection;
-- linked-board genesis, posts, and self-authored edit propagation, including
-  carry-materialization (a node that merely carries a board now gets a real
-  local, browsable copy, not just relayed raw events);
-- board origin succession: mutual-consent transfer, orphan detection, forks;
-- Link messages, scoped to tier-1 (locally-known) recipients only;
-- WAN reachability for outgoing-only nodes: direct-observation reliability
-  scoring, automatic relay selection/consent/self-healing, and a bounded
-  relay store-and-forward mailbox for `link_message` delivery.
+Phase 4 (local trust/reputation policy, signed trust-signal/vouch
+subscriptions, enforcement across every Link boundary, SysOp
+explanation/override/recovery workflows, and remote age/name attestation)
+is implemented. Its public-readiness gate (issue #131) stays open: the
+automated adversarial-validation evidence is complete, but a manual
+recovery exercise, independently administered multi-node validation, and
+continued sustained dogfood (issue #83) remain pending — human/operational
+work, not further code-level validation.
 
-It does **not** yet imply public federation, inventory/pull catch-up, tier-2
-Link messages, channel-side Link support (boards only so far) or the
-origin-succession work that depends on it, advanced governance, or
-trust/quarantine. Check the design document and open issues for the current
-roadmap rather than extending this summary.
+Phase 5 (real-time Link chat) is active. Shipped: Noise XX transport
+authentication and the first real-time linked-channel chat vertical (issue
+#148) — direct sessions and one linked channel, live. Not yet built:
+multiple simultaneous channel memberships with background/unread delivery
+(investigated and deliberately deferred — no observable benefit over the
+existing durable unread-count model), Link-wide presence/discovery, Link-wide
+live private chat, and whether/how trusted scrollback is offered to joining
+nodes.
+
+It does **not** yet imply public federation, Phase 4's public-readiness gate
+being closed, Phase 5 complete beyond its first vertical, or any Phase 6
+(advanced governance/Link Communities) or Phase 7 (doors) work. Check the
+design document and open issues for the current roadmap rather than
+extending this summary.
