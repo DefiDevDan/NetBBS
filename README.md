@@ -441,6 +441,14 @@ per-username, and node-wide budgets persist for the node's whole
 lifetime — reconnecting doesn't reset them, unlike the still-present
 per-connection 3-attempt limit. See `src/netbbs/net/throttle.py`.
 
+**Link behind a forward proxy:** if a node's only outbound path is an
+HTTP(S) forward proxy (e.g. a corporate Squid array with no direct
+egress), set the standard `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`
+environment variables (in the service unit, not the TOML config —
+there is no `[link] proxy` setting) before starting it; NetBBS Link's
+`aiohttp` transport honors them. `outgoing_only = true` still applies
+as normal — the node dials out through the proxy instead of directly.
+
 **Graceful shutdown:** SIGTERM/SIGINT stop every listener and close the
 database in an orderly `finally`, rather than however the OS happens to
 tear down the process. For an rc.d-style NetBSD service, run this in the

@@ -1834,6 +1834,23 @@ before implementation — worth remembering for any future retry/delivery
 abstraction: transport-level success and domain-level confirmation are
 almost always two different questions with two different failure modes.
 
+### Every outbound Link `aiohttp.ClientSession` must set `trust_env=True`
+
+`aiohttp.ClientSession()` defaults to `trust_env=False` — it silently
+ignores `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`. A node whose only
+outbound path is a forward proxy (a corporate Squid array, for
+instance — the scenario that surfaced this) cannot dial any seed/peer
+at all under that default, with no error pointing at the cause. Both
+production construction sites (`netbbs.__main__`'s Link sync session
+and `netbbs.net.file_flow`'s per-fetch session for linked-file
+downloads) now pass `trust_env=True`; regression coverage in
+`tests/test_main_lifecycle.py::test_link_sync_session_honors_forward_proxy_env_vars`
+asserts this against the real session `run()` constructs, not just in
+isolation. Any future call site that constructs its own
+`ClientSession` for outbound Link traffic needs the same flag — it is
+easy to add a new session and forget this, since everything works
+identically in every environment except one with no direct egress.
+
 ---
 
 ## 10. Operational constraints

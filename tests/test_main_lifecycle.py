@@ -516,6 +516,54 @@ def test_link_sync_failures_reach_the_bounded_diagnostic_log(tmp_path):
     asyncio.run(scenario())
 
 
+def test_link_sync_session_honors_forward_proxy_env_vars(tmp_path, monkeypatch):
+    """Corporate-firewall dogfood node (2026-08-17): a node whose only
+    outbound path is a forward proxy (e.g. a Squid array) needs aiohttp
+    to honor HTTP_PROXY/HTTPS_PROXY/NO_PROXY, which it only does with
+    trust_env=True -- the default is False. Confirms the real
+    ClientSession run() actually constructs for Link sync is built with
+    trust_env=True, not just that the setting exists somewhere in
+    isolation."""
+    import aiohttp
+
+    captured_kwargs: dict = {}
+    real_client_session = aiohttp.ClientSession
+
+    def _tracking_client_session(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return real_client_session(*args, **kwargs)
+
+    monkeypatch.setattr(aiohttp, "ClientSession", _tracking_client_session)
+
+    async def scenario():
+        config = _config(
+            tmp_path,
+            telnet=TransportConfig(True, "127.0.0.1", 12413),
+            link=LinkConfig(
+                enabled=True, host="127.0.0.1", port=12414,
+                seeds=[], sync_interval_seconds=60.0,
+            ),
+        )
+        shutdown_event = asyncio.Event()
+        task = asyncio.create_task(run(config, shutdown_event=shutdown_event))
+        try:
+            await _open_connection_when_ready("127.0.0.1", 12413)
+
+            deadline = asyncio.get_event_loop().time() + 5.0
+            while "trust_env" not in captured_kwargs:
+                if asyncio.get_event_loop().time() >= deadline:
+                    raise AssertionError(
+                        "Link sync never constructed a ClientSession"
+                    )
+                await asyncio.sleep(0.05)
+        finally:
+            shutdown_event.set()
+            await task
+
+    asyncio.run(scenario())
+    assert captured_kwargs.get("trust_env") is True
+
+
 def test_link_sync_task_is_drained_promptly_on_shutdown_even_mid_sleep(tmp_path):
     """Design doc §13.11, issue #60's graceful-drain piece: proves the
     fix through a real run(), not just the run_link_sync-level unit

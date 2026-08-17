@@ -782,7 +782,10 @@ async def run(
                     "skipping the Link sync task (pip install netbbs[web])"
                 )
             else:
-                link_sync_session = aiohttp.ClientSession()
+                # trust_env=True: honor HTTP_PROXY/HTTPS_PROXY/NO_PROXY so a
+                # node whose only outbound path is a forward proxy (e.g. a
+                # corporate Squid array) can still reach Link seeds/peers.
+                link_sync_session = aiohttp.ClientSession(trust_env=True)
                 link_sync_task = asyncio.create_task(
                     run_link_sync(
                         link_node, link_sync_session, config.link.seeds,

@@ -71,6 +71,7 @@ from netbbs.auth.users import (
     get_user_by_id,
     get_user_by_username,
     list_users,
+    set_verify_key,
 )
 from netbbs.boards import (
     MAX_BODY_BYTES,
@@ -119,6 +120,7 @@ from netbbs.directory import (
 )
 from netbbs.files.areas import FileArea, list_file_areas
 from netbbs.files.categories import get_category_by_id as get_file_area_category_by_id
+from netbbs.identity.keys import IdentityError, parse_verify_key
 from netbbs.link.boards import (
     LinkContext,
     queue_board_post_edit_if_linked,
@@ -3723,7 +3725,9 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
         "color_depth": await lane.run(color_depth_override, user) or "auto",
         "description_level": description_level,
         "redraw_in_place": redraw_in_place,
+        "unicode_style": unicode_style,
         "sort_preference_count": len(await lane.run(list_sort_preferences, user)),
+        "ssh_fingerprint": user.fingerprint,
     }
 
     async def _bio_prompt(session: Session, lane: DatabaseLane, draft: Draft) -> None:
@@ -3736,6 +3740,36 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
     async def _sort_preferences_prompt(session: Session, lane: DatabaseLane, draft: Draft) -> None:
         await _sort_preferences_screen(session, lane, user)
         draft["sort_preference_count"] = len(await lane.run(list_sort_preferences, user))
+
+    async def _ssh_public_key_prompt(session: Session, lane: DatabaseLane, draft: Draft) -> None:
+        """Self-service counterpart to `_draw_user_detail`'s SysOp-only
+        `[K]` field (`netbbs.net.admin_flow`) -- lets an account that
+        registered with a password alone later add or replace the
+        public key that enables SSH key-based login, without needing a
+        SysOp to do it for them. Reuses the same `set_verify_key`
+        domain function; `changed_by=user` records the account acting
+        on its own key, distinct in the moderation log from a SysOp
+        doing it on someone else's behalf."""
+        await session.write_line("")
+        verb = "Replace" if draft["ssh_fingerprint"] else "Add"
+        await session.write(
+            f"{verb} your SSH public key (base64, or an ssh-ed25519 line, blank to cancel): "
+        )
+        text = (await session.read_line()).strip()
+        if not text:
+            return
+        try:
+            verify_key = parse_verify_key(text)
+        except IdentityError as exc:
+            await session.write_line(colored(f"Could not parse key: {exc}", fg_color=MUTED_COLOR))
+            return
+        try:
+            updated = await lane.run(set_verify_key, user, verify_key, changed_by=user)
+        except AuthError as exc:
+            await session.write_line(colored(str(exc), fg_color=MUTED_COLOR))
+            return
+        draft["ssh_fingerprint"] = updated.fingerprint
+        await session.write_line(colored("SSH public key set.", fg_color=MUTED_COLOR))
 
     def _color_depth_render(d: Draft) -> str:
         value = d["color_depth"]
@@ -3845,6 +3879,23 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
             render=lambda d: f"{d['sort_preference_count']} saved" if d["sort_preference_count"] else "none saved",
             prompt=_sort_preferences_prompt,
             brief="Manage saved sort orders",
+        ),
+        FieldSpec(
+            key="unicode_style", hotkey="u", menu_text=menu_key("U", "nicode style"),
+            label="Unicode decorative style",
+            render=lambda d: "on" if d["unicode_style"] else "off",
+            prompt=live_choice_field(
+                "unicode_style", [False, True],
+                persist=lambda lane, v: lane.run(set_unicode_style_enabled, user, v),
+            ),
+            brief="Unicode arrows/bullets vs. plain ASCII",
+        ),
+        FieldSpec(
+            key="ssh_public_key", hotkey="k", menu_text=menu_key("K", "SSH public key"),
+            label="SSH public key",
+            render=lambda d: d["ssh_fingerprint"] or "(none set)",
+            prompt=_ssh_public_key_prompt,
+            brief="Add/replace your SSH login key",
         ),
     ]
 

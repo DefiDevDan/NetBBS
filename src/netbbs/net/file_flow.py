@@ -715,7 +715,10 @@ async def _fetch_remote_file(
     await session.write_line(f"\r\n{heading}")
     transfer = None
     try:
-        async with aiohttp.ClientSession() as http_session:
+        # trust_env=True: honor HTTP_PROXY/HTTPS_PROXY/NO_PROXY, same as the
+        # Link sync session (__main__.py) -- a linked-file fetch is also
+        # outbound Link traffic and needs the same forward-proxy path.
+        async with aiohttp.ClientSession(trust_env=True) as http_session:
             while True:
                 transfer = await fetch_next_file_chunk(
                     link_context.link_node, http_session, base_url, lane, remote_file,

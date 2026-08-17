@@ -183,6 +183,74 @@ def test_profile_redraw_in_place_toggle_switches_on_and_off(db, lane, alice):
     assert "In-place redraw: off" in text
 
 
+def test_profile_unicode_style_toggle_switches_on_and_off(db, lane, alice):
+    from netbbs.net.unicode_style_preference import unicode_style_enabled
+
+    assert unicode_style_enabled(db, alice) is True  # default
+    session = FakeSession(["u", "u", "b"])
+    asyncio.run(login_flow._edit_profile(session, lane, alice))
+    # First "u" turns it off, second turns it back on.
+    assert unicode_style_enabled(db, alice) is True
+    text = _visible(session)
+    assert "Unicode decorative style: off" in text
+    assert "Unicode decorative style: on" in text
+
+
+# -- SSH public key self-service --------------------------------------------
+
+
+def test_profile_ssh_public_key_self_service_sets_the_key(db, lane, alice):
+    """Dogfood follow-up: `set_verify_key` (netbbs.auth.users) existed
+    and was already reachable from a SysOp's own `[K]` field on another
+    account (test_admin_flow.py's
+    test_admin_can_attach_a_public_key_to_an_existing_password_account),
+    but a password-only account had no self-service route of its own to
+    later gain SSH key-based login -- confirms the Profile screen's new
+    `[K]` field closes that gap."""
+    import base64
+
+    import nacl.signing
+
+    assert alice.fingerprint is None
+    verify_key = nacl.signing.SigningKey.generate().verify_key
+    raw_b64 = base64.b64encode(bytes(verify_key)).decode()
+
+    session = FakeSession(["k", raw_b64, "b"])
+    asyncio.run(login_flow._edit_profile(session, lane, alice))
+
+    updated = login_flow.get_user_by_username(db, "alice")
+    assert updated.fingerprint is not None
+    assert "SSH public key set." in _written_text(session)
+
+
+def test_profile_ssh_public_key_self_service_rejects_an_unparseable_key(db, lane, alice):
+    session = FakeSession(["k", "not a real key", "b"])
+    asyncio.run(login_flow._edit_profile(session, lane, alice))
+
+    updated = login_flow.get_user_by_username(db, "alice")
+    assert updated.fingerprint is None
+    assert "Could not parse key" in _written_text(session)
+
+
+def test_profile_ssh_public_key_self_service_refuses_a_key_already_in_use(db, lane, alice):
+    import base64
+
+    import nacl.signing
+
+    from netbbs.auth.users import create_user
+
+    verify_key = nacl.signing.SigningKey.generate().verify_key
+    raw_b64 = base64.b64encode(bytes(verify_key)).decode()
+    create_user(db, "bob", verify_key=verify_key, user_level=10)
+
+    session = FakeSession(["k", raw_b64, "b"])
+    asyncio.run(login_flow._edit_profile(session, lane, alice))
+
+    updated = login_flow.get_user_by_username(db, "alice")
+    assert updated.fingerprint is None
+    assert "already in use" in _written_text(session)
+
+
 # -- composing a new post ---------------------------------------------------
 
 
