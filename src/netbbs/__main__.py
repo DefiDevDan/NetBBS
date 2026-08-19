@@ -245,13 +245,20 @@ async def _start_servers(
 
     if config.ssh.enabled:
         try:
-            from netbbs.net.ssh import SSHServer
+            import asyncssh  # noqa: F401
         except ImportError:
             _logger.warning(
                 "SSH is enabled in configuration but asyncssh is not installed — "
                 "skipping SSH listener (pip install netbbs[ssh])"
             )
         else:
+            # Import outside the try above: only "asyncssh itself is
+            # missing" should produce the "not installed" message. A
+            # different failure while loading netbbs.net.ssh (e.g. an
+            # asyncssh/cryptography version mismatch) must propagate with
+            # its real traceback, not get misreported as "not installed".
+            from netbbs.net.ssh import SSHServer
+
             await _start_one(
                 "ssh",
                 SSHServer(

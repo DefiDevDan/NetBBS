@@ -975,7 +975,7 @@ def test_no_listener_started_raises_startup_error(tmp_path, monkeypatch):
     """Every enabled transport unavailable (here: SSH configured but
     asyncssh 'not installed') must fail clearly, not silently run with
     nothing listening."""
-    monkeypatch.setitem(sys.modules, "netbbs.net.ssh", None)
+    monkeypatch.setitem(sys.modules, "asyncssh", None)
 
     async def scenario():
         config = _config(
@@ -985,6 +985,27 @@ def test_no_listener_started_raises_startup_error(tmp_path, monkeypatch):
             web=TransportConfig(False, "127.0.0.1", 0),
         )
         with pytest.raises(StartupError, match="no interactive listener actually started"):
+            await run(config)
+
+    asyncio.run(scenario())
+
+
+def test_ssh_import_failure_other_than_missing_asyncssh_propagates(tmp_path, monkeypatch):
+    """asyncssh present but `netbbs.net.ssh` itself fails to import (e.g. an
+    asyncssh/cryptography version mismatch) must surface as a real error,
+    not get misreported as 'asyncssh is not installed' (regression: a node
+    with asyncssh installed saw exactly that misleading message, with the
+    actual ImportError silently swallowed)."""
+    monkeypatch.setitem(sys.modules, "netbbs.net.ssh", None)
+
+    async def scenario():
+        config = _config(
+            tmp_path,
+            telnet=TransportConfig(False, "127.0.0.1", 0),
+            ssh=TransportConfig(True, "127.0.0.1", 0),
+            web=TransportConfig(False, "127.0.0.1", 0),
+        )
+        with pytest.raises(ModuleNotFoundError):
             await run(config)
 
     asyncio.run(scenario())

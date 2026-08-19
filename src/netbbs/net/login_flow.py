@@ -3891,7 +3891,7 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
             brief="Unicode arrows/bullets vs. plain ASCII",
         ),
         FieldSpec(
-            key="ssh_public_key", hotkey="k", menu_text=menu_key("K", "SSH public key"),
+            key="ssh_public_key", hotkey="k", menu_text=menu_key("k", "ey", prefix="SSH public "),
             label="SSH public key",
             render=lambda d: d["ssh_fingerprint"] or "(none set)",
             prompt=_ssh_public_key_prompt,
