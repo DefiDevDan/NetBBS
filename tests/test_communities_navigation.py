@@ -258,7 +258,7 @@ def test_community_scoped_board_browsing_shows_community_name_in_title(tmp_path)
 
     _run_main_menu(session, db, bob)
 
-    assert "Vintage Computing — message boards" in _written_text(session)
+    assert "Vintage Computing › message boards" in _written_text(session)
     db.close()
 
 
@@ -271,7 +271,7 @@ def test_uncategorized_browsing_shows_uncategorized_in_title(tmp_path):
 
     _run_main_menu(session, db, bob)
 
-    assert "Uncategorized — message boards" in _written_text(session)
+    assert "Uncategorized › message boards" in _written_text(session)
     db.close()
 
 

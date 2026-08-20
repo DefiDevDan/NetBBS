@@ -93,6 +93,7 @@ async def pick_item(
     sort_label: Callable[[], str] | None = None,
     description_level: str = "off",
     redraw_in_place: bool = False,
+    unicode_style: bool = False,
 ) -> T | None:
     """
     Let the user browse/search/jump through `items` and pick one, or
@@ -207,7 +208,7 @@ async def pick_item(
         if not working_set:
             page_index = 0
             await session.write_line(colored(f"\r\n{empty_message}", fg_color=MUTED_COLOR))
-            trailer = f"{menu_key('B', 'ack')} — Ctrl-L: redraw"
+            trailer = f"{menu_key('B', 'ack')} {'—' if unicode_style else '-'} Ctrl-L: redraw"
             if refresh is not None:
                 trailer += ", Ctrl-R: refresh"
             await session.write_line(f"\r\n{trailer}")
@@ -226,6 +227,7 @@ async def pick_item(
                 subtitle=f"page {page_index + 1}/{total_pages}, {len(working_set)} total",
                 width=session.terminal_width,
                 clear=redraw_in_place,
+                unicode_style=unicode_style,
             )
         )
         for position, item in enumerate(page_items, start=1):
@@ -283,7 +285,7 @@ async def pick_item(
         # sometimes mid-word. Cut the trailer to whatever room remains,
         # mirroring `menu_grid`'s own established "hard cut, not a
         # client wrap" convention for this kind of trailing text.
-        separator = " — "
+        separator = " — " if unicode_style else " - "
         last_nav_line = nav.rsplit("\r\n", 1)[-1]
         if description_level == "off":
             # The compact `action_bar` form's last (often only) line is

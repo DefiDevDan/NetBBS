@@ -179,6 +179,49 @@ def test_resuming_a_draft_via_edit_prefills_the_body_and_can_post(db, alice):
     assert saved.body == "saved body"
 
 
+# -- signature auto-append ----------------------------------------------
+
+
+def test_new_post_appends_the_author_signature(db, alice):
+    from netbbs.signature import set_signature
+
+    set_signature(db, alice, "Alice")
+    board = create_board(db, "general", creator=alice)
+    session = FakeSession(["p", "Subject", "first line", "/done", "p", "b"])
+    asyncio.run(login_flow._show_board(session, db, board, alice))
+
+    post = list_posts_page(db, board, alice).posts[0]
+    assert post.body == "first line\n-- \nAlice"
+
+
+def test_new_post_has_no_signature_block_when_none_is_set(db, alice):
+    board = create_board(db, "general", creator=alice)
+    session = FakeSession(["p", "Subject", "first line", "/done", "p", "b"])
+    asyncio.run(login_flow._show_board(session, db, board, alice))
+
+    post = list_posts_page(db, board, alice).posts[0]
+    assert post.body == "first line"
+
+
+def test_resuming_a_draft_does_not_append_the_signature_a_second_time(db, alice):
+    """The signature is appended once, at the original compose -- a
+    resumed draft's body already reflects that (or its absence, or
+    whatever the caller edited it to), so resuming must not re-append
+    it on top."""
+    from netbbs.signature import set_signature
+
+    set_signature(db, alice, "Alice")
+    board = create_board(db, "general", creator=alice)
+    exit_session = FakeSession(["p", "Subject", "saved body", "/exit", "b"])
+    asyncio.run(login_flow._show_board(exit_session, db, board, alice))
+
+    resume_session = FakeSession(["e", "Resumed subject", "/done", "p", "b"])
+    asyncio.run(login_flow._show_board(resume_session, db, board, alice))
+
+    saved = list_posts_page(db, board, alice).posts[0]
+    assert saved.body == "saved body\n-- \nAlice"  # appended once, not twice
+
+
 def test_deleting_a_saved_draft_stops_it_being_offered_again(db, alice):
     board = create_board(db, "general", creator=alice)
     exit_session = FakeSession(["p", "Subject", "saved body", "/exit", "b"])

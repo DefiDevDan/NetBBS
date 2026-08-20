@@ -24,17 +24,20 @@ sandbox.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import io
 import json
 import logging
+import os
 import shutil
 import sqlite3
+import stat
 import tarfile
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 from netbbs.config import get_config, set_config
 from netbbs.operational_history import record_operational_run
@@ -59,6 +62,17 @@ _PENDING_PREVIOUS_RELEASE_DIR_CONFIG_KEY = "selfupdate_previous_release_dir"
 _PENDING_DB_SNAPSHOT_CONFIG_KEY = "selfupdate_pending_db_snapshot"
 _LAST_CHECK_AT_CONFIG_KEY = "selfupdate_last_check_at"
 _LAST_OUTCOME_CONFIG_KEY = "selfupdate_last_outcome"
+# A cached etag for the conditional (`If-None-Match`) release-list
+# request -- saves bandwidth/JSON-parsing and gives a clean "nothing
+# changed" signal, but (confirmed against the real API, not assumed)
+# does NOT reduce rate-limit cost: a 304 still costs the same unit as
+# an ordinary request. See `run_scheduled_update_check`'s own docstring
+# for what actually bounds the unauthenticated 60/hour-per-source-IP
+# limit that ordinary dev-loop node restarts kept exhausting. One JSON
+# blob (not separate keys) since the cached etag and the release it
+# belongs to are only ever read/written together -- see
+# `load_release_cache`/`save_release_cache`.
+_LAST_RELEASE_CACHE_CONFIG_KEY = "selfupdate_last_release_cache"
 
 
 class UpdateError(Exception):
@@ -81,6 +95,73 @@ def get_auto_update_check_enabled(db: Database) -> bool:
 
 def set_auto_update_check_enabled(db: Database, enabled: bool) -> None:
     set_config(db, AUTO_UPDATE_CHECK_ENABLED_CONFIG_KEY, "1" if enabled else "0")
+
+
+# -- Optional GitHub personal access token (raises the release-check rate
+# -- limit from 60/hour per source IP, unauthenticated, to 5000/hour) ------
+
+
+def github_pat_path(db: Database) -> Path:
+    """Well-known path for the optional GitHub PAT used to authenticate
+    release-check requests -- colocated with the database file, deliberately
+    a plain file rather than a `node_config` row: `node_config` is a
+    plaintext SQLite table meant for ordinary settings, with no at-rest
+    protection of its own, and this is a bearer credential, not a
+    setting. Same "real secret, plain file next to the database" pattern
+    `netbbs.net.ssh.ensure_host_key` and `netbbs.link.node_identity`
+    already establish for the node's own key material -- see
+    `netbbs.net.welcome_banner.banner_path`'s docstring for the same
+    colocation convention applied to non-secret content."""
+    return db.path.parent / f"{db.path.stem}_github_pat"
+
+
+def get_github_pat(db: Database) -> str | None:
+    path = github_pat_path(db)
+    if not path.exists():
+        return None
+    token = path.read_text(encoding="utf-8").strip()
+    return token or None
+
+
+def set_github_pat(db: Database, token: str) -> None:
+    """Write `token` to `github_pat_path`, owner-only readable. Write-
+    temp-then-rename plus `chmod 0600` before the file is ever visible
+    at its real name -- the same shape `netbbs.identity.keys.Identity.
+    save`'s own unencrypted path already uses for its private key file,
+    for the same reason: a crash mid-write must never leave a half-
+    written secret behind, and the file must never be briefly
+    world/group-readable between being created and being locked down.
+    No passphrase-encryption option, unlike that identity file: a PAT is
+    a revocable, GitHub-side-rotatable bearer credential fetched by an
+    unattended background task on every node startup (`run_scheduled_
+    update_check`), not a permanent identity -- encrypting it at rest
+    would reintroduce exactly the "headless key unlock" open problem
+    `Identity.save`'s own docstring flags as unsolved, for a credential
+    whose blast radius (see the admin screen's own prompt copy) should
+    already be minimal by scope, not by encryption."""
+    token = token.strip()
+    if not token:
+        raise ValueError("token must not be blank")
+    path = github_pat_path(db)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(token + "\n", encoding="utf-8")
+    os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)  # 0600: owner read/write only
+    tmp_path.replace(path)
+
+
+def clear_github_pat(db: Database) -> None:
+    github_pat_path(db).unlink(missing_ok=True)
+
+
+def masked_github_pat(db: Database) -> str | None:
+    """`None` if no token is stored, else a display-safe stand-in
+    (`"...last 4 chars"`) that confirms *which* token is active (useful
+    after a rotation) without ever re-displaying the secret itself."""
+    token = get_github_pat(db)
+    if token is None:
+        return None
+    return f"…{token[-4:]}" if len(token) >= 4 else "…"
 
 
 # -- Release info & version comparison -------------------------------------
@@ -126,23 +207,150 @@ def is_newer(current_version: str, candidate_tag: str) -> bool:
     return _normalize_version(candidate_tag) > _normalize_version(current_version)
 
 
-def _default_fetch(url: str) -> bytes:
-    """Real HTTPS GET, run off the event loop by callers via
-    `asyncio.to_thread` -- deliberately `urllib.request`, not a new
-    dependency, so the self-updater works on every node regardless of
-    which optional extras (ssh/web) are installed, and stays consistent
-    with the "blocking I/O moves off-loop via a thread" pattern
-    rather than adding aiohttp as a hard core dependency."""
+def _default_fetch_bytes(url: str) -> bytes:
+    """Real HTTPS GET for a one-time download of a specific, already-
+    known release asset (the tarball) -- no `If-None-Match` handling,
+    unlike `_default_fetch` below: there's nothing to poll here, a
+    given release's tarball is immutable once published, so conditional
+    requests have no benefit and would only add complexity for no
+    reason. Kept as its own function, not a thin `_default_fetch`
+    wrapper, so its callers' `Callable[[str], bytes]` signature never
+    has to know about etags at all."""
     request = urllib.request.Request(url, headers={"User-Agent": "netbbs-selfupdate"})
     with urllib.request.urlopen(request, timeout=30) as response:
         return response.read()
 
 
+def _default_fetch(
+    url: str, etag: str | None, token: str | None = None
+) -> tuple[bytes | None, str | None]:
+    """Real HTTPS GET, run off the event loop by callers via
+    `asyncio.to_thread` -- deliberately `urllib.request`, not a new
+    dependency, so the self-updater works on every node regardless of
+    which optional extras (ssh/web) are installed, and stays consistent
+    with the "blocking I/O moves off-loop via a thread" pattern
+    rather than adding aiohttp as a hard core dependency.
+
+    `etag`, if given, is sent as `If-None-Match`. A `304 Not Modified`
+    response -- raised by `urlopen` as an `HTTPError`, same as any
+    other non-2xx status -- means the release list hasn't changed since
+    `etag` was recorded, and is reported back as `(None, etag)` rather
+    than re-raised; every other `HTTPError` propagates unchanged (into
+    `check_latest_release`'s own `except URLError`, `HTTPError`'s base
+    class, exactly as before this function had an `etag` parameter at
+    all). Confirmed directly against the real API (design doc §17
+    follow-up): a `304` still costs the same rate-limit unit as an
+    ordinary request -- GitHub does *not* exempt conditional requests
+    from the primary limit, contrary to this project's own earlier,
+    unverified assumption -- so `etag` reduces bandwidth/parsing cost
+    and gives a clean "nothing changed" signal, but does not by itself
+    reduce how many checks a node can make in an hour; `token` below is
+    what actually does that. A fresh `200` is `(body_bytes, new_etag)`
+    -- `new_etag` is `None` if the response happened not to carry one.
+
+    `token`, if given, is sent as `Authorization: Bearer <token>`
+    (`netbbs.selfupdate.get_github_pat`) -- raises GitHub's rate limit
+    from 60/hour per source IP (unauthenticated) to 5000/hour."""
+    headers = {"User-Agent": "netbbs-selfupdate"}
+    if etag:
+        headers["If-None-Match"] = etag
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.read(), response.headers.get("ETag")
+    except HTTPError as exc:
+        if exc.code == 304:
+            return None, etag
+        raise
+
+
+def load_release_cache(db: Database) -> tuple[str | None, ReleaseInfo | None]:
+    """`(etag, release)` from the last successful check, or `(None,
+    None)` if none has ever completed -- the conditional-request cache
+    `check_latest_release`'s `known_etag`/`known_release` need. A
+    corrupt/foreign-shaped stored blob is treated exactly like "no
+    cache yet" rather than raised: this is a same-process bookkeeping
+    optimization, not data anything else depends on, so the safe
+    response to unexpected content is to fall back to a normal
+    (uncached) request, not to fail the check entirely."""
+    raw = get_config(db, _LAST_RELEASE_CACHE_CONFIG_KEY)
+    if raw is None:
+        return None, None
+    try:
+        data = json.loads(raw)
+        release = ReleaseInfo(
+            tag_name=data["tag_name"], tarball_url=data["tarball_url"], published_at=data["published_at"]
+        )
+        return data.get("etag"), release
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None, None
+
+
+def save_release_cache(db: Database, etag: str | None, release: ReleaseInfo) -> None:
+    set_config(
+        db,
+        _LAST_RELEASE_CACHE_CONFIG_KEY,
+        json.dumps(
+            {
+                "etag": etag,
+                "tag_name": release.tag_name,
+                "tarball_url": release.tarball_url,
+                "published_at": release.published_at,
+            }
+        ),
+    )
+
+
 async def check_latest_release(
-    *, fetch: Callable[[str], bytes] = _default_fetch
-) -> ReleaseInfo:
+    *,
+    known_etag: str | None = None,
+    known_release: ReleaseInfo | None = None,
+    token: str | None = None,
+    fetch: Callable[[str, str | None, str | None], tuple[bytes | None, str | None]] = _default_fetch,
+) -> tuple[ReleaseInfo, str | None]:
     """
     Query GitHub's releases API for the newest published release.
+
+    `known_etag`/`known_release` -- a caller's own cached result from
+    its last successful check (`load_release_cache`) -- turn this into
+    a conditional request: a `304` response (`fetch`'s own contract)
+    means nothing changed, so `known_release` is returned as-is rather
+    than re-parsed. This does *not* reduce rate-limit cost -- confirmed
+    directly against the real API, a `304` still costs the same unit as
+    an ordinary request, contradicting this project's own earlier
+    assumption that conditional requests were exempt -- it only saves
+    bandwidth/parsing and gives a clean "nothing changed" signal.
+    `known_etag` without `known_release` (or the reverse) isn't a
+    caller this function can serve meaningfully -- it needs both to
+    safely skip parsing on a 304 -- so callers always load/save them as
+    the one pair `load_release_cache`/`save_release_cache` treat them
+    as.
+
+    `token` (`netbbs.selfupdate.get_github_pat`), if given, is what
+    actually changes the rate-limit ceiling that matters: 60/hour per
+    source IP, unauthenticated, to 5000/hour, authenticated -- see
+    `run_scheduled_update_check`'s own docstring for why a node
+    restarting frequently (an ordinary dev-loop, or a genuine crash-
+    restart loop in production) needs one or the other.
+
+    Returns `(release, new_etag)`: `release` is always current --
+    freshly parsed on a `200`, or `known_release` unchanged on a `304`.
+    `new_etag` is what the caller should persist (via `save_release_
+    cache`) and pass back in as `known_etag` next time; it's `None`
+    when the caller gave no `known_etag` and the response had none to
+    offer either (a check that can't yet go conditional next time).
+
+    A `304` with no `known_release` to fall back to is a caller bug
+    (nothing was cached, so nothing should have been sent as
+    `If-None-Match` in the first place) -- surfaced as `UpdateError`
+    like any other unexpected response shape, not silently swallowed.
+    A `401` (an invalid/revoked/expired `token`) gets its own specific
+    message rather than the generic "could not reach" one -- the node
+    *did* reach GitHub; the stored credential is what's wrong, and a
+    SysOp needs to know that distinction to fix it instead of assuming
+    a network problem.
 
     `fetch` is injectable specifically so tests exercise real parsing/
     error-handling logic against canned bytes rather than a real network
@@ -150,9 +358,21 @@ async def check_latest_release(
     `now`/`sleep` already use for the identical reason.
     """
     try:
-        raw = await asyncio.to_thread(fetch, _GITHUB_RELEASES_API_URL)
+        raw, new_etag = await asyncio.to_thread(fetch, _GITHUB_RELEASES_API_URL, known_etag, token)
+    except HTTPError as exc:
+        if exc.code == 401:
+            raise UpdateError(
+                "GitHub rejected the stored personal access token (401 Unauthorized) -- "
+                "it may have been revoked or expired; check/replace it from the Self-update screen"
+            ) from exc
+        raise UpdateError(f"could not reach the release API: {exc}") from exc
     except URLError as exc:
         raise UpdateError(f"could not reach the release API: {exc}") from exc
+
+    if raw is None:
+        if known_release is None:
+            raise UpdateError("release API returned 304 Not Modified with no cached release to fall back to")
+        return known_release, new_etag
 
     try:
         releases = json.loads(raw)
@@ -164,13 +384,15 @@ async def check_latest_release(
 
     latest = releases[0]
     try:
-        return ReleaseInfo(
+        release = ReleaseInfo(
             tag_name=latest["tag_name"],
             tarball_url=latest["tarball_url"],
             published_at=latest["published_at"],
         )
     except (KeyError, TypeError) as exc:
         raise UpdateError(f"release API response missing expected field: {exc}") from exc
+
+    return release, new_etag
 
 
 def record_check_outcome(db: Database, outcome: str) -> None:
@@ -193,12 +415,31 @@ def get_last_check_summary(db: Database) -> tuple[str | None, str | None]:
     return get_config(db, _LAST_CHECK_AT_CONFIG_KEY), get_config(db, _LAST_OUTCOME_CONFIG_KEY)
 
 
+def _parse_check_timestamp(value: str) -> datetime.datetime:
+    """Parse a timestamp written by `utc_now_iso`'s own fixed format.
+    `datetime.fromisoformat` is avoided even on Python 3.11+ (where it
+    would accept the trailing "Z") for the same reason `utc_now_iso`
+    itself exists: matching the exact writer format explicitly, rather
+    than trusting a parser's own tolerance, is what keeps this
+    unaffected if that format ever needs to change."""
+    return datetime.datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=datetime.timezone.utc)
+
+
+# Cooldown against the immediate on-entry check below, independent of
+# `interval_seconds` -- see that parameter's own docstring for why this
+# exists at all (confirmed empirically: etag caching alone doesn't
+# reduce request *volume*, only cost-per-request).
+_MIN_RECHECK_INTERVAL_SECONDS = 900.0  # 15 minutes
+
+
 async def run_scheduled_update_check(
     db: Database,
     *,
-    fetch: Callable[[str], bytes] = _default_fetch,
+    fetch: Callable[[str, str | None, str | None], tuple[bytes | None, str | None]] = _default_fetch,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     interval_seconds: float = 86400.0,
+    min_recheck_interval_seconds: float = _MIN_RECHECK_INTERVAL_SECONDS,
+    now: Callable[[], datetime.datetime] = lambda: datetime.datetime.now(datetime.timezone.utc),
 ) -> None:
     """
     Runs for the node's lifetime: checks for a newer release once
@@ -219,36 +460,68 @@ async def run_scheduled_update_check(
     safely wired up yet, a real, substantially higher-stakes decision
     deliberately not bundled into this).
 
-    `fetch`/`sleep` are injectable for the same reason `netbbs.net.
-    daybreak.run_daybreak_announcer`'s `now`/`sleep` are: a test drives
-    this without a real network call or a real day-long wait. The first
-    pass runs immediately, not after an initial sleep, unlike that
-    function's own always-wait-for-a-specific-moment shape -- there's
-    no meaningful "already happened today" concept for a version check
-    the way there is for a calendar event, so this instead matches
-    `netbbs.link.sync.run_link_sync`'s own "try immediately, don't make
-    a freshly started node wait" precedent.
+    `fetch`/`sleep`/`now` are injectable for the same reason `netbbs.
+    net.daybreak.run_daybreak_announcer`'s `now`/`sleep` are: a test
+    drives this without a real network call or a real day-long wait.
+    The first pass runs immediately, not after an initial sleep, unlike
+    that function's own always-wait-for-a-specific-moment shape --
+    there's no meaningful "already happened today" concept for a
+    version check the way there is for a calendar event, so this
+    instead matches `netbbs.link.sync.run_link_sync`'s own "try
+    immediately, don't make a freshly started node wait" precedent.
+
+    `min_recheck_interval_seconds` (default 15 minutes) is what actually
+    bounds *how often* that immediate on-entry check can fire: every
+    restart used to be an independent, always-billed request against
+    GitHub's unauthenticated 60/hour-per-source-IP limit -- easily
+    exhausted by ordinary dev-loop iteration, or by a genuine crash-
+    restart loop in production -- and `check_latest_release`'s own etag
+    caching does not fix that by itself (confirmed against the real
+    API: a `304` costs the same rate-limit unit as any other request).
+    A restart within this window of the last attempt (success or
+    failure, tracked via `get_last_check_summary`) skips straight to
+    sleeping instead of re-checking; a restart after a longer gap (or
+    the first check a node ever makes) always checks immediately, same
+    as before this parameter existed. `token` (`get_github_pat`), used
+    whenever a SysOp has set one, is the other real lever here -- it
+    raises the ceiling itself (60/hour → 5000/hour) rather than
+    reducing request volume, and unlike the cooldown, doesn't add any
+    latency to genuinely-infrequent restarts.
     """
     from netbbs import __version__ as current_version
 
     while True:
         if get_auto_update_check_enabled(db):
-            try:
-                release = await check_latest_release(fetch=fetch)
-            except UpdateError as exc:
-                _logger.warning("Scheduled update check failed: %s", exc)
-                # Recorded, not just logged (design doc §17 -- "fail
-                # clearly," CLAUDE.md's own working convention): without
-                # this, a SysOp glancing at the admin update screen after
-                # several consecutive failing days would still see a
-                # stale "3 weeks ago -- up to date," with the console the
-                # only place a real, ongoing problem was ever visible.
-                record_check_outcome(db, f"check failed: {exc}")
-            else:
-                if is_newer(current_version, release.tag_name):
-                    record_check_outcome(db, f"newer release available: {release.tag_name}")
+            last_checked_at, _ = get_last_check_summary(db)
+            due = True
+            if last_checked_at is not None:
+                try:
+                    elapsed = (now() - _parse_check_timestamp(last_checked_at)).total_seconds()
+                    due = elapsed >= min_recheck_interval_seconds
+                except ValueError:
+                    due = True  # unparseable timestamp -- fail open, never get stuck
+            if due:
+                known_etag, known_release = load_release_cache(db)
+                token = get_github_pat(db)
+                try:
+                    release, new_etag = await check_latest_release(
+                        known_etag=known_etag, known_release=known_release, token=token, fetch=fetch
+                    )
+                except UpdateError as exc:
+                    _logger.warning("Scheduled update check failed: %s", exc)
+                    # Recorded, not just logged (design doc §17 -- "fail
+                    # clearly," CLAUDE.md's own working convention): without
+                    # this, a SysOp glancing at the admin update screen after
+                    # several consecutive failing days would still see a
+                    # stale "3 weeks ago -- up to date," with the console the
+                    # only place a real, ongoing problem was ever visible.
+                    record_check_outcome(db, f"check failed: {exc}")
                 else:
-                    record_check_outcome(db, f"up to date ({current_version})")
+                    save_release_cache(db, new_etag, release)
+                    if is_newer(current_version, release.tag_name):
+                        record_check_outcome(db, f"newer release available: {release.tag_name}")
+                    else:
+                        record_check_outcome(db, f"up to date ({current_version})")
         await sleep(interval_seconds)
 
 
@@ -256,7 +529,7 @@ async def run_scheduled_update_check(
 
 
 def download_and_extract_release(
-    release: ReleaseInfo, releases_root: Path, *, fetch: Callable[[str], bytes] = _default_fetch
+    release: ReleaseInfo, releases_root: Path, *, fetch: Callable[[str], bytes] = _default_fetch_bytes
 ) -> Path:
     """
     Download `release`'s tarball and extract it to
@@ -363,7 +636,7 @@ def prepare_update(
     releases_root: Path,
     db_path: Path,
     current_release_dir: Path,
-    fetch: Callable[[str], bytes] = _default_fetch,
+    fetch: Callable[[str], bytes] = _default_fetch_bytes,
 ) -> Path:
     """
     Download and extract `release`, snapshot the database, and record

@@ -134,6 +134,14 @@ from netbbs.messaging_preferences import (
     set_accepts_direct_messages,
 )
 from netbbs.moderation import BoardPermission, has_permission, is_blocked
+from netbbs.signature import (
+    MAX_SIGNATURE_BYTES,
+    MAX_SIGNATURE_LINES,
+    SignatureError,
+    append_signature,
+    get_signature,
+    set_signature,
+)
 from netbbs.net.admin_flow import admin_menu
 from netbbs.net.char_input import REDRAW_KEY, InputHistory, reject_unhandled_key
 from netbbs.net.confirm import prompt_yes_no
@@ -186,12 +194,16 @@ from netbbs.rendering import (
     badge,
     colored,
     colored_truncate,
+    counts_row,
+    double_frame,
     empty_state,
+    field_row,
     menu_grid,
     menu_key,
     reflow,
     sanitize_text,
     screen_title,
+    status_badge,
     truncate,
 )
 from netbbs.search import (
@@ -258,7 +270,14 @@ async def _write_connection_notice(
     *,
     tone: str = "warning",
 ) -> None:
-    """Render a terminal connection state without changing its outcome."""
+    """Render a terminal connection state without changing its outcome.
+
+    Unconditionally `unicode_style=True` (no `clear=`/ASCII-fallback
+    split like most other screens): this fires pre-authentication, with
+    no account/preference to look up yet, and NetBBS's Telnet transport
+    already sends every screen as UTF-8 regardless of any preference
+    (see `unicode_style_preference`'s own docstring) -- the same
+    reasoning `welcome_banner`'s default banner already uses."""
     width = getattr(session, "terminal_width", 80)
     await session.write_line(
         "\r\n"
@@ -266,9 +285,10 @@ async def _write_connection_notice(
             title,
             breadcrumb=(),
             width=width,
+            unicode_style=True,
         )
     )
-    await session.write_line(badge(title.upper(), tone=tone))
+    await session.write_line(status_badge(title.upper(), tone=tone, unicode_style=True))
     await session.write_line(
         colored(reflow(detail, width=width), fg_color=METADATA_COLOR)
     )
@@ -1107,21 +1127,29 @@ async def _draw_main_menu(
         )
     system_options.append(MenuEntry(label=menu_key("L", "ogoff"), brief="Disconnect from this node"))
 
+    unicode_style = unicode_style_enabled(db, user)
+    # "mail" pluralized is "mails," which reads oddly -- the Mail submenu's
+    # own header (`_render_mail_menu`) already settled this exact wording as
+    # "message(s)"; matching it here fixes both the missing pluralization
+    # and a term the app wasn't even using consistently with itself.
+    mail_status = (
+        (f"{unread} unread message{'' if unread == 1 else 's'}", WARNING_COLOR)
+        if unread
+        else ("mail caught up", SUCCESS_COLOR)
+    )
     title = screen_title(
         "Main menu:",
-        subtitle=f"{sanitize_text(user.username)}  /  level {user.user_level}"
-        + (
-            # "mail" pluralized is "mails," which reads oddly -- the Mail
-            # submenu's own header (`_render_mail_menu`) already settled
-            # this exact wording as "message(s)"; matching it here fixes
-            # both the missing pluralization and a term the app wasn't
-            # even using consistently with itself.
-            f"  /  {unread} unread message{'' if unread == 1 else 's'}"
-            if unread
-            else "  /  mail caught up"
+        subtitle=field_row(
+            [
+                (sanitize_text(user.username), ACCENT_COLOR),
+                (f"level {user.user_level}", VALUE_COLOR),
+                mail_status,
+            ],
+            unicode_style=unicode_style,
         ),
         width=session.terminal_width,
         clear=redraw_in_place_enabled(db, user),
+        unicode_style=unicode_style,
     )
     options = menu_grid(
         [("Explore", explore_options), ("You", personal_options), ("System", system_options)],
@@ -1746,6 +1774,7 @@ async def _find_screen(
             subtitle="Find posts, files, and retained chat on this node.",
             width=session.terminal_width,
             clear=redraw_in_place_enabled(db, user),
+            unicode_style=unicode_style_enabled(db, user),
         )
     )
     await session.write("Search terms (Enter cancels): ")
@@ -1925,6 +1954,11 @@ async def _login(
                 else "New here? Type 'new' to create an account."
             ),
             width=session.terminal_width,
+            # Pre-authentication -- no account/preference to look up yet,
+            # and every screen is already sent as UTF-8 regardless (see
+            # `unicode_style_preference`'s own docstring), same reasoning
+            # `_write_connection_notice` and the welcome banner both use.
+            unicode_style=True,
         )
     )
     prompt = colored("Username: ", fg_color=LABEL_COLOR, bold=True)
@@ -2097,6 +2131,7 @@ async def _register_new_account(
                     f"(Attempt {attempt} of {_REGISTRATION_MAX_ATTEMPTS})"
                 ),
                 width=session.terminal_width,
+                unicode_style=True,  # pre-authentication -- see _write_connection_notice
             )
         )
         try:
@@ -2586,7 +2621,9 @@ async def _browse_boards_in_category(
     def _sort_label() -> str:
         return SORT_MODE_LABELS[mode_box["mode"]]
 
-    title = f"{title_prefix} — message boards" if title_prefix is not None else "Available message boards"
+    unicode_style = unicode_style_enabled(db, user)
+    title_sep = "›" if unicode_style else "-"
+    title = f"{title_prefix} {title_sep} message boards" if title_prefix is not None else "Available message boards"
 
     if not categories_here:
         async def on_sort_flat() -> list[Board] | None:
@@ -2607,6 +2644,7 @@ async def _browse_boards_in_category(
             empty_message="No message boards are available to you yet.",
             on_sort=on_sort_flat,
             sort_label=_sort_label,
+            unicode_style=unicode_style,
         )
         if board is not None:
             await _show_board(session, db, board, user, link_context=link_context)
@@ -2643,6 +2681,7 @@ async def _browse_boards_in_category(
         description_of=render_description,
         title=title,
         empty_message="No message boards are available to you yet.",
+        unicode_style=unicode_style,
     )
     if selected is None:
         return
@@ -2804,6 +2843,17 @@ async def _show_board(
             return
         draft_path = _post_draft_path(db, kind="new", board=board, user=user)
         body = await _compose_body(session, db, user, initial_text=initial_body, draft_path=draft_path)
+        if body is not None:
+            # `append_signature` is idempotent (its own docstring): a
+            # resumed draft (`initial_body`) may or may not already
+            # carry the signature depending on exactly when it was
+            # saved, and this can't cheaply tell which without that
+            # idempotency -- so it's always attempted here, safely,
+            # rather than only on a "first, fresh compose" heuristic
+            # that missed the /exit-then-resume case entirely.
+            signature = get_signature(db, user)
+            if signature:
+                body = append_signature(body, signature)
         if body is None:
             # Issue #149: /exit or /quit (either editor) leaves the
             # draft on disk instead of deleting it -- that's the one
@@ -3719,6 +3769,7 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
     draft: Draft = {
         "bio": await lane.run(get_bio, user) or "",
         "bio_visible": await lane.run(is_bio_visible, user),
+        "signature": await lane.run(get_signature, user) or "",
         "fullscreen_editor": await lane.run(fullscreen_editor_enabled, user),
         "accepts_dm": await lane.run(accepts_direct_messages, user),
         "history_name_visible": await lane.run(session_history_name_visible, user),
@@ -3733,6 +3784,10 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
     async def _bio_prompt(session: Session, lane: DatabaseLane, draft: Draft) -> None:
         await _edit_bio(session, lane, user)
         draft["bio"] = await lane.run(get_bio, user) or ""
+
+    async def _signature_prompt(session: Session, lane: DatabaseLane, draft: Draft) -> None:
+        await _edit_signature(session, lane, user)
+        draft["signature"] = await lane.run(get_signature, user) or ""
 
     async def _identity_details_prompt(session: Session, lane: DatabaseLane, draft: Draft) -> None:
         await _identity_details_screen(session, lane, user)
@@ -3807,6 +3862,12 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
                 "bio_visible", [False, True], persist=lambda lane, v: lane.run(set_bio_visible, user, v)
             ),
             brief="Toggle bio public/private",
+        ),
+        FieldSpec(
+            key="signature", hotkey="g", menu_text=menu_key("g", "nature", prefix="Si"), label="Signature",
+            render=lambda d: f"{len(d['signature'].splitlines())} line(s)" if d["signature"] else "(no signature set)",
+            prompt=_signature_prompt,
+            brief="Auto-appended to mail and posts you send",
         ),
         FieldSpec(
             key="fullscreen_editor", hotkey="f", menu_text=menu_key("F", "ullscreen editor"),
@@ -3977,6 +4038,56 @@ async def _edit_bio(session: Session, lane: DatabaseLane, user: User) -> None:
 
 def _bio_draft_path(db: Database, user: User) -> Path:
     return drafts_directory(db) / f"bio_{user.id}.draft"
+
+
+async def _edit_signature(session: Session, lane: DatabaseLane, user: User) -> None:
+    """Edits the signature auto-appended to mail/board posts
+    (`netbbs.signature.append_signature`) -- same shape as `_edit_bio`
+    immediately above (fullscreen prose editor or `edit_line_body`
+    depending on `netbbs.net.editor_preference`, a clear-if-blank
+    confirm, crash-recovery draft path), deliberately not deduplicated
+    with it: the two edit genuinely different fields with different
+    caps (`MAX_SIGNATURE_LINES`/`MAX_SIGNATURE_BYTES` vs. bio's own),
+    and `_edit_bio`'s own docstring already explains why this shape
+    exists over a bespoke line-at-a-time loop -- that reasoning applies
+    here unchanged, not something worth re-deriving via a shared helper
+    for two four-line call sites."""
+    if await lane.run(fullscreen_editor_enabled, user):
+        current = await lane.run(get_signature, user) or ""
+        result = await edit_prose(
+            session, initial_text=current, draft_path=await lane.run(_signature_draft_path, user),
+            max_bytes=MAX_SIGNATURE_BYTES,
+        )
+        if result is None:
+            return
+        text = result
+    else:
+        current = await lane.run(get_signature, user)
+        if current and await prompt_yes_no(session, "Clear your signature instead of editing it?", default=False):
+            await lane.run(set_signature, user, "")
+            await session.write_line("Signature cleared.")
+            return
+        result = await edit_line_body(
+            session,
+            initial_text=current,
+            max_bytes=MAX_SIGNATURE_BYTES,
+            max_lines=MAX_SIGNATURE_LINES,
+            draft_path=await lane.run(_signature_draft_path, user),
+        )
+        if result is None:
+            return
+        text = result
+
+    try:
+        await lane.run(set_signature, user, text)
+    except SignatureError as exc:
+        await session.write_line(colored(f"Could not save signature: {exc}", fg_color=MUTED_COLOR))
+        return
+    await session.write_line("Signature updated.")
+
+
+def _signature_draft_path(db: Database, user: User) -> Path:
+    return drafts_directory(db) / f"signature_{user.id}.draft"
 
 
 # -- identity attestation: self-reported profile fields (design doc §18) --

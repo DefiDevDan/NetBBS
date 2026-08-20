@@ -67,6 +67,7 @@ from netbbs.net.unicode_style_preference import unicode_style_enabled
 from netbbs.net.picker import pick_item
 from netbbs.net.prose_editor import edit_prose
 from netbbs.net.session import Session
+from netbbs.signature import append_signature, get_signature
 from netbbs.rendering import (
     ACCENT_COLOR,
     ERROR_COLOR,
@@ -75,6 +76,7 @@ from netbbs.rendering import (
     MUTED_COLOR,
     SUCCESS_COLOR,
     VALUE_COLOR,
+    WARNING_COLOR,
     MenuEntry,
     action_bar,
     colored,
@@ -120,7 +122,8 @@ async def browse_mail(
     itself already establishes for boards."""
     description_level = await lane.run(menu_description_level, user)
     redraw_in_place = await lane.run(redraw_in_place_enabled, user)
-    await _render_mail_menu(session, lane, user, description_level, redraw_in_place)
+    unicode_style = await lane.run(unicode_style_enabled, user)
+    await _render_mail_menu(session, lane, user, description_level, redraw_in_place, unicode_style)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -130,29 +133,30 @@ async def browse_mail(
         elif choice == "i":
             await session.write_line("")
             await _show_inbox(session, lane, user)
-            await _render_mail_menu(session, lane, user, description_level, redraw_in_place)
+            await _render_mail_menu(session, lane, user, description_level, redraw_in_place, unicode_style)
         elif choice == "s":
             await session.write_line("")
             await _show_sent(session, lane, user)
-            await _render_mail_menu(session, lane, user, description_level, redraw_in_place)
+            await _render_mail_menu(session, lane, user, description_level, redraw_in_place, unicode_style)
         elif choice == "c":
             await session.write_line("")
             await _compose_mail(session, lane, user, link_context=link_context)
-            await _render_mail_menu(session, lane, user, description_level, redraw_in_place)
+            await _render_mail_menu(session, lane, user, description_level, redraw_in_place, unicode_style)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
 async def _render_mail_menu(
-    session: Session, lane: DatabaseLane, user: User, description_level: str, redraw_in_place: bool = False
+    session: Session, lane: DatabaseLane, user: User, description_level: str, redraw_in_place: bool = False,
+    unicode_style: bool = False,
 ) -> None:
     unread = await lane.run(unread_count, user)
     subtitle = (
-        f"{unread} unread message{'s' if unread != 1 else ''}"
+        colored(f"{unread} unread message{'s' if unread != 1 else ''}", fg_color=WARNING_COLOR)
         if unread
-        else "Inbox caught up"
+        else colored("Inbox caught up", fg_color=SUCCESS_COLOR)
     )
-    header = screen_title("Mail", subtitle=subtitle, width=session.terminal_width, clear=redraw_in_place)
+    header = screen_title("Mail", subtitle=subtitle, width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style)
     await session.write_line(f"\r\n{header}")
 
     options = [
@@ -436,6 +440,14 @@ async def _compose_mail(
     if body is None or not body.strip():
         await session.write_line(colored("Message cancelled.", fg_color=MUTED_COLOR))
         return
+    # Appended once, right after the message is first composed -- not on
+    # every subsequent "edit body" pass over the same draft (`netbbs.
+    # signature.append_signature`'s own docstring): from here on the
+    # signature is just part of the editable body, the same way a real
+    # mail client's compose buffer already works.
+    signature = await lane.run(get_signature, user)
+    if signature:
+        body = append_signature(body, signature)
 
     review_description_level = await lane.run(menu_description_level, user)
     review_redraw_in_place = await lane.run(redraw_in_place_enabled, user)

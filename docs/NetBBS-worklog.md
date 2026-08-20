@@ -501,6 +501,24 @@ messages.
   sending fails clearly rather than silently dropping unread content.
 - Read receipts are not part of the current model.
 
+### Signature auto-append: idempotency, not a "first compose only" flag
+
+`netbbs.signature.append_signature` is called on every successful board-
+post/mail compose (`netbbs.net.login_flow._compose_new_post`/`netbbs.net.
+mail_flow._compose_mail`), not gated by "is this the first attempt" —
+that heuristic was tried first and is wrong. A board post's `/exit`-then-
+resume draft cycle can hand back a `body` that either never got the
+signature (saved before compose ever completed) or already has it
+(saved mid-review, after a first successful append) — the caller can't
+cheaply tell which apart from string inspection, so `append_signature`
+itself is idempotent (a `body` already ending in the exact signature
+block is returned unchanged) and is simply called unconditionally
+every time. Mail has no equivalent draft-resume entry point (its own
+draft file is crash-recovery only, never offered back to the caller as
+a resumable draft the way `_show_board` does for posts), so this
+edge case is specific to board posts, but the idempotent design is
+applied uniformly rather than special-cased per caller.
+
 ### Chat state and rendering
 
 `ChatHub` routes opaque objects and owns bounded per-participant queues. It
@@ -1974,6 +1992,56 @@ service supervisor in particular), not an assumption that it's most of
 the way there just because the pieces already exist and are tested in
 isolation.
 
+### GitHub's unauthenticated release-check rate limit, and what actually fixes it
+
+`check_latest_release` queries `api.github.com`'s unauthenticated REST
+API, capped at 60 requests/hour **per source IP**, not per-repo or
+per-install. `run_scheduled_update_check` fires this immediately on
+every node startup, then once every 24h — in steady production use
+that's one request/day, nowhere near the limit, but rapid restarts
+(an ordinary dev-loop, or a genuine crash-restart loop in production)
+burn the same budget independently on every restart and exhaust it
+easily. This was dogfooded directly: repeated local node
+restarts during a single session reliably produced "HTTP Error 403:
+rate limit exceeded."
+
+**Conditional requests (ETag/`If-None-Match`) do not fix this.**
+Confirmed directly against the real API (not from documentation): a
+`304 Not Modified` response still decrements the same rate-limit
+counter as an ordinary `200`, checked across several repeat requests
+with the response's own `X-RateLimit-Remaining` header. This
+contradicts a real but incorrect assumption made mid-implementation
+(GitHub's REST API does not exempt conditional requests from the
+primary limit, whatever may be true for other endpoints or eras of
+the API). `load_release_cache`/`save_release_cache`'s etag caching is
+still worth keeping — it saves bandwidth/JSON-parsing and gives a
+clean "nothing changed" signal — but it does not bound request
+*volume*, only cost-per-request. Two things actually do:
+
+- `run_scheduled_update_check`'s `min_recheck_interval_seconds`
+  cooldown (default 15 minutes) against the last recorded check
+  attempt — skips the immediate on-entry check on a rapid restart.
+- An optional GitHub PAT (`get_github_pat`/`set_github_pat`,
+  Self-update admin screen), sent as `Authorization: Bearer <token>` —
+  raises the ceiling itself, 60/hour → 5000/hour. A 401 (revoked/
+  expired token) gets its own specific `UpdateError` message rather
+  than the generic "could not reach" one, since the node did reach
+  GitHub — the stored credential is what's wrong.
+
+**Where a real secret goes, established here for the first time
+outside node/transport identity keys:** the PAT is stored as a plain,
+owner-only (`chmod 0600`) file next to the database
+(`github_pat_path`), never in the plaintext `node_config` SQLite
+table — the same "real secret is a colocated file, not a DB row"
+pattern `netbbs.net.ssh.ensure_host_key`/`netbbs.link.node_identity`
+already established for the node's own key material. No passphrase
+encryption at rest (unlike `Identity.save`'s optional path): a PAT is
+revocable/rotatable GitHub-side and read by an unattended background
+task on every startup, so encrypting it would reintroduce the
+headless-key-unlock problem that module's own docstring already flags
+as unsolved, for a credential whose minimal-scope prompt copy ("Public
+Repositories, read-only") is what actually bounds its blast radius.
+
 ### Bounds and visibility
 
 Every remotely influenced queue, mailbox, transfer, retry set, and retained
@@ -2015,6 +2083,30 @@ pages first, then corrupt bytes near the *end* of the file, so the damage
 lands in table data an already-fully-migrated `Database.__init__` never
 touches, and only an explicit full-table-scanning `PRAGMA integrity_check`
 catches it.
+
+### NetBSD/pkgsrc: a successful `cryptography` build can still fail to import at runtime
+
+A source-built `cryptography` (operator guide §1b) can build cleanly against
+pkgsrc's `openssl` and still fail every later `import asyncssh`/`import
+cryptography` with `ImportError: ...bindings/_rust.abi3.so: Shared object
+"libssl.so.3" not found` — confirmed on real NetBSD hardware. The build
+toolchain (pkgconf) finds pkgsrc's `libssl.so.3` under `/usr/pkg/lib` fine at
+*build* time; NetBSD's runtime linker does not search `/usr/pkg/lib` by
+default, and the base system ships its own, differently-versioned
+`/usr/lib/libssl.so.16`, which cannot satisfy the SONAME the extension was
+linked against. This is a build-vs-run search-path split, not a missing
+package — `pkg_info`/`find` will show `libssl.so.3` present and correct.
+
+Fix: put `/usr/pkg/lib` on the runtime linker's search path (`/etc/ld.so.conf`
++ `ldconfig`, or `LD_LIBRARY_PATH` for a single invocation). `examples/
+netbbs.rc` sets this for the rc.d service.
+
+This is exactly the failure class `__main__.py`'s SSH-startup import handling
+must not misreport: only "asyncssh is genuinely absent" may produce the
+"asyncssh is not installed" warning; any other import-time failure inside
+`netbbs.net.ssh` (this one included) must propagate with its real traceback,
+or the actual cause — a linker search-path gap, not a missing package — is
+undiagnosable from the log alone.
 
 ### Platform-specific code stays in exactly three narrow places (issue #81)
 

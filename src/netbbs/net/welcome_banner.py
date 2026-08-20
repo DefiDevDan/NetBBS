@@ -38,20 +38,31 @@ from pathlib import Path
 
 from netbbs.config import get_config, set_config
 from netbbs.rendering import HEADER_COLOR, RESET, colored, decode_ansi_bytes, gradient_text
+from netbbs.rendering.layout import double_frame
 from netbbs.storage.database import Database
 
 _logger = logging.getLogger(__name__)
 
-DEFAULT_WELCOME_BANNER = colored(
-    "+------------------------------------------------------+\r\n"
-    "|                                                      |\r\n"
-    "|                      N E T B B S                     |\r\n"
-    "|        conversations across independent nodes        |\r\n"
-    "|                                                      |\r\n"
-    "+------------------------------------------------------+\r\n"
-    "  NetBBS Link  /  private experimental federation",
-    fg_color=HEADER_COLOR,
-    bold=True,
+# Style spec (round following the pre-5.0.0 "beautify" audit): the
+# double-line frame is NetBBS's one standard panel style, not gated
+# behind a per-account `unicode_style` check here -- this banner is
+# shown pre-login, to anonymous connections with no account/preference
+# to look up yet, and (see `unicode_style_preference`'s own docstring)
+# NetBBS's Telnet transport already sends every screen as UTF-8
+# unconditionally regardless of any preference, so there's no separate
+# "safe ASCII" pre-login mode to fall back to here in the first place.
+DEFAULT_WELCOME_BANNER = (
+    double_frame(
+        [
+            "",
+            colored(" " * 21 + "N E T B B S", fg_color=HEADER_COLOR, bold=True),
+            colored(" " * 7 + "conversations across independent nodes", fg_color=HEADER_COLOR, bold=True),
+            "",
+        ],
+        width=58,
+    )
+    + "\r\n"
+    + colored("  NetBBS Link  ›  private experimental federation", fg_color=HEADER_COLOR, bold=True)
 )
 
 
@@ -71,22 +82,23 @@ def _default_welcome_banner(*, truecolor: bool) -> str:
     # The full-width border makes negotiated truecolor unmistakable at a
     # glance instead of confining the showcase to six subtly shaded letters.
     # The 256-color fallback above intentionally remains one flat cyan span.
-    border_text = "+------------------------------------------------------+"
+    border_text = "╔══════════════════════════════════════════════════════╗"
     border = gradient_text(border_text, "blue", bold=True, truecolor=True)
+    bottom_border = gradient_text(border_text.replace("╔", "╚").replace("╗", "╝"), "blue", bold=True, truecolor=True)
     wordmark = gradient_text("N E T B B S", "blue", bold=True, truecolor=True)
-    welcome_line = colored("|                      ", fg_color=HEADER_COLOR, bold=True) + wordmark + colored(
-        "                     |", fg_color=HEADER_COLOR, bold=True
+    welcome_line = colored("║                      ", fg_color=HEADER_COLOR, bold=True) + wordmark + colored(
+        "                     ║", fg_color=HEADER_COLOR, bold=True
     )
-    blank = colored("|                                                      |", fg_color=HEADER_COLOR, bold=True)
+    blank = colored("║                                                      ║", fg_color=HEADER_COLOR, bold=True)
     tagline = colored(
-        "|        conversations across independent nodes        |",
+        "║        conversations across independent nodes        ║",
         fg_color=HEADER_COLOR,
         bold=True,
     )
     subtitle = colored(
-        "  NetBBS Link  /  private experimental federation", fg_color=HEADER_COLOR, bold=True
+        "  NetBBS Link  ›  private experimental federation", fg_color=HEADER_COLOR, bold=True
     )
-    return "\r\n".join([border, blank, welcome_line, tagline, blank, border, subtitle])
+    return "\r\n".join([border, blank, welcome_line, tagline, blank, bottom_border, subtitle])
 
 # Comfortably covers realistic ANSI art (typically a few KB, rarely
 # above ~150 KB even for elaborate multi-panel pieces) while bounding a

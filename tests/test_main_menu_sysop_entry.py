@@ -104,8 +104,12 @@ def test_main_menu_is_a_two_column_home_surface_at_classic_width(tmp_path):
     asyncio.run(_draw_main_menu(session, db, MessageMailbox(), user))
 
     lines = _visible_text(session).splitlines()
-    assert "NetBBS / Main menu:" in lines
-    assert "alice  /  level 10  /  mail caught up" in lines
+    # Style spec (round following the pre-5.0.0 "beautify" audit): the
+    # main menu -- the single most-viewed screen in the app -- now
+    # actually uses this account's own unicode_style preference (on by
+    # default) instead of silently falling back to plain ASCII.
+    assert "NetBBS › Main menu:" in lines
+    assert "alice › level 10 › mail caught up" in lines
     assert any("EXPLORE" in line and "YOU" in line for line in lines)
     db.close()
 

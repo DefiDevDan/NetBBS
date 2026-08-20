@@ -157,7 +157,7 @@ def test_main_menu_e_key_opens_mail(tmp_path):
         _main_menu(session, db, ChatHub(), PresenceRegistry(), MessageMailbox(), InputHistory(), bob, lane=lane)
     )
 
-    assert "NetBBS / Mail" in _written_text(session)
+    assert "NetBBS › Mail" in _visible_text(session)
     assert "Inbox caught up" in _written_text(session)
     lane.close()
     db.close()
@@ -338,6 +338,42 @@ def test_compose_sends_a_message(tmp_path):
     inbox = list_inbox(db, bob)
     assert len(inbox) == 1
     assert inbox[0].subject == "Hello"
+    assert inbox[0].body == "How are you?"
+    lane.close()
+    db.close()
+
+
+def test_compose_appends_the_sender_signature(tmp_path):
+    from netbbs.signature import set_signature
+
+    db_path = tmp_path / "node.db"
+    db = Database(db_path)
+    alice = create_user(db, "alice", password="hunter2pw", user_level=10)
+    bob = create_user(db, "bob", password="hunter2pw", user_level=10)
+    set_signature(db, alice, "Alice")
+
+    session = FakeSession(keys=["c", "s", "b"], lines=["bob", "Hello", "How are you?", ""])
+    lane = DatabaseLane(db_path)
+    asyncio.run(browse_mail(session, lane, alice))
+
+    inbox = list_inbox(db, bob)
+    assert len(inbox) == 1
+    assert inbox[0].body == "How are you?\n-- \nAlice"
+    lane.close()
+    db.close()
+
+
+def test_compose_sends_no_signature_block_when_none_is_set(tmp_path):
+    db_path = tmp_path / "node.db"
+    db = Database(db_path)
+    alice = create_user(db, "alice", password="hunter2pw", user_level=10)
+    bob = create_user(db, "bob", password="hunter2pw", user_level=10)
+
+    session = FakeSession(keys=["c", "s", "b"], lines=["bob", "Hello", "How are you?", ""])
+    lane = DatabaseLane(db_path)
+    asyncio.run(browse_mail(session, lane, alice))
+
+    inbox = list_inbox(db, bob)
     assert inbox[0].body == "How are you?"
     lane.close()
     db.close()

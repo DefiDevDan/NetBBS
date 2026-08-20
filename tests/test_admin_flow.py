@@ -165,10 +165,13 @@ def test_sysop_lands_on_an_operations_overview(db, lane, sysop):
 
     _run(session, lane, sysop)
 
-    text = _written_text(session)
+    text = _visible(_written_text(session))
     assert "SysOp operations console" in text
-    assert "[LOCAL ADMIN]" in text
-    assert "[DISABLED]" in text
+    # Style spec (round following the pre-5.0.0 "beautify" audit): a
+    # live state indicator drops its brackets for a colored "●" dot by
+    # default -- "[LOCAL ADMIN]"/"[DISABLED]" are the pre-spec form.
+    assert "● LOCAL ADMIN" in text
+    assert "● DISABLED" in text
     assert "Moderation: 0 pending" in text
     assert "Backup: " in text and "never" in text
     assert "CONSOLE" in text
@@ -229,7 +232,7 @@ def test_dashboard_shows_real_node_scale_totals_not_just_pending_counts(db, lane
     session = FakeSession(["b"])
     _run(session, lane, sysop)
 
-    text = _written_text(session)
+    text = _visible(_written_text(session))
     assert "CONTENT" in text
     # 3 users: sysop, alice, plus the fixture's own db setup creates none
     # extra -- counted directly rather than hardcoded in case that
@@ -254,10 +257,10 @@ def test_live_sysop_overview_surfaces_node_and_link_health(db, lane, sysop):
         )
     )
 
-    text = _written_text(session)
-    assert "[ONLINE]" in text
+    text = _visible(_written_text(session))
+    assert "● ONLINE" in text
     assert "Active sessions: 0" in text
-    assert "[ATTENTION]" in text
+    assert "● ATTENTION" in text
     assert "Peers: 0" in text
     assert "Dead letters: 0" in text
     assert "ink status" in text
@@ -3305,7 +3308,7 @@ def _fake_release(tag: str):
 
 
 def test_update_screen_shows_no_prior_check(db, lane, sysop):
-    session = FakeSession(["s", "u", "n", "n", "b", "b"])
+    session = FakeSession(["s", "u", "n", "n", "n", "b", "b"])
     _run(session, lane, sysop)
     assert "No check has been run on this node yet." in _written_text(session)
 
@@ -3313,7 +3316,7 @@ def test_update_screen_shows_no_prior_check(db, lane, sysop):
 def test_update_screen_declining_check_leaves_state_unchanged(db, lane, sysop):
     from netbbs.selfupdate import get_last_check_summary
 
-    session = FakeSession(["s", "u", "n", "n", "b", "b"])
+    session = FakeSession(["s", "u", "n", "n", "n", "b", "b"])
     _run(session, lane, sysop)
     assert get_last_check_summary(db) == (None, None)
 
@@ -3323,16 +3326,16 @@ def test_update_screen_reports_up_to_date(db, lane, sysop, monkeypatch):
     from netbbs import __version__
     from netbbs.selfupdate import get_last_check_summary
 
-    async def fake_check(*, fetch=None):
-        return _fake_release(f"v{__version__}")
+    async def fake_check(*, known_etag=None, known_release=None, token=None, fetch=None):
+        return _fake_release(f"v{__version__}"), None
 
     monkeypatch.setattr(admin_flow, "check_latest_release", fake_check)
 
-    session = FakeSession(["s", "u", "y", "n", "b", "b"])
+    session = FakeSession(["s", "u", "y", "n", "n", "b", "b"])
     _run(session, lane, sysop)
 
-    text = _written_text(session)
-    assert "[UP TO DATE]" in text
+    text = _visible(_written_text(session))
+    assert "● UP TO DATE" in text
     assert __version__ in text
     _, outcome = get_last_check_summary(db)
     assert outcome == f"up to date ({__version__})"
@@ -3342,16 +3345,16 @@ def test_update_screen_reports_newer_release_without_auto_applying(db, lane, sys
     import netbbs.net.admin_flow as admin_flow
     from netbbs.selfupdate import get_last_check_summary
 
-    async def fake_check(*, fetch=None):
-        return _fake_release("v999.0.0")
+    async def fake_check(*, known_etag=None, known_release=None, token=None, fetch=None):
+        return _fake_release("v999.0.0"), None
 
     monkeypatch.setattr(admin_flow, "check_latest_release", fake_check)
 
-    session = FakeSession(["s", "u", "y", "n", "b", "b"])
+    session = FakeSession(["s", "u", "y", "n", "n", "b", "b"])
     _run(session, lane, sysop)
 
-    text = _written_text(session)
-    assert "[UPDATE AVAILABLE]" in text
+    text = _visible(_written_text(session))
+    assert "● UPDATE AVAILABLE" in text
     assert "v999.0.0" in text
     assert "Automatic download/apply is not yet available" in text
     _, outcome = get_last_check_summary(db)
@@ -3367,12 +3370,12 @@ def test_update_screen_handles_check_failure_gracefully(db, lane, sysop, monkeyp
     import netbbs.net.admin_flow as admin_flow
     from netbbs.selfupdate import UpdateError, get_last_check_summary
 
-    async def fake_check(*, fetch=None):
+    async def fake_check(*, known_etag=None, known_release=None, token=None, fetch=None):
         raise UpdateError("could not reach the release API: timed out")
 
     monkeypatch.setattr(admin_flow, "check_latest_release", fake_check)
 
-    session = FakeSession(["s", "u", "y", "n", "b", "b"])
+    session = FakeSession(["s", "u", "y", "n", "n", "b", "b"])
     _run(session, lane, sysop)
     assert "Could not check for updates: could not reach the release API: timed out" in _written_text(session)
     checked_at, outcome = get_last_check_summary(db)
@@ -3384,7 +3387,7 @@ def test_update_screen_toggles_auto_check(db, lane, sysop):
     from netbbs.selfupdate import get_auto_update_check_enabled
 
     assert get_auto_update_check_enabled(db) is True
-    session = FakeSession(["s", "u", "n", "y", "b", "b"])
+    session = FakeSession(["s", "u", "n", "n", "y", "b", "b"])
     _run(session, lane, sysop)
     assert get_auto_update_check_enabled(db) is False
     assert "off" in _written_text(session)
@@ -3393,7 +3396,7 @@ def test_update_screen_toggles_auto_check(db, lane, sysop):
 def test_update_screen_declining_toggle_leaves_auto_check_unchanged(db, lane, sysop):
     from netbbs.selfupdate import get_auto_update_check_enabled
 
-    session = FakeSession(["s", "u", "n", "n", "b", "b"])
+    session = FakeSession(["s", "u", "n", "n", "n", "b", "b"])
     _run(session, lane, sysop)
     assert get_auto_update_check_enabled(db) is True
 
@@ -3406,7 +3409,7 @@ def test_update_screen_shows_recent_check_history(db, lane, sysop):
     record_check_outcome(db, "up to date (v2.1.0)")
     record_check_outcome(db, "check failed: connection timed out")
 
-    session = FakeSession(["s", "u", "n", "n", "b", "b"])
+    session = FakeSession(["s", "u", "n", "n", "n", "b", "b"])
     _run(session, lane, sysop)
 
     text = _written_text(session)
@@ -3420,10 +3423,82 @@ def test_update_screen_hides_history_section_with_only_one_check(db, lane, sysop
 
     record_check_outcome(db, "up to date (v2.1.0)")
 
-    session = FakeSession(["s", "u", "n", "n", "b", "b"])
+    session = FakeSession(["s", "u", "n", "n", "n", "b", "b"])
     _run(session, lane, sysop)
 
     assert "Recent checks:" not in _written_text(session)
+
+
+# -- GitHub token (release-check rate-limit fix) -----------------------------
+
+
+def test_update_screen_shows_token_not_set_by_default(db, lane, sysop):
+    session = FakeSession(["s", "u", "n", "n", "n", "b", "b"])
+    _run(session, lane, sysop)
+    assert "not set" in _visible(_written_text(session))
+
+
+def test_update_screen_sets_a_token(db, lane, sysop):
+    from netbbs.selfupdate import get_github_pat
+
+    # check-now: n, set-token: y, <token text>, daily-toggle: n
+    session = FakeSession(["s", "u", "n", "y", "ghp_testtoken1234", "n", "b", "b"])
+    _run(session, lane, sysop)
+
+    assert get_github_pat(db) == "ghp_testtoken1234"
+    assert "GitHub token saved." in _written_text(session)
+    # The raw token is never echoed back into the screen's own output.
+    assert "ghp_testtoken1234" not in _visible(_written_text(session)).replace(
+        "GitHub token saved.", ""
+    )
+
+
+def test_update_screen_replaces_and_shows_masked_token_on_redraw(db, lane, sysop):
+    from netbbs.selfupdate import set_github_pat
+
+    set_github_pat(db, "ghp_oldtoken0000")
+    session = FakeSession(["s", "u", "n", "n", "n", "b", "b"])
+    _run(session, lane, sysop)
+    assert "…0000" in _visible(_written_text(session))
+
+
+def test_update_screen_clears_a_token_on_blank_input(db, lane, sysop):
+    from netbbs.selfupdate import get_github_pat, set_github_pat
+
+    set_github_pat(db, "ghp_oldtoken0000")
+    # check-now: n, replace/clear: y, blank -> clears, daily-toggle: n
+    session = FakeSession(["s", "u", "n", "y", "", "n", "b", "b"])
+    _run(session, lane, sysop)
+
+    assert get_github_pat(db) is None
+    assert "GitHub token cleared." in _written_text(session)
+
+
+def test_update_screen_declining_token_prompt_leaves_it_unchanged(db, lane, sysop):
+    from netbbs.selfupdate import get_github_pat
+
+    session = FakeSession(["s", "u", "n", "n", "n", "b", "b"])
+    _run(session, lane, sysop)
+    assert get_github_pat(db) is None
+
+
+def test_update_screen_manual_check_forwards_the_stored_token(db, lane, sysop, monkeypatch):
+    import netbbs.net.admin_flow as admin_flow
+    from netbbs.selfupdate import set_github_pat
+
+    set_github_pat(db, "ghp_testtoken1234")
+    seen_tokens = []
+
+    async def fake_check(*, known_etag=None, known_release=None, token=None, fetch=None):
+        seen_tokens.append(token)
+        return _fake_release("v0.0.1"), None
+
+    monkeypatch.setattr(admin_flow, "check_latest_release", fake_check)
+
+    session = FakeSession(["s", "u", "y", "n", "n", "b", "b"])
+    _run(session, lane, sysop)
+
+    assert seen_tokens == ["ghp_testtoken1234"]
 
 
 # -- node-wide timestamp display format/timezone ----------------------------
@@ -3798,10 +3873,10 @@ def test_diagnostic_log_tail_screen_shows_seeded_entries_and_stops_on_any_key(db
     session = FakeSession(["s", "f", "x", "b", "b"])
     asyncio.run(admin_menu(session, lane, sysop, link_context=link_context))
 
-    text = _written_text(session)
+    text = _visible(_written_text(session))
     assert "Diagnostic log (live)" in text
     assert "seeded entry" in text
-    assert "NetBBS / Settings" in text  # back at Settings -- tail actually ended
+    assert "NetBBS › Settings" in text  # back at Settings -- tail actually ended
 
 
 def test_diagnostic_log_tail_screen_appends_entries_written_while_watching(db, lane, monkeypatch):

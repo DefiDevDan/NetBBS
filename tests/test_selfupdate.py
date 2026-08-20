@@ -12,10 +12,13 @@ injected fetchers or real local files instead.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import io
 import json
 import sqlite3
+import sys
 import tarfile
+from urllib.error import HTTPError
 
 import pytest
 
@@ -24,18 +27,23 @@ from netbbs.selfupdate import (
     ReleaseInfo,
     UpdateError,
     check_latest_release,
+    clear_github_pat,
     confirm_update,
     download_and_extract_release,
     get_auto_update_check_enabled,
+    get_github_pat,
     get_last_check_summary,
     get_pending_update,
+    github_pat_path,
     is_newer,
+    masked_github_pat,
     prepare_update,
     record_check_outcome,
     restore_database,
     roll_back_update,
     run_scheduled_update_check,
     set_auto_update_check_enabled,
+    set_github_pat,
     snapshot_database,
 )
 from netbbs.storage.database import Database
@@ -74,21 +82,59 @@ def _fake_releases_json(*tags: str) -> bytes:
 
 
 def test_check_latest_release_returns_first_entry():
-    fetch = lambda url: _fake_releases_json("v2.3.0", "v2.2.0")
+    fetch = lambda url, etag, token=None: (_fake_releases_json("v2.3.0", "v2.2.0"), "etag-abc")
 
     async def scenario():
         return await check_latest_release(fetch=fetch)
 
-    release = asyncio.run(scenario())
+    release, new_etag = asyncio.run(scenario())
     assert release == ReleaseInfo(
         tag_name="v2.3.0",
         tarball_url="https://example.invalid/v2.3.0.tar.gz",
         published_at="2026-01-01T00:00:00Z",
     )
+    assert new_etag == "etag-abc"
+
+
+def test_check_latest_release_sends_known_etag_and_reuses_known_release_on_304():
+    """Confirms `check_latest_release` both sends `known_etag` through
+    to `fetch` and, on a "nothing changed" `(None, etag)` reply, returns
+    `known_release` unparsed rather than treating a `None` body as a
+    parse failure. (A 304 still costs the same rate-limit unit as any
+    other request -- confirmed against the real API -- so this saves
+    bandwidth/parsing, not budget; see `check_latest_release`'s own
+    docstring.)"""
+    seen_etags = []
+
+    def fetch(url, etag, token=None):
+        seen_etags.append(etag)
+        return None, etag
+
+    cached_release = ReleaseInfo(
+        tag_name="v2.3.0", tarball_url="https://example.invalid/v2.3.0.tar.gz", published_at="2026-01-01T00:00:00Z"
+    )
+
+    async def scenario():
+        return await check_latest_release(known_etag="etag-abc", known_release=cached_release, fetch=fetch)
+
+    release, new_etag = asyncio.run(scenario())
+    assert seen_etags == ["etag-abc"]
+    assert release == cached_release
+    assert new_etag == "etag-abc"
+
+
+def test_check_latest_release_raises_on_304_with_no_known_release():
+    fetch = lambda url, etag, token=None: (None, etag)
+
+    async def scenario():
+        await check_latest_release(known_etag="etag-abc", fetch=fetch)
+
+    with pytest.raises(UpdateError, match="304"):
+        asyncio.run(scenario())
 
 
 def test_check_latest_release_raises_on_empty_list():
-    fetch = lambda url: b"[]"
+    fetch = lambda url, etag, token=None: (b"[]", None)
 
     async def scenario():
         await check_latest_release(fetch=fetch)
@@ -98,7 +144,7 @@ def test_check_latest_release_raises_on_empty_list():
 
 
 def test_check_latest_release_raises_on_malformed_json():
-    fetch = lambda url: b"not json"
+    fetch = lambda url, etag, token=None: (b"not json", None)
 
     async def scenario():
         await check_latest_release(fetch=fetch)
@@ -108,7 +154,7 @@ def test_check_latest_release_raises_on_malformed_json():
 
 
 def test_check_latest_release_raises_on_missing_field():
-    fetch = lambda url: json.dumps([{"tag_name": "v2.3.0"}]).encode("utf-8")
+    fetch = lambda url, etag, token=None: (json.dumps([{"tag_name": "v2.3.0"}]).encode("utf-8"), None)
 
     async def scenario():
         await check_latest_release(fetch=fetch)
@@ -272,7 +318,7 @@ def test_scheduled_check_runs_immediately_and_records_an_outcome(tmp_path):
     announcer's always-wait-for-midnight shape, there's no meaningful
     "already done today" concept for a version check."""
     db = Database(tmp_path / "node.db")
-    fetch = lambda url: _fake_releases_json("v0.0.1")
+    fetch = lambda url, etag, token=None: (_fake_releases_json("v0.0.1"), None)
 
     sleep_calls: list[float] = []
     parked = asyncio.Event()
@@ -307,7 +353,7 @@ def test_scheduled_check_skips_a_pass_when_disabled(tmp_path):
     db = Database(tmp_path / "node.db")
     set_auto_update_check_enabled(db, False)
     fetch_calls: list[str] = []
-    fetch = lambda url: (fetch_calls.append(url), _fake_releases_json("v0.0.1"))[1]
+    fetch = lambda url, etag, token=None: (fetch_calls.append(url), (_fake_releases_json("v0.0.1"), None))[1]
 
     sleep_calls: list[float] = []
     parked = asyncio.Event()
@@ -356,7 +402,9 @@ def test_scheduled_check_tolerates_a_fetch_failure_and_still_sleeps(tmp_path):
 
     async def scenario():
         task = asyncio.create_task(
-            run_scheduled_update_check(db, fetch=lambda url: b"not json", sleep=fake_sleep, interval_seconds=3600.0)
+            run_scheduled_update_check(
+                db, fetch=lambda url, etag, token=None: (b"not json", None), sleep=fake_sleep, interval_seconds=3600.0
+            )
         )
         for _ in range(200):
             if sleep_calls:
@@ -375,6 +423,225 @@ def test_scheduled_check_tolerates_a_fetch_failure_and_still_sleeps(tmp_path):
     assert checked_at is not None
     assert outcome is not None and outcome.startswith("check failed:")
     db.close()
+
+
+def test_scheduled_check_skips_the_immediate_check_within_the_cooldown(tmp_path):
+    """The actual fix for restart-exhausted rate limits: etag caching
+    alone doesn't reduce request volume (confirmed against the real
+    API -- a 304 costs the same unit as any other request), so a
+    restart soon after the last attempt must skip the immediate check
+    entirely rather than merely make it cheaper."""
+    db = Database(tmp_path / "node.db")
+    record_check_outcome(db, "up to date (v1.0.0)")  # simulates a check moments ago
+    checked_at, _ = get_last_check_summary(db)
+    just_after = datetime.datetime.strptime(checked_at, "%Y-%m-%dT%H:%M:%S.%fZ").replace(
+        tzinfo=datetime.timezone.utc
+    ) + datetime.timedelta(seconds=5)
+
+    fetch_calls: list[str] = []
+    fetch = lambda url, etag, token=None: (fetch_calls.append(url), (b"[]", None))[1]
+
+    sleep_calls: list[float] = []
+    parked = asyncio.Event()
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        await parked.wait()
+
+    async def scenario():
+        task = asyncio.create_task(
+            run_scheduled_update_check(
+                db,
+                fetch=fetch,
+                sleep=fake_sleep,
+                interval_seconds=3600.0,
+                min_recheck_interval_seconds=900.0,
+                now=lambda: just_after,
+            )
+        )
+        for _ in range(200):
+            if sleep_calls:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(scenario())
+
+    assert fetch_calls == []  # skipped entirely -- not even a conditional request
+    assert sleep_calls == [3600.0]
+    db.close()
+
+
+def test_scheduled_check_still_runs_immediately_once_the_cooldown_elapses(tmp_path):
+    db = Database(tmp_path / "node.db")
+    record_check_outcome(db, "up to date (v1.0.0)")
+    checked_at, _ = get_last_check_summary(db)
+    well_after = datetime.datetime.strptime(checked_at, "%Y-%m-%dT%H:%M:%S.%fZ").replace(
+        tzinfo=datetime.timezone.utc
+    ) + datetime.timedelta(seconds=901)
+
+    fetch_calls: list[str] = []
+    fetch = lambda url, etag, token=None: (fetch_calls.append(url), (_fake_releases_json("v0.0.1"), None))[1]
+
+    sleep_calls: list[float] = []
+    parked = asyncio.Event()
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        await parked.wait()
+
+    async def scenario():
+        task = asyncio.create_task(
+            run_scheduled_update_check(
+                db,
+                fetch=fetch,
+                sleep=fake_sleep,
+                interval_seconds=3600.0,
+                min_recheck_interval_seconds=900.0,
+                now=lambda: well_after,
+            )
+        )
+        for _ in range(200):
+            if sleep_calls:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(scenario())
+
+    assert len(fetch_calls) == 1
+    db.close()
+
+
+def test_scheduled_check_forwards_a_stored_github_token(tmp_path):
+    db = Database(tmp_path / "node.db")
+    set_github_pat(db, "ghp_abc123")
+
+    seen_tokens: list[str | None] = []
+
+    def fetch(url, etag, token=None):
+        seen_tokens.append(token)
+        return _fake_releases_json("v0.0.1"), None
+
+    sleep_calls: list[float] = []
+    parked = asyncio.Event()
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        await parked.wait()
+
+    async def scenario():
+        task = asyncio.create_task(
+            run_scheduled_update_check(db, fetch=fetch, sleep=fake_sleep, interval_seconds=3600.0)
+        )
+        for _ in range(200):
+            if sleep_calls:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(scenario())
+
+    assert seen_tokens == ["ghp_abc123"]
+    db.close()
+
+
+# -- GitHub personal access token storage ------------------------------------
+
+
+def test_github_pat_round_trips_through_storage(tmp_path):
+    db = Database(tmp_path / "node.db")
+    assert get_github_pat(db) is None
+    assert masked_github_pat(db) is None
+
+    set_github_pat(db, "ghp_abcdEFGH1234")
+    assert get_github_pat(db) == "ghp_abcdEFGH1234"
+    assert masked_github_pat(db) == "…1234"
+
+    clear_github_pat(db)
+    assert get_github_pat(db) is None
+    assert masked_github_pat(db) is None
+    db.close()
+
+
+def test_github_pat_rejects_a_blank_token(tmp_path):
+    db = Database(tmp_path / "node.db")
+    with pytest.raises(ValueError):
+        set_github_pat(db, "   ")
+    db.close()
+
+
+def test_github_pat_strips_surrounding_whitespace(tmp_path):
+    db = Database(tmp_path / "node.db")
+    set_github_pat(db, "  ghp_abc123  \n")
+    assert get_github_pat(db) == "ghp_abc123"
+    db.close()
+
+
+def test_github_pat_is_stored_next_to_the_database_not_in_node_config(tmp_path):
+    """A bearer credential belongs in a plain, owner-only file next to
+    the database -- the same "real secret, not a node_config row"
+    pattern `netbbs.net.ssh.ensure_host_key`/`netbbs.link.node_identity`
+    already establish -- never in the plaintext `node_config` table."""
+    db = Database(tmp_path / "node.db")
+    set_github_pat(db, "ghp_abc123")
+    path = github_pat_path(db)
+    assert path.parent == db.path.parent
+    assert path.exists()
+    assert "ghp_abc123" in path.read_text()
+    row = db.connection.execute(
+        "SELECT value FROM node_config WHERE value LIKE '%ghp_abc123%'"
+    ).fetchone()
+    assert row is None
+    db.close()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file permission bits")
+def test_github_pat_file_is_owner_only_readable(tmp_path):
+    import stat
+
+    db = Database(tmp_path / "node.db")
+    set_github_pat(db, "ghp_abc123")
+    mode = github_pat_path(db).stat().st_mode
+    assert stat.S_IMODE(mode) == stat.S_IRUSR | stat.S_IWUSR
+    db.close()
+
+
+def test_check_latest_release_sends_authorization_header_when_token_given():
+    seen_tokens = []
+
+    def fetch(url, etag, token=None):
+        seen_tokens.append(token)
+        return _fake_releases_json("v2.3.0"), None
+
+    async def scenario():
+        return await check_latest_release(token="ghp_abc123", fetch=fetch)
+
+    asyncio.run(scenario())
+    assert seen_tokens == ["ghp_abc123"]
+
+
+def test_check_latest_release_raises_a_specific_message_on_401():
+    def fetch(url, etag, token=None):
+        raise HTTPError(url, 401, "Unauthorized", {}, None)
+
+    async def scenario():
+        await check_latest_release(token="bad-token", fetch=fetch)
+
+    with pytest.raises(UpdateError, match="401"):
+        asyncio.run(scenario())
 
 
 # -- pending-update state machine --------------------------------------------

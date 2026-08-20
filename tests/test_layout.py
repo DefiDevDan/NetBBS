@@ -73,13 +73,21 @@ def test_screen_title_unicode_style_colors_ancestors_muted_and_title_prominent()
     assert colored("Trust policy", fg_color=METADATA_COLOR) not in result
 
 
-def test_screen_title_unicode_style_with_no_breadcrumb_is_unaffected():
+def test_screen_title_unicode_style_with_no_breadcrumb_only_affects_the_rule():
     """A single-segment title (breadcrumb=()) has no ancestor level to
-    color differently or separator to swap -- unicode_style is simply a
-    no-op here, not an error."""
+    color differently or separator to swap, so the title line itself is
+    unaffected -- but the divider rule is a standalone style choice (style
+    spec, round following the pre-5.0.0 "beautify" audit: "─" replaces "-"
+    wherever `unicode_style` is on, independent of breadcrumb depth), so
+    it still switches glyph here."""
     plain = screen_title("Home", breadcrumb=(), width=80)
     styled = screen_title("Home", breadcrumb=(), width=80, unicode_style=True)
-    assert plain == styled
+    plain_lines = plain.split("\r\n")
+    styled_lines = styled.split("\r\n")
+    assert plain_lines[0] == styled_lines[0]
+    assert plain_lines[-1] != styled_lines[-1]
+    assert "-" * 4 in plain_lines[-1]
+    assert "─" * 4 in styled_lines[-1]
 
 
 def test_screen_title_truncates_every_visible_line_to_terminal_width():

@@ -18,11 +18,7 @@
 # /etc/rc.d/netbbs, add netbbs=YES to /etc/rc.conf, then run
 # `service netbbs start`. NetBBS itself is not distributed via pkgsrc.
 #
-# NOT YET BUILD/RUN-TESTED ON REAL NetBSD HARDWARE (design doc §2.1):
-# written to follow standard rc.subr(8) conventions and reviewed
-# against them, but not yet exercised on this project's actual Tier-1
-# target. Please report back (or send a fix) if this needs adjustment
-# on a real box.
+# Build/run-tested on real NetBSD hardware (design doc §2.1 Tier 1).
 
 . /etc/rc.subr
 
@@ -31,9 +27,21 @@ rcvar=${name}
 : ${netbbs_user:="netbbs"}
 : ${netbbs_config:="/usr/pkg/etc/netbbs/netbbs.toml"}
 : ${netbbs_python:="/usr/pkg/bin/python3.12"}
+: ${netbbs_ld_library_path:="/usr/pkg/lib"}
 
 pidfile="/var/run/${name}.pid"
 procname="${netbbs_python}"
+
+# netbbs_ld_library_path (operator guide §1b): a `cryptography` built
+# against pkgsrc's openssl links against /usr/pkg/lib/libssl.so.3, but
+# NetBSD's runtime linker doesn't search /usr/pkg/lib by default and
+# the base system's own /usr/lib/libssl.so.16 can't satisfy that
+# SONAME -- confirmed on real hardware as an `import asyncssh` failure
+# ("Shared object libssl.so.3 not found") even though the package is
+# correctly installed. Only matters when the ssh extra is in use;
+# harmless otherwise. Set empty in rc.conf to disable.
+LD_LIBRARY_PATH="${netbbs_ld_library_path}"
+export LD_LIBRARY_PATH
 
 # NetBBS deliberately never daemonizes itself (design doc §13.8): it
 # runs in the foreground and expects a supervisor to background and

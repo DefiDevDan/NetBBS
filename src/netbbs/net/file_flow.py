@@ -257,6 +257,7 @@ async def _browse_areas_in_category(
     areas_here, categories_here, category_name, community_name = await lane.run(_load, current_mode)
     description_level = await lane.run(menu_description_level, user)
     redraw_in_place = await lane.run(redraw_in_place_enabled, user)
+    unicode_style = await lane.run(unicode_style_enabled, user)
     mode_box = {"mode": current_mode}
 
     async def _persist_sort_choice(mode: str, scope_kwargs: dict) -> None:
@@ -272,7 +273,8 @@ async def _browse_areas_in_category(
     def _sort_label() -> str:
         return SORT_MODE_LABELS[mode_box["mode"]]
 
-    title = f"{title_prefix} — file areas" if title_prefix is not None else "Available file areas"
+    title_sep = "›" if unicode_style else "-"
+    title = f"{title_prefix} {title_sep} file areas" if title_prefix is not None else "Available file areas"
 
     if not categories_here:
         async def on_sort_flat() -> list[FileArea] | None:
@@ -295,6 +297,7 @@ async def _browse_areas_in_category(
             sort_label=_sort_label,
             description_level=description_level,
             redraw_in_place=redraw_in_place,
+            unicode_style=unicode_style,
         )
         if area is not None:
             await _show_area(session, lane, area, user, link_context=link_context)
@@ -333,6 +336,7 @@ async def _browse_areas_in_category(
         empty_message="No file areas are available to you yet.",
         description_level=description_level,
         redraw_in_place=redraw_in_place,
+        unicode_style=unicode_style,
     )
     if selected is None:
         return

@@ -14,11 +14,13 @@ from dataclasses import dataclass
 from netbbs.rendering.ansi import clear_screen, colored
 from netbbs.rendering.reflow import colored_truncate
 from netbbs.rendering.theme import (
+    ACCENT_COLOR,
     ERROR_COLOR,
     HEADER_COLOR,
     METADATA_COLOR,
     MUTED_COLOR,
     SUCCESS_COLOR,
+    VALUE_COLOR,
     WARNING_COLOR,
 )
 from netbbs.rendering.width import cut_to_width, display_width, wrap_to_width
@@ -50,19 +52,106 @@ def visible_width(text: str) -> int:
     return display_width(_SGR_RE.sub("", text))
 
 
+_BADGE_TONE_COLORS = {
+    "neutral": METADATA_COLOR,
+    "success": SUCCESS_COLOR,
+    "warning": WARNING_COLOR,
+    "error": ERROR_COLOR,
+}
+
+
 def badge(text: str, *, tone: str = "neutral") -> str:
     """Render a compact semantic label without assuming Unicode support."""
-    colors = {
-        "neutral": METADATA_COLOR,
-        "success": SUCCESS_COLOR,
-        "warning": WARNING_COLOR,
-        "error": ERROR_COLOR,
-    }
     try:
-        color = colors[tone]
+        color = _BADGE_TONE_COLORS[tone]
     except KeyError as exc:
         raise ValueError(f"unknown badge tone: {tone}") from exc
     return colored(f"[{text}]", fg_color=color, bold=True)
+
+
+def status_badge(text: str, *, tone: str = "neutral", unicode_style: bool = False) -> str:
+    """Render a live health/state indicator (design doc, style spec
+    round following the pre-5.0.0 "beautify" audit): a colored "●" plus
+    the state word, no brackets, when `unicode_style` is on -- Thiesi's
+    own call after seeing that audit's mockups: the dot alone already
+    reads as "this is an indicator," which is exactly the job the
+    bracket used to do, so keeping both would be redundant rather than
+    extra-clear. Falls back to `badge()`'s bracketed form byte-for-byte
+    when `unicode_style` is off.
+
+    Reserved for genuine state -- online/disabled, accepted/not
+    accepted, up to date/update available, live -- not every bracketed
+    tag in the app. A file size, an "edited" marker, or a "HISTORY"
+    label isn't reporting whether something is healthy right now, so
+    those stay on plain `badge()`; conflating "tag" and "status" would
+    make the dot mean less, not more.
+    """
+    try:
+        color = _BADGE_TONE_COLORS[tone]
+    except KeyError as exc:
+        raise ValueError(f"unknown badge tone: {tone}") from exc
+    if not unicode_style:
+        return colored(f"[{text}]", fg_color=color, bold=True)
+    return colored(f"● {text}", fg_color=color, bold=True)
+
+
+def double_frame(lines: Sequence[str], *, width: int) -> str:
+    """Frame already-styled `lines` in a double-line Unicode box (style
+    spec: the double-line frame is NetBBS's one standard panel frame,
+    not reserved to a single screen -- Thiesi's own call after the
+    pre-5.0.0 "beautify" audit's mockups, which had proposed keeping it
+    exclusive to the welcome banner). Each line is left-padded by one
+    column and right-padded to `width` inside the frame; callers own
+    truncating/wrapping their own content to fit first (this function
+    doesn't call `cut_to_width` itself since a caller mixing plain and
+    `colored()` text needs `visible_width`, not `len`, to measure it,
+    and only the caller knows which its lines are)."""
+    if width < 4:
+        raise ValueError("width must be >= 4 to fit a frame")
+    inner_width = width - 4
+    top = colored("╔" + "═" * (width - 2) + "╗", fg_color=HEADER_COLOR, bold=True)
+    bottom = colored("╚" + "═" * (width - 2) + "╝", fg_color=HEADER_COLOR, bold=True)
+    body = []
+    for line in lines:
+        pad = max(0, inner_width - visible_width(line))
+        body.append(
+            colored("║ ", fg_color=HEADER_COLOR, bold=True)
+            + line
+            + " " * pad
+            + colored(" ║", fg_color=HEADER_COLOR, bold=True)
+        )
+    return "\r\n".join([top, *body, bottom])
+
+
+def field_row(fields: Sequence[tuple[str, int | None]], *, unicode_style: bool) -> str:
+    """Join a row of independent facts (style spec: "use color to
+    separate different fields on the same row" -- Thiesi's own
+    follow-up request after the pre-5.0.0 "beautify" audit) with the
+    same canonical separator `screen_title`'s breadcrumb already uses --
+    `" › "` under `unicode_style`, the existing plain `"  /  "` when
+    it's off -- so a multi-field status line (a session subtitle, a
+    console summary row) reads as separate colored facts instead of one
+    flat-gray sentence. Each field is `(text, color)`; `color=None`
+    keeps the existing muted-gray convention for that one field."""
+    separator = colored(" › ", fg_color=METADATA_COLOR) if unicode_style else "  /  "
+    return separator.join(
+        colored(text, fg_color=color if color is not None else METADATA_COLOR) for text, color in fields
+    )
+
+
+def counts_row(pairs: Sequence[tuple[str, int]]) -> str:
+    """Render a `Label: N  Label2: N2` summary row (style spec: "use
+    color to separate different fields on the same row") with every
+    label in `METADATA_COLOR` and every count in `VALUE_COLOR`, bold --
+    so the numbers a SysOp actually scans for stand out from the labels
+    around them instead of the whole row reading as one flat sentence.
+    Unconditional, not `unicode_style`-gated: this is a color choice,
+    not a glyph substitution, so it applies the same regardless of that
+    preference."""
+    return "  ".join(
+        colored(f"{label}: ", fg_color=METADATA_COLOR) + colored(str(count), fg_color=VALUE_COLOR, bold=True)
+        for label, count in pairs
+    )
 
 
 def empty_state(
@@ -113,6 +202,15 @@ def screen_title(
 ) -> str:
     """Render a compact location/title block with a divider.
 
+    `subtitle` accepts either plain text (colored `METADATA_COLOR` and
+    cut to `width` here, as always) or an already-styled string such as
+    `field_row()`'s output (style spec, round following the pre-5.0.0
+    "beautify" audit: "use color to separate different fields on the
+    same row") -- detected by the presence of an SGR escape, since a
+    pre-styled subtitle must not be re-cut here (`cut_to_width` isn't
+    SGR-aware) and is trusted to already fit `width`, the same way a
+    `MenuEntry.label` is.
+
     `clear` (dogfood feature request -- `netbbs.net.redraw_preference`),
     if `True`, prepends `clear_screen()` -- home the cursor and blank
     the terminal -- so this screen replaces whatever was there instead
@@ -158,8 +256,17 @@ def screen_title(
         location_line = colored(cut_to_width(plain_location, width), fg_color=HEADER_COLOR, bold=True)
     lines = [location_line]
     if subtitle:
-        lines.append(colored(cut_to_width(subtitle, width), fg_color=METADATA_COLOR))
-    lines.append(colored("-" * min(width, max(12, display_width(plain_location))), fg_color=METADATA_COLOR))
+        if _SGR_RE.search(subtitle):
+            # Already styled (e.g. `field_row()`'s per-field colors) --
+            # `cut_to_width` isn't SGR-aware and would count/slice escape
+            # bytes as visible columns, corrupting the sequences. Trust
+            # the caller to fit its own width, the same way `menu_grid`
+            # already trusts a `MenuEntry.label`'s pre-styled text.
+            lines.append(subtitle)
+        else:
+            lines.append(colored(cut_to_width(subtitle, width), fg_color=METADATA_COLOR))
+    rule_char = "─" if unicode_style else "-"
+    lines.append(colored(rule_char * min(width, max(12, display_width(plain_location))), fg_color=METADATA_COLOR))
     result = "\r\n".join(lines)
     return f"{clear_screen()}{result}" if clear else result
 

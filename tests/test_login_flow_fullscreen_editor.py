@@ -507,3 +507,23 @@ def test_edit_bio_prefills_the_fullscreen_editor_with_the_current_bio(db, lane, 
     session = FakeSession(["e", "END"] + _type(" - updated") + ["CTRL+O", "b"])
     asyncio.run(login_flow._edit_profile(session, lane, alice))
     assert get_bio(db, alice) == "Original bio - updated"
+
+
+def test_edit_signature_uses_fullscreen_editor_once_opted_in(db, lane, alice):
+    from netbbs.signature import get_signature
+
+    set_fullscreen_editor_enabled(db, alice, True)
+    session = FakeSession(["g"] + _type("Alice") + ["CTRL+O", "b"])
+    asyncio.run(login_flow._edit_profile(session, lane, alice))
+    assert get_signature(db, alice) == "Alice"
+    assert "Signature updated" in _written_text(session)
+
+
+def test_edit_signature_prefills_the_fullscreen_editor_with_the_current_signature(db, lane, alice):
+    from netbbs.signature import get_signature, set_signature
+
+    set_signature(db, alice, "Original signature")
+    set_fullscreen_editor_enabled(db, alice, True)
+    session = FakeSession(["g", "END"] + _type(" - updated") + ["CTRL+O", "b"])
+    asyncio.run(login_flow._edit_profile(session, lane, alice))
+    assert get_signature(db, alice) == "Original signature - updated"

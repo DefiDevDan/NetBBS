@@ -87,6 +87,25 @@ install the equivalent Rust, C compiler, Python-development, OpenSSL-
 development, libffi-development, and pkg-config packages for that
 distribution.
 
+**A successful build can still fail to *import* on NetBSD.** Confirmed on
+real hardware: `cryptography` builds cleanly against pkgsrc's `openssl`
+(pkgconf finds `/usr/pkg/lib/libssl.so.3` fine at build time), but `python -c
+"import asyncssh"` then fails with `ImportError: ...bindings/_rust.abi3.so:
+Shared object "libssl.so.3" not found`. NetBSD's runtime linker does not
+search `/usr/pkg/lib` by default, and the base system's own
+`/usr/lib/libssl.so.16` is a different, incompatible version — so the package
+*is* present (`pkg_info` will confirm it) but unreachable at runtime. Add
+`/usr/pkg/lib` to the linker's search path before starting NetBBS:
+
+```sh
+echo /usr/pkg/lib | sudo tee -a /etc/ld.so.conf
+sudo ldconfig
+```
+
+`examples/netbbs.rc` sets `LD_LIBRARY_PATH` for the rc.d service
+automatically; a manual/foreground run needs one of the two fixes above (or
+`LD_LIBRARY_PATH=/usr/pkg/lib` on that one invocation) if SSH is enabled.
+
 ## 2. First run
 
 Create a dedicated, unprivileged system user and a state directory —

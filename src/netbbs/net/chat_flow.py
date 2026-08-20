@@ -176,6 +176,7 @@ from netbbs.rendering import (
     save_cursor,
     screen_title,
     set_scroll_region,
+    status_badge,
     truncate,
 )
 from netbbs.sort_preferences import get_effective_sort_mode, set_sort_preference
@@ -507,7 +508,9 @@ async def _pick_channel(
     def _sort_label() -> str:
         return _CHANNEL_SORT_MODE_LABELS[mode_box["mode"]]
 
-    title = f"{title_prefix} — chat channels" if title_prefix is not None else "Available chat channels"
+    unicode_style = await lane.run(unicode_style_enabled, user)
+    title_sep = "›" if unicode_style else "-"
+    title = f"{title_prefix} {title_sep} chat channels" if title_prefix is not None else "Available chat channels"
 
     if not categories_here:
         async def on_sort_flat() -> list[Channel] | None:
@@ -528,6 +531,7 @@ async def _pick_channel(
             empty_message="No chat channels are available to you yet.",
             on_sort=on_sort_flat,
             sort_label=_sort_label,
+            unicode_style=unicode_style,
         )
 
     mixed: list[Category | Channel] = [*categories_here, *channels_here]
@@ -561,6 +565,7 @@ async def _pick_channel(
         description_of=render_description,
         title=title,
         empty_message="No chat channels are available to you yet.",
+        unicode_style=unicode_style,
     )
     if selected is None:
         return None
@@ -3199,13 +3204,14 @@ async def _chat_loop(
         channel_label = colored(f"#{safe_channel_name}", fg_color=ACCENT_COLOR, bold=True)
         quit_hint = menu_key("/quit", " to leave")
 
+        unicode_style = await lane.run(unicode_style_enabled, user)
         heading = screen_title(
             f"#{safe_channel_name}",
             breadcrumb=("NetBBS", "Chat"),
             subtitle=sanitize_text(channel.topic or channel.description or "Live conversation"),
             width=session.terminal_width,
             clear=await lane.run(redraw_in_place_enabled, user),
-            unicode_style=await lane.run(unicode_style_enabled, user),
+            unicode_style=unicode_style,
         )
         await session.write_line(f"\r\n{heading}")
 
@@ -3231,7 +3237,7 @@ async def _chat_loop(
             # so the last element is the newest.
             await lane.run(record_channel_seen, user, channel, scrollback[-1])
 
-        await session.write_line(f"\r\n{badge('LIVE', tone='success')} Joined {channel_label}. Type {quit_hint}.")
+        await session.write_line(f"\r\n{status_badge('LIVE', tone='success', unicode_style=unicode_style)} Joined {channel_label}. Type {quit_hint}.")
         # author_label is stored raw here (user.username, not a sanitized/
         # alias-aware label) -- sanitize on output, not on storage, per
         # sanitize_text's docstring; only the rendered copy each recipient's
@@ -3638,7 +3644,7 @@ async def _chat_loop(
                 # unconditionally too, kept in that same lockstep.
                 link_context.realtime_bridge.register_local_interest(channel.channel_id, id(session))
                 await deliver(
-                    f"{badge('LIVE', tone='success')} "
+                    f"{status_badge('LIVE', tone='success', unicode_style=unicode_style)} "
                     + colored("Real-time link to this channel's origin is up.", fg_color=MUTED_COLOR)
                 )
                 await live.closed.wait()

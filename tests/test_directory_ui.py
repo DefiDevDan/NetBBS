@@ -257,6 +257,70 @@ def test_edit_profile_bio_declining_the_clear_prompt_proceeds_to_edit(tmp_path):
     lane.close()
 
 
+# -- signature (mirrors bio's own tests above -- same shared editor shape) --
+
+
+def test_edit_profile_signature_shows_no_signature_set_by_default(tmp_path):
+    db = Database(tmp_path / "node.db")
+    lane = DatabaseLane(db.path)
+    user = create_user(db, "alice", password="hunter2", user_level=10)
+    session = FakeSession(keys=["b"])
+
+    asyncio.run(_edit_profile(session, lane, user))
+
+    assert "no signature set" in session.output
+    lane.close()
+    db.close()
+
+
+def test_edit_profile_signature_updates_stored_signature(tmp_path):
+    from netbbs.signature import get_signature
+
+    db = Database(tmp_path / "node.db")
+    lane = DatabaseLane(db.path)
+    user = create_user(db, "alice", password="hunter2", user_level=10)
+    session = FakeSession(keys=["g", "b"], lines=["Alice", ""])
+
+    asyncio.run(_edit_profile(session, lane, user))
+
+    assert get_signature(db, user) == "Alice"
+    assert "Signature updated." in session.output
+    lane.close()
+
+
+def test_edit_profile_signature_confirming_the_clear_prompt_clears_it(tmp_path):
+    from netbbs.signature import get_signature, set_signature
+
+    db = Database(tmp_path / "node.db")
+    lane = DatabaseLane(db.path)
+    user = create_user(db, "alice", password="hunter2", user_level=10)
+    set_signature(db, user, "Old signature")
+    session = FakeSession(keys=["g", "b"], lines=["y"])
+
+    asyncio.run(_edit_profile(session, lane, user))
+
+    assert get_signature(db, user) == ""
+    assert "Signature cleared." in session.output
+    lane.close()
+
+
+def test_edit_profile_signature_declining_the_clear_prompt_proceeds_to_edit(tmp_path):
+    from netbbs.signature import get_signature, set_signature
+
+    db = Database(tmp_path / "node.db")
+    lane = DatabaseLane(db.path)
+    user = create_user(db, "alice", password="hunter2", user_level=10)
+    set_signature(db, user, "Old signature")
+    session = FakeSession(keys=["g", "b"], lines=["", ""])
+
+    asyncio.run(_edit_profile(session, lane, user))
+
+    assert get_signature(db, user) == "Old signature"
+    lane.close()
+
+
+
+
 def test_edit_profile_bio_keeps_accepted_lines_when_a_later_one_exceeds_the_byte_cap(tmp_path):
     # Dogfood follow-up: the old bespoke read-loop only checked the
     # byte cap in one `try/except` after every line was already typed,

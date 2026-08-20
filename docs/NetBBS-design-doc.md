@@ -4145,7 +4145,9 @@ install (a real, tested non-editable wheel build/install with no
 source-checkout dependency, now sourced only from official GitHub
 releases), first-SysOp bootstrap via the existing `netbbs.admin`
 CLI, running under systemd/rc.d (`examples/netbbs.service`/`netbbs.rc`,
-the rc.d script not yet run-tested on real NetBSD hardware), persistent
+the rc.d script since confirmed working on real NetBSD hardware,
+including its `LD_LIBRARY_PATH` handling for the pkgsrc-vs-base OpenSSL
+runtime-linking gap documented in the worklog §10), persistent
 state paths, backup/restore (linking the existing disaster-recovery
 drill), upgrading, version/schema compatibility, and uninstalling
 without losing data. `python -m netbbs --version` (issue #82) prints
