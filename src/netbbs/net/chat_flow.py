@@ -511,8 +511,9 @@ async def _pick_channel(
 
     unicode_style = await lane.run(unicode_style_enabled, user)
     collapsed = await lane.run(breadcrumb_collapsed_enabled, user)
-    title_sep = "›" if unicode_style else "-"
-    title = f"{title_prefix} {title_sep} chat channels" if title_prefix is not None else "Available chat channels"
+    redraw_in_place = await lane.run(redraw_in_place_enabled, user)
+    title = "Chat channels" if title_prefix is not None else "Available chat channels"
+    picker_breadcrumb = (title_prefix,) if title_prefix is not None else ()
 
     if not categories_here:
         async def on_sort_flat() -> list[Channel] | None:
@@ -530,10 +531,13 @@ async def _pick_channel(
             stable_id_of=lambda c: c.id,
             description_of=lambda c: _channel_description(hub, c),
             title=title,
+            breadcrumb=picker_breadcrumb,
             empty_message="No chat channels are available to you yet.",
             on_sort=on_sort_flat,
             sort_label=_sort_label,
+            redraw_in_place=redraw_in_place,
             unicode_style=unicode_style,
+            collapsed=collapsed,
         )
 
     mixed: list[Category | Channel] = [*categories_here, *channels_here]
@@ -566,8 +570,11 @@ async def _pick_channel(
         sort_label=_sort_label,
         description_of=render_description,
         title=title,
+        breadcrumb=picker_breadcrumb,
         empty_message="No chat channels are available to you yet.",
+        redraw_in_place=redraw_in_place,
         unicode_style=unicode_style,
+        collapsed=collapsed,
     )
     if selected is None:
         return None

@@ -705,8 +705,6 @@ async def _operations_menu(
     unicode_style = await lane.run(unicode_style_enabled, actor)
     collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
-    unicode_style = await lane.run(unicode_style_enabled, actor)
-    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     while True:
         await session.write_line(
             "\r\n" + screen_title(
@@ -749,7 +747,7 @@ async def _operations_menu(
         elif choice == "o" and link_context is not None:
             await _outbox_screen(session, lane, actor)
         elif choice == "d" and link_context is not None:
-            await _diagnostic_log_screen(session, lane)
+            await _diagnostic_log_screen(session, lane, actor)
         elif choice == "f" and link_context is not None:
             await _diagnostic_log_tail_screen(session, lane)
         elif choice == "r" and link_context is not None:
@@ -759,7 +757,7 @@ async def _operations_menu(
         elif choice == "p":
             await _prune_drafts_screen(session, lane)
         elif choice == "a":
-            await _audit_log_screen(session, lane)
+            await _audit_log_screen(session, lane, actor)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -822,7 +820,7 @@ async def _system_menu(
             await _draw_system_menu(session, node_controls, link_context, description_level, redraw_in_place, unicode_style)
         elif choice == "d" and link_context is not None:
             await session.write_line("")
-            await _diagnostic_log_screen(session, lane)
+            await _diagnostic_log_screen(session, lane, actor)
             await _draw_system_menu(session, node_controls, link_context, description_level, redraw_in_place, unicode_style)
         elif choice == "f" and link_context is not None:
             await session.write_line("")
@@ -949,6 +947,9 @@ def _trust_subject_stable_id(subject: TrustSubject) -> int:
 
 async def _trust_subjects_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
     subjects = await lane.run(list_trust_subjects)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
     selected = await pick_item(
         session, subjects,
         name_of=_trust_subject_name,
@@ -956,13 +957,13 @@ async def _trust_subjects_screen(session: Session, lane: DatabaseLane, actor: Us
         description_of=lambda subject: subject.kind,
         title="Trust subjects",
         empty_message="No remote trust subjects have been registered.",
+        redraw_in_place=redraw_in_place,
+        unicode_style=unicode_style,
+        collapsed=collapsed,
     )
     if selected is None:
         return
     description_level = await lane.run(menu_description_level, actor)
-    unicode_style = await lane.run(unicode_style_enabled, actor)
-    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
-    redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
     while True:
         states = [
             await lane.run(get_effective_trust_state, selected, dimension)
@@ -1124,6 +1125,9 @@ async def _clear_trust_override_screen(
         description_of=lambda item: item.reason,
         title="Active trust overrides",
         empty_message="No active trust overrides.",
+        redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+        unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
     )
     if selected is None:
         return
@@ -1365,6 +1369,9 @@ async def _remote_attestation_override_screen(
             description_of=lambda item: item.reason,
             title="Remote attestation overrides",
             empty_message="No active remote attestation overrides.",
+            redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+            unicode_style=await lane.run(unicode_style_enabled, actor),
+            collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
         )
         if selected is None:
             return
@@ -2667,6 +2674,9 @@ async def _link_status_screen(
         description_of=_peer_description,
         title="Verified peers",
         empty_message="No verified peers.",
+        redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+        unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
     )
     if selected is None:
         return
@@ -2742,6 +2752,7 @@ async def _outbox_screen(session: Session, lane: DatabaseLane, actor: User) -> N
     actionable = [item for item in items if item.status in ("retrying", "dead_lettered")]
     unicode_style = await lane.run(unicode_style_enabled, actor)
     collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
     arrow = " → " if unicode_style else " -> "
     selected = await pick_item(
         session, actionable,
@@ -2750,6 +2761,9 @@ async def _outbox_screen(session: Session, lane: DatabaseLane, actor: User) -> N
         description_of=lambda item: f"{item.status}, {item.attempts} attempt(s)",
         title="Retrying/dead-lettered work items",
         empty_message="Nothing currently retrying or dead-lettered.",
+        redraw_in_place=redraw_in_place,
+        unicode_style=unicode_style,
+        collapsed=collapsed,
     )
     if selected is None:
         return
@@ -2788,7 +2802,7 @@ def _diagnostic_level_color(level: str) -> int:
     return ALERT_COLOR if level in ("ERROR", "CRITICAL") else WARNING_COLOR
 
 
-async def _diagnostic_log_screen(session: Session, lane: DatabaseLane) -> None:
+async def _diagnostic_log_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
     """
     Read-only SysOp inspection of the bounded Link diagnostic log
     (design doc §13.11, issue #60) -- `netbbs.link.diagnostics.
@@ -2825,6 +2839,9 @@ async def _diagnostic_log_screen(session: Session, lane: DatabaseLane) -> None:
         description_of=lambda entry: sanitize_text(entry.message),
         title=f"Diagnostic log ({order_label})",
         empty_message="Nothing logged yet.",
+        redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+        unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
     )
     if selected is None:
         return
@@ -2836,7 +2853,7 @@ async def _diagnostic_log_screen(session: Session, lane: DatabaseLane) -> None:
     await session.write_line(f"Message: {sanitize_text(selected.message)}")
 
 
-async def _audit_log_screen(session: Session, lane: DatabaseLane) -> None:
+async def _audit_log_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
     """
     Read-only, node-wide moderation/admin audit trail (dogfood follow-
     up: `list_actions_for_object`/`list_actions_for_target_user` only
@@ -2894,6 +2911,9 @@ async def _audit_log_screen(session: Session, lane: DatabaseLane) -> None:
         description_of=_row_description,
         title=f"Audit log ({order_label})",
         empty_message="Nothing logged yet.",
+        redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+        unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
     )
     if selected is None:
         return
@@ -3230,6 +3250,9 @@ async def _who_screen(session: Session, lane: DatabaseLane, actor: User, node_co
         description_of=lambda e: _session_description(e, display_format, display_timezone),
         title="Active sessions",
         empty_message="No active sessions.",
+        redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+        unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
     )
     if selected is None:
         return
@@ -3821,7 +3844,12 @@ async def _edit_welcome_banner_screen(session: Session, lane: DatabaseLane, acto
     initial_bytes = path.read_bytes() if path.exists() else None
     draft_path = path.parent / f"{path.name}.draft"
 
-    result = await edit_ansi_art(session, initial_bytes=initial_bytes, draft_path=draft_path)
+    result = await edit_ansi_art(
+        session, initial_bytes=initial_bytes, draft_path=draft_path,
+        redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+        unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+    )
     if result is None:
         await session.write_line(colored("\r\nNo changes saved.", fg_color=MUTED_COLOR))
         return
@@ -4341,7 +4369,7 @@ def _community_field_specs() -> list[FieldSpec]:
             brief="Default min. age, inherited",
         ),
         FieldSpec(
-            key="default_name_requirement", hotkey="q", menu_text=menu_key("Q", "uirement", prefix="Name req"),
+            key="default_name_requirement", hotkey="q", menu_text=menu_key("q", "uirement", prefix="Name re"),
             label="Default name requirement",
             render=lambda d: _name_requirement_label(d.get("default_name_requirement")),
             prompt=_name_requirement_field("default_name_requirement"),
@@ -4431,6 +4459,9 @@ async def _list_communities_screen(session: Session, lane: DatabaseLane, actor: 
         description_of=_community_description,
         title="Communities",
         empty_message="No Communities yet.",
+        redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+        unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
     )
     if selected is not None:
         await _community_detail_screen(session, lane, actor, selected)
@@ -4653,7 +4684,7 @@ def _board_field_specs() -> list[FieldSpec]:
             brief="Minimum caller age required",
         ),
         FieldSpec(
-            key="name_requirement", hotkey="q", menu_text=menu_key("Q", "uirement", prefix="Name req"),
+            key="name_requirement", hotkey="q", menu_text=menu_key("q", "uirement", prefix="Name re"),
             label="Name requirement",
             render=lambda d: _name_requirement_label(d.get("name_requirement")),
             prompt=_name_requirement_field(),
@@ -4750,6 +4781,9 @@ async def _list_boards_screen(
         description_of=_board_description,
         title="Message boards",
         empty_message="No message boards yet.",
+        redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+        unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
     )
     if selected is not None:
         await _board_detail_screen(session, lane, actor, selected, link_context=link_context)
@@ -4810,7 +4844,7 @@ async def _board_detail_screen(
             )
         elif choice == "l" and link_context is not None and not linked:
             await session.write_line("")
-            await _link_board_screen(session, lane, board, link_context)
+            await _link_board_screen(session, lane, actor, board, link_context)
             linked = await lane.run(is_board_linked, board)
             is_origin, has_incoming_offer, is_closed = await _draw_board_detail(
                 session, lane, board, linked=linked, link_context=link_context,
@@ -4845,7 +4879,9 @@ async def _board_detail_screen(
             await session.write(reject_unhandled_key(choice))
 
 
-async def _link_board_screen(session: Session, lane: DatabaseLane, board: Board, link_context: LinkContext) -> None:
+async def _link_board_screen(
+    session: Session, lane: DatabaseLane, actor: User, board: Board, link_context: LinkContext
+) -> None:
     """
     `[L]ink this board` (design doc): puts `board` into
     Link scope via a signed `board_genesis` event referencing its
@@ -4912,6 +4948,9 @@ async def _link_board_screen(session: Session, lane: DatabaseLane, board: Board,
             session, candidates,
             name_of=lambda b: b.name, stable_id_of=lambda b: b.id,
             title="Fork of which message board?", empty_message="No other Linked message boards to fork from.",
+            redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+            unicode_style=await lane.run(unicode_style_enabled, actor),
+            collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
         )
         if chosen is not None:
             forked_from = chosen.board_id
@@ -5243,6 +5282,9 @@ async def _pending_posts_screen(
             description_of=lambda p: f"by {p.author_label}",
             title=f"Pending posts in {board.name!r}",
             empty_message="No pending posts.",
+            redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+            unicode_style=await lane.run(unicode_style_enabled, actor),
+            collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
         )
         if selected is None:
             return
@@ -5511,7 +5553,7 @@ def _area_field_specs() -> list[FieldSpec]:
             brief="Minimum caller age required",
         ),
         FieldSpec(
-            key="name_requirement", hotkey="q", menu_text=menu_key("Q", "uirement", prefix="Name req"),
+            key="name_requirement", hotkey="q", menu_text=menu_key("q", "uirement", prefix="Name re"),
             label="Name requirement",
             render=lambda d: _name_requirement_label(d.get("name_requirement")),
             prompt=_name_requirement_field(),
@@ -5601,6 +5643,9 @@ async def _list_areas_screen(
         description_of=_area_description,
         title="File areas",
         empty_message="No file areas yet.",
+        redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+        unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
     )
     if selected is not None:
         await _area_detail_screen(session, lane, actor, selected, link_context=link_context)
@@ -5801,6 +5846,9 @@ async def _pending_files_screen(session: Session, lane: DatabaseLane, actor: Use
             description_of=lambda f: f"by {f.uploader_label}",
             title=f"Pending files in {area.name!r}",
             empty_message="No pending files.",
+            redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+            unicode_style=await lane.run(unicode_style_enabled, actor),
+            collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
         )
         if selected is None:
             return
@@ -5997,7 +6045,7 @@ def _channel_field_specs() -> list[FieldSpec]:
             brief="Minimum caller age required",
         ),
         FieldSpec(
-            key="name_requirement", hotkey="q", menu_text=menu_key("Q", "uirement", prefix="Name req"),
+            key="name_requirement", hotkey="q", menu_text=menu_key("q", "uirement", prefix="Name re"),
             label="Name requirement",
             render=lambda d: _name_requirement_label(d.get("name_requirement")),
             prompt=_name_requirement_field(),
@@ -6087,6 +6135,9 @@ async def _list_channels_screen(
         description_of=_channel_description,
         title="Chat channels",
         empty_message="No chat channels yet.",
+        redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+        unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
     )
     if selected is not None:
         await _channel_detail_screen(session, lane, actor, selected, link_context=link_context)
@@ -6243,6 +6294,9 @@ async def _channel_restrictions_screen(session: Session, lane: DatabaseLane, act
             description_of=lambda r: _description_of(r, usernames, display_format, display_timezone),
             title=f"Restrictions on {channel.name!r}",
             empty_message="No active mute/ban restrictions on this chat channel.",
+            redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+            unicode_style=await lane.run(unicode_style_enabled, actor),
+            collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
         )
         if selected is None:
             return
@@ -6471,6 +6525,9 @@ async def _create_category_screen(
             session, await lane.run(list_top_level),
             name_of=lambda c: c.name, stable_id_of=lambda c: c.id,
             title="Parent category", empty_message="No top-level categories exist yet.",
+            redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+            unicode_style=await lane.run(unicode_style_enabled, actor),
+            collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
         )
         parent_category_id = parent.id if parent is not None else None
     try:
@@ -6501,6 +6558,9 @@ async def _list_categories_screen(
         description_of=lambda c: "top-level" if c.is_top_level else "sub-category",
         title="Categories",
         empty_message="No categories yet.",
+        redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+        unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
     )
     if selected is None:
         return
@@ -6523,7 +6583,9 @@ async def _list_categories_screen(
 # -- moderator grants -----------------------------------------------------
 
 
-async def _pick_moderator_scope(session: Session, lane: DatabaseLane) -> tuple[str, int | None, str, int | None] | None:
+async def _pick_moderator_scope(
+    session: Session, lane: DatabaseLane, *, redraw_in_place: bool, unicode_style: bool, collapsed: bool
+) -> tuple[str, int | None, str, int | None] | None:
     """Returns `(object_type, object_id, human label, community_id)`,
     or `None` if cancelled. `object_id=None` means a blanket grant
     (design doc) -- `community_id` further narrows a blanket grant to
@@ -6559,6 +6621,7 @@ async def _pick_moderator_scope(session: Session, lane: DatabaseLane) -> tuple[s
             session, await lane.run(list_boards, order_by="alphabetical"),
             name_of=lambda b: b.name, stable_id_of=lambda b: b.id,
             title="Which message board?", empty_message="No message boards yet.",
+            redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
         )
         if board is None:
             return None
@@ -6568,6 +6631,7 @@ async def _pick_moderator_scope(session: Session, lane: DatabaseLane) -> tuple[s
             session, await lane.run(list_file_areas, order_by="alphabetical"),
             name_of=lambda a: a.name, stable_id_of=lambda a: a.id,
             title="Which file area?", empty_message="No file areas yet.",
+            redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
         )
         if area is None:
             return None
@@ -6577,6 +6641,7 @@ async def _pick_moderator_scope(session: Session, lane: DatabaseLane) -> tuple[s
             session, await lane.run(list_channels),
             name_of=lambda c: c.name, stable_id_of=lambda c: c.id,
             title="Which chat channel?", empty_message="No chat channels yet.",
+            redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
         )
         if channel is None:
             return None
@@ -6591,14 +6656,18 @@ async def _pick_moderator_scope(session: Session, lane: DatabaseLane) -> tuple[s
         await session.write_line(colored("Not a valid scope -- cancelled.", fg_color=MUTED_COLOR))
         return None
 
-    community_id = await _pick_optional_community_blanket_scope(session, lane)
+    community_id = await _pick_optional_community_blanket_scope(
+        session, lane, redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed
+    )
     if community_id is not None:
         community = await lane.run(get_community, community_id)
         label = f"{label} scoped to Community {community.name!r}"
     return object_type, None, label, community_id
 
 
-async def _pick_optional_community_blanket_scope(session: Session, lane: DatabaseLane) -> int | None:
+async def _pick_optional_community_blanket_scope(
+    session: Session, lane: DatabaseLane, *, redraw_in_place: bool, unicode_style: bool, collapsed: bool
+) -> int | None:
     """The blanket-grant-scoping follow-up (design doc §16):
     'Scope this blanket grant to one Community instead of the whole
     node?' -- extends the existing X/Y/Z blanket keys rather than
@@ -6615,19 +6684,26 @@ async def _pick_optional_community_blanket_scope(session: Session, lane: Databas
         stable_id_of=lambda c: c.id,
         title="Community",
         empty_message="No Communities exist yet.",
+        redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
     )
     return selected.id if selected is not None else None
 
 
 async def _grant_moderator_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     target = await pick_item(
         session, await lane.run(list_users),
         name_of=lambda u: u.username, stable_id_of=lambda u: u.id,
         title="Grant moderator to which user?", empty_message="No registered users yet.",
+        redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
     )
     if target is None:
         return
-    scope = await _pick_moderator_scope(session, lane)
+    scope = await _pick_moderator_scope(
+        session, lane, redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed
+    )
     if scope is None:
         return
     object_type, object_id, label, community_id = scope
@@ -6680,14 +6756,20 @@ async def _grant_moderator_screen(session: Session, lane: DatabaseLane, actor: U
 
 
 async def _revoke_moderator_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     target = await pick_item(
         session, await lane.run(list_users),
         name_of=lambda u: u.username, stable_id_of=lambda u: u.id,
         title="Revoke moderator from which user?", empty_message="No registered users yet.",
+        redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
     )
     if target is None:
         return
-    scope = await _pick_moderator_scope(session, lane)
+    scope = await _pick_moderator_scope(
+        session, lane, redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed
+    )
     if scope is None:
         return
     object_type, object_id, label, community_id = scope

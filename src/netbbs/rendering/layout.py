@@ -210,7 +210,12 @@ def screen_title(
     same row") -- detected by the presence of an SGR escape, since a
     pre-styled subtitle must not be re-cut here (`cut_to_width` isn't
     SGR-aware) and is trusted to already fit `width`, the same way a
-    `MenuEntry.label` is.
+    `MenuEntry.label` is. The divider rule below is sized to whichever
+    of the location line or `subtitle` is actually wider (dogfood
+    report), not the location line alone -- a `subtitle` routinely
+    carries more detail than the breadcrumb/title above it, and a rule
+    sized only to the shorter line stopped short of a heading block
+    that was still going.
 
     `clear` (dogfood feature request -- `netbbs.net.redraw_preference`),
     if `True`, prepends `clear_screen()` -- home the cursor and blank
@@ -277,6 +282,7 @@ def screen_title(
         divider_basis = plain_location
         location_line = colored(cut_to_width(plain_location, width), fg_color=HEADER_COLOR, bold=True)
     lines = [location_line]
+    divider_basis_width = display_width(divider_basis)
     if subtitle:
         if _SGR_RE.search(subtitle):
             # Already styled (e.g. `field_row()`'s per-field colors) --
@@ -284,11 +290,16 @@ def screen_title(
             # bytes as visible columns, corrupting the sequences. Trust
             # the caller to fit its own width, the same way `menu_grid`
             # already trusts a `MenuEntry.label`'s pre-styled text.
+            # Stripped of its own SGR codes for the divider-length
+            # comparison below -- `display_width` would otherwise count
+            # escape bytes as visible columns.
+            divider_basis_width = max(divider_basis_width, display_width(_SGR_RE.sub("", subtitle)))
             lines.append(subtitle)
         else:
+            divider_basis_width = max(divider_basis_width, display_width(subtitle))
             lines.append(colored(cut_to_width(subtitle, width), fg_color=METADATA_COLOR))
     rule_char = "─" if unicode_style else "-"
-    lines.append(colored(rule_char * min(width, max(12, display_width(divider_basis))), fg_color=METADATA_COLOR))
+    lines.append(colored(rule_char * min(width, max(12, divider_basis_width)), fg_color=METADATA_COLOR))
     result = "\r\n".join(lines)
     return f"{clear_screen()}{result}" if clear else result
 

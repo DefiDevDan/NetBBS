@@ -36,6 +36,7 @@ from netbbs.net.session import Session
 from netbbs.rendering import (
     ACCENT_COLOR,
     HEADER_COLOR,
+    LABEL_COLOR,
     MUTED_COLOR,
     MenuEntry,
     action_bar,
@@ -269,7 +270,11 @@ async def edit_resource_draft(
             # calls would insert an SGR reset between "> " and the
             # label text, splitting what should read as one contiguous
             # highlighted run.
-            prefix = colored(f"> {f.label}", fg_color=ACCENT_COLOR, bold=True) if i == selected else f"  {f.label}"
+            prefix = (
+                colored(f"> {f.label}", fg_color=ACCENT_COLOR, bold=True)
+                if i == selected
+                else colored(f"  {f.label}", fg_color=LABEL_COLOR)
+            )
             await session.write_line(f"{prefix}: {colored(value, fg_color=MUTED_COLOR)}")
         menu_entries = [MenuEntry(label=f.menu_text, brief=f.brief, detailed=f.help) for f in fields]
         if save is not None:
@@ -341,6 +346,19 @@ async def edit_resource_draft(
             # way an unrecognized hotkey letter is, just a no-op.
             if selected is not None and fields[selected].step is not None:
                 fields[selected].step(draft, 1 if key.kind == EditorKeyKind.RIGHT else -1)
+            continue
+        if key.kind == EditorKeyKind.ESCAPE:
+            # Dogfood feature request: Esc cancels cursor-navigation
+            # (drops the `>` highlight, back to plain hotkey input on
+            # this same screen) rather than leaving the screen entirely
+            # -- Esc backing out of the current modal state first is the
+            # more predictable convention, and `[B]ack`/Ctrl-C already
+            # own "actually leave." A no-op (just the bell) when nothing
+            # is highlighted -- there is no cursor-nav state to cancel.
+            if selected is not None:
+                selected = None
+                continue
+            await session.write("\a")
             continue
         if key.kind == EditorKeyKind.CTRL and key.char == "h":
             await _show_field_help(session, fields, selected=selected)

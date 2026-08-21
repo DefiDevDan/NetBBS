@@ -1159,7 +1159,7 @@ async def _draw_main_menu(
         else ("mail caught up", SUCCESS_COLOR)
     )
     title = screen_title(
-        "Main menu:",
+        "Main menu",
         breadcrumb=(session.node_display_name,),
         subtitle=field_row(
             [
@@ -1658,6 +1658,9 @@ async def _new_scan_screen(
         description_of=_description,
         title="New scan",
         empty_message="Nothing accessible yet.",
+        redraw_in_place=redraw_in_place_enabled(db, user),
+        unicode_style=unicode_style_enabled(db, user),
+        collapsed=breadcrumb_collapsed_enabled(db, user),
     )
     if selected is None:
         return
@@ -1893,6 +1896,9 @@ async def _find_screen(
             description_of=lambda item: item.description,
             title=f"Search results for {query!r}",
             empty_message=empty_message,
+            redraw_in_place=redraw_in_place_enabled(db, user),
+            unicode_style=unicode_style_enabled(db, user),
+            collapsed=breadcrumb_collapsed_enabled(db, user),
         )
         if selected is None:
             return
@@ -2428,6 +2434,9 @@ async def _enter_communities(
         description_of=lambda c: c.description,
         title="Communities",
         empty_message="No Communities exist yet.",
+        redraw_in_place=redraw_in_place_enabled(db, user),
+        unicode_style=unicode_style_enabled(db, user),
+        collapsed=breadcrumb_collapsed_enabled(db, user),
     )
     if selected is None:
         return
@@ -2570,7 +2579,11 @@ async def _browse_boards_in_category(
     uses). `title_prefix`, threaded alongside, is `None` for the
     unfiltered/Jump case (keeping today's unchanged "Available message
     boards" title) or a human label ("Uncategorized", a Community's own
-    name) that becomes "{title_prefix} — message boards" otherwise.
+    name) that's passed to `pick_item` as an ancestor `breadcrumb`
+    segment otherwise, so it renders muted with only "Message boards"
+    itself in the current-location color -- not folded into the title
+    text as a fake, uniformly-colored breadcrumb (dogfood-reported bug,
+    see `pick_item`'s own `breadcrumb` docstring).
     Category leak prevention ("only show/offer categories
     currently used by ≥1 resource in this Community") only applies when
     `community_scoped` -- the unfiltered Jump path shows every category
@@ -2646,8 +2659,9 @@ async def _browse_boards_in_category(
 
     unicode_style = unicode_style_enabled(db, user)
     collapsed = breadcrumb_collapsed_enabled(db, user)
-    title_sep = "›" if unicode_style else "-"
-    title = f"{title_prefix} {title_sep} message boards" if title_prefix is not None else "Available message boards"
+    redraw_in_place = redraw_in_place_enabled(db, user)
+    title = "Message boards" if title_prefix is not None else "Available message boards"
+    picker_breadcrumb = (title_prefix,) if title_prefix is not None else ()
 
     if not categories_here:
         async def on_sort_flat() -> list[Board] | None:
@@ -2665,9 +2679,11 @@ async def _browse_boards_in_category(
             stable_id_of=lambda b: b.id,
             description_of=lambda b: b.description,
             title=title,
+            breadcrumb=picker_breadcrumb,
             empty_message="No message boards are available to you yet.",
             on_sort=on_sort_flat,
             sort_label=_sort_label,
+            redraw_in_place=redraw_in_place,
             unicode_style=unicode_style,
             collapsed=collapsed,
         )
@@ -2705,7 +2721,9 @@ async def _browse_boards_in_category(
         sort_label=_sort_label,
         description_of=render_description,
         title=title,
+        breadcrumb=picker_breadcrumb,
         empty_message="No message boards are available to you yet.",
+        redraw_in_place=redraw_in_place,
         unicode_style=unicode_style,
         collapsed=collapsed,
     )
@@ -3380,6 +3398,9 @@ async def _browse_directory(session: Session, db: Database, user: User) -> None:
             description_of=lambda u: _directory_description(db, u),
             title="User directory",
             empty_message="No registered users yet.",
+            redraw_in_place=redraw_in_place_enabled(db, user),
+            unicode_style=unicode_style_enabled(db, user),
+            collapsed=breadcrumb_collapsed_enabled(db, user),
         )
         if selected is None:
             return
@@ -3510,6 +3531,8 @@ async def _caller_who_screen(
         refresh=_load_entries,
         description_level=menu_description_level(db, user),
         redraw_in_place=redraw_in_place_enabled(db, user),
+        unicode_style=unicode_style_enabled(db, user),
+        collapsed=breadcrumb_collapsed_enabled(db, user),
     )
     if selected is None:
         return
@@ -3644,40 +3667,59 @@ async def _last_sessions_screen(session: Session, db: Database, user: User) -> N
     silently written as if `interrupted_at` were the real disconnect
     moment (it's only ever "whenever this node next started up," which
     could be long after the connection actually dropped).
+
+    Waits for a keystroke before returning (dogfood report): this used
+    to fall straight through to the main menu's own redraw the instant
+    the listing finished printing, which -- under redraw-in-place --
+    cleared the terminal and wiped the listing before there was any
+    chance to actually read it. Every other plain (non-`pick_item`)
+    content screen in this codebase already pauses the same way
+    (`netbbs.net.help_overlay.show_help`'s own "Press any key to
+    continue..." convention).
     """
     entries = list_recent_sessions(db, limit=_SESSION_HISTORY_DISPLAY_LIMIT)
-    await session.write_line(colored("\r\nLast sessions:", fg_color=HEADER_COLOR, bold=True))
+    await session.write_line(
+        "\r\n" + screen_title(
+            "Last sessions",
+            breadcrumb=(session.node_display_name,),
+            width=session.terminal_width,
+            clear=redraw_in_place_enabled(db, user),
+            unicode_style=unicode_style_enabled(db, user),
+            collapsed=breadcrumb_collapsed_enabled(db, user),
+        )
+    )
     if not entries:
         await session.write_line(colored("No session history yet.", fg_color=MUTED_COLOR))
-        return
-
-    viewer_is_sysop = meets_level(user, SYSOP_LEVEL)
-    for entry in entries:
-        name = _session_history_display_name(db, entry, viewer_is_sysop=viewer_is_sysop)
-        connected = format_for_display(entry.connected_at, db)
-        if entry.disconnected_at is not None:
-            status = f"until {format_for_display(entry.disconnected_at, db)}"
-            status_color = METADATA_COLOR
-        elif entry.interrupted_at is not None:
-            status = "connection lost -- session did not end cleanly"
-            status_color = ERROR_COLOR
-        else:
-            status = "still connected"
-            status_color = SUCCESS_COLOR
-        name_color = MUTED_COLOR if name == "(name hidden)" else ACCENT_COLOR
-        await session.write_line(
-            colored_truncate(
-                [
-                    ("  ", None),
-                    (sanitize_text(name), name_color),
-                    (" -- connected ", LABEL_COLOR),
-                    (connected, METADATA_COLOR),
-                    (", ", LABEL_COLOR),
-                    (status, status_color),
-                ],
-                session.terminal_width,
+    else:
+        viewer_is_sysop = meets_level(user, SYSOP_LEVEL)
+        for entry in entries:
+            name = _session_history_display_name(db, entry, viewer_is_sysop=viewer_is_sysop)
+            connected = format_for_display(entry.connected_at, db)
+            if entry.disconnected_at is not None:
+                status = f"until {format_for_display(entry.disconnected_at, db)}"
+                status_color = METADATA_COLOR
+            elif entry.interrupted_at is not None:
+                status = "connection lost -- session did not end cleanly"
+                status_color = ERROR_COLOR
+            else:
+                status = "still connected"
+                status_color = SUCCESS_COLOR
+            name_color = MUTED_COLOR if name == "(name hidden)" else ACCENT_COLOR
+            await session.write_line(
+                colored_truncate(
+                    [
+                        ("  ", None),
+                        (sanitize_text(name), name_color),
+                        (" -- connected ", LABEL_COLOR),
+                        (connected, METADATA_COLOR),
+                        (", ", LABEL_COLOR),
+                        (status, status_color),
+                    ],
+                    session.terminal_width,
+                )
             )
-        )
+    await session.write_line(colored("\r\nPress any key to continue...", fg_color=MUTED_COLOR))
+    await session.read_key()
 
 
 _SORT_PREFERENCE_KIND_LABELS = {
@@ -3748,6 +3790,9 @@ async def _sort_preferences_screen(session: Session, lane: DatabaseLane, user: U
             description_of=lambda p: SORT_MODE_LABELS[p.sort_mode],
             title="Your sort preferences",
             empty_message="You have no saved sort preferences yet.",
+            redraw_in_place=await lane.run(redraw_in_place_enabled, user),
+            unicode_style=await lane.run(unicode_style_enabled, user),
+            collapsed=await lane.run(breadcrumb_collapsed_enabled, user),
         )
         if selected is None:
             return
@@ -3874,6 +3919,7 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
             lines.append(reflow(sanitize_text(d["bio"], allow_newlines=True), width=session.terminal_width))
         else:
             lines.append(colored("(no bio set)", fg_color=MUTED_COLOR))
+        lines.append("")
         lines.append(
             _profile_field(
                 "Transport report",
@@ -4357,6 +4403,9 @@ async def _verify_identity_menu(session: Session, db: Database, verifier: User) 
         description_of=lambda u: _verification_status_description(db, u),
         title="Verify a user's identity",
         empty_message="No other users to verify.",
+        redraw_in_place=redraw_in_place_enabled(db, verifier),
+        unicode_style=unicode_style_enabled(db, verifier),
+        collapsed=breadcrumb_collapsed_enabled(db, verifier),
     )
     if selected is not None:
         await _verify_user(session, db, verifier, selected)

@@ -109,7 +109,7 @@ def test_main_menu_is_a_two_column_home_surface_at_classic_width(tmp_path):
     # main menu -- the single most-viewed screen in the app -- now
     # actually uses this account's own unicode_style preference (on by
     # default) instead of silently falling back to plain ASCII.
-    assert "NetBBS › Main menu:" in lines
+    assert "NetBBS › Main menu" in lines
     assert "alice › level 10 › mail caught up" in lines
     assert any("EXPLORE" in line and "YOU" in line for line in lines)
     db.close()
@@ -384,7 +384,7 @@ def test_prompt_clock_is_time_only_two_toned_and_has_no_date(tmp_path):
     groups in `CLOCK_COLOR`, `:` separators in `MUTED_COLOR` -- rather
     than one flat color. `CLOCK_COLOR`, not `HEADER_COLOR`: a second
     follow-up request after the first version shared `HEADER_COLOR`
-    with the "Main menu:" label and read as part of it."""
+    with the "Main menu" label and read as part of it."""
     db = Database(tmp_path / "node.db")
     user = create_user(db, "alice", password="hunter2", user_level=10)
     session = FakeSession()

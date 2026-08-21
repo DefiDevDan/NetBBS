@@ -204,7 +204,7 @@ def test_edit_profile_shows_current_state(tmp_path):
     asyncio.run(_edit_profile(session, lane, user))
 
     assert "no bio set" in session.output
-    assert "  Visibility: " in session.output
+    assert colored("  Visibility", fg_color=LABEL_COLOR) + ": " in session.output
     assert colored("private", fg_color=MUTED_COLOR) in session.output
     lane.close()
     db.close()

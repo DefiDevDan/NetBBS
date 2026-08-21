@@ -507,7 +507,7 @@ def test_ssh_password_login_reaches_main_menu_without_a_second_prompt(db):
 
     output = asyncio.run(scenario())
     assert "Welcome, alice" in output
-    assert "Main menu:" in output
+    assert "Main menu" in output
     # The one-and-only credential exchange happened at the SSH protocol
     # level (already proven by the connection succeeding at all) --
     # this confirms the *application* layer never asked again.
@@ -539,7 +539,7 @@ def test_ssh_public_key_login_reaches_main_menu_without_any_password_prompt(db):
 
     output = asyncio.run(scenario())
     assert "Welcome, bob" in output
-    assert "Main menu:" in output
+    assert "Main menu" in output
     assert "Username:" not in output
     assert "Password:" not in output
 

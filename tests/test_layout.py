@@ -20,6 +20,19 @@ def test_screen_title_shows_location_subtitle_and_ascii_divider():
     assert result.split("\r\n") == [
         "NetBBS / Home",
         "alice / mail caught up",
+        "----------------------",
+    ]
+
+
+def test_screen_title_divider_matches_the_wider_of_location_or_subtitle():
+    # "NetBBS / Home" (13 chars) is shorter than the subtitle (23 chars)
+    # above -- the divider spans whichever line is actually wider, not
+    # just the location line, so a longer subtitle isn't left dangling
+    # past a too-short rule.
+    short_subtitle_result = visible(screen_title("Home", subtitle="hi", width=80))
+    assert short_subtitle_result.split("\r\n") == [
+        "NetBBS / Home",
+        "hi",
         "-------------",
     ]
 

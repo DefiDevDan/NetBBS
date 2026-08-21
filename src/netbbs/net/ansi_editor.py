@@ -126,6 +126,9 @@ async def edit_ansi_art(
     width: int = 80,
     height: int = 24,
     autosave_interval_seconds: float = DEFAULT_AUTOSAVE_INTERVAL_SECONDS,
+    redraw_in_place: bool = False,
+    unicode_style: bool = False,
+    collapsed: bool = False,
 ) -> bytes | None:
     """
     Run a WYSIWYG ANSI art editing session against `session`, returning
@@ -203,21 +206,29 @@ async def edit_ansi_art(
                 # them as a literal character, so there's no ordinary
                 # "typing" event a glyph choice could otherwise wait
                 # to apply to.
-                choice = await _pick_glyph(session)
+                choice = await _pick_glyph(
+                    session, redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed
+                )
                 if choice is not None:
                     _paint(state, choice)
                 previous = await _redraw(session, state, previous)
                 continue
 
             if key.kind == EditorKeyKind.CTRL and key.char == "p":
-                choice = await _pick_color(session, "Foreground")
+                choice = await _pick_color(
+                    session, "Foreground",
+                    redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
+                )
                 if choice != "unchanged":
                     state.current_fg = choice
                 previous = await _redraw(session, state, previous)
                 continue
 
             if key.kind == EditorKeyKind.CTRL and key.char == "b":
-                choice = await _pick_color(session, "Background")
+                choice = await _pick_color(
+                    session, "Background",
+                    redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
+                )
                 if choice != "unchanged":
                     state.current_bg = choice
                 previous = await _redraw(session, state, previous)
@@ -371,7 +382,9 @@ async def _confirm_quit(session: Session) -> str:
     return "cancel"
 
 
-async def _pick_glyph(session: Session) -> str | None:
+async def _pick_glyph(
+    session: Session, *, redraw_in_place: bool = False, unicode_style: bool = False, collapsed: bool = False
+) -> str | None:
     selected = await pick_item(
         session, _GLYPHS,
         name_of=lambda item: item[0],
@@ -379,11 +392,14 @@ async def _pick_glyph(session: Session) -> str | None:
         description_of=lambda item: item[1],
         title="Glyph",
         empty_message="No glyphs available.",
+        redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
     )
     return selected[1] if selected is not None else None
 
 
-async def _pick_color(session: Session, label: str) -> int | None | str:
+async def _pick_color(
+    session: Session, label: str, *, redraw_in_place: bool = False, unicode_style: bool = False, collapsed: bool = False
+) -> int | None | str:
     """Returns the chosen palette index, `None` for "default" (no
     color), or the sentinel `"unchanged"` if the picker was cancelled
     without a choice."""
@@ -394,6 +410,7 @@ async def _pick_color(session: Session, label: str) -> int | None | str:
         stable_id_of=lambda item: item[0],
         title=f"{label} color",
         empty_message="No colors available.",
+        redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
     )
     return selected[0] if selected is not None else "unchanged"
 

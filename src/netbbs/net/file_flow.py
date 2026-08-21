@@ -275,8 +275,8 @@ async def _browse_areas_in_category(
     def _sort_label() -> str:
         return SORT_MODE_LABELS[mode_box["mode"]]
 
-    title_sep = "›" if unicode_style else "-"
-    title = f"{title_prefix} {title_sep} file areas" if title_prefix is not None else "Available file areas"
+    title = "File areas" if title_prefix is not None else "Available file areas"
+    picker_breadcrumb = (title_prefix,) if title_prefix is not None else ()
 
     if not categories_here:
         async def on_sort_flat() -> list[FileArea] | None:
@@ -294,12 +294,14 @@ async def _browse_areas_in_category(
             stable_id_of=lambda a: a.id,
             description_of=lambda a: a.description,
             title=title,
+            breadcrumb=picker_breadcrumb,
             empty_message="No file areas are available to you yet.",
             on_sort=on_sort_flat,
             sort_label=_sort_label,
             description_level=description_level,
             redraw_in_place=redraw_in_place,
             unicode_style=unicode_style,
+            collapsed=collapsed,
         )
         if area is not None:
             await _show_area(session, lane, area, user, link_context=link_context)
@@ -335,10 +337,12 @@ async def _browse_areas_in_category(
         sort_label=_sort_label,
         description_of=render_description,
         title=title,
+        breadcrumb=picker_breadcrumb,
         empty_message="No file areas are available to you yet.",
         description_level=description_level,
         redraw_in_place=redraw_in_place,
         unicode_style=unicode_style,
+        collapsed=collapsed,
     )
     if selected is None:
         return
@@ -642,6 +646,8 @@ async def _browse_remote_files(
         empty_message="No remote catalogue entries.",
         description_level=await lane.run(menu_description_level, user),
         redraw_in_place=redraw_in_place,
+        unicode_style=unicode_style,
+        collapsed=collapsed,
     )
     if selected is None:
         return

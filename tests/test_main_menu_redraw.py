@@ -56,5 +56,5 @@ def test_ctrl_l_redraws_the_main_menu_without_a_bell_or_confirm_prompt(tmp_path)
 
     text = _written_text(session)
     assert "\b \b\a" not in text  # never treated as an invalid keystroke
-    assert text.count("Main menu:") == 2  # drawn once on entry, once more for Ctrl-L
+    assert text.count("Main menu") == 2  # drawn once on entry, once more for Ctrl-L
     database.close()

@@ -70,6 +70,7 @@ _EDITOR_KEY_SENTINELS: dict[str, EditorKeyKind] = {
     "LEFT": EditorKeyKind.LEFT,
     "RIGHT": EditorKeyKind.RIGHT,
     "BACKSPACE": EditorKeyKind.BACKSPACE,
+    "ESCAPE": EditorKeyKind.ESCAPE,
 }
 
 
@@ -786,6 +787,41 @@ def test_left_right_with_nothing_selected_is_a_silent_noop():
     )
     assert result["name_requirement"] is None
     assert "\a" not in _written_text(session)
+
+
+def test_escape_cancels_cursor_navigation_without_leaving_the_screen():
+    # DOWN DOWN highlights the third field; ESCAPE cancels that
+    # highlight (dogfood feature request) rather than backing out of
+    # the screen -- the immediately following RIGHT then has nothing
+    # highlighted to step, same as if no field had ever been selected.
+    session = NavigableFakeSession(["DOWN", "DOWN", "ESCAPE", "RIGHT", "s"])
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Create thing",
+            fields=[_name_field(), _pinned_field(), _name_requirement_field()],
+            draft={"name": "lobby", "pinned": False, "name_requirement": None},
+            save=_save_dict, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        )
+    )
+    assert result["name_requirement"] is None
+    assert "\a" not in _written_text(session)
+
+
+def test_escape_with_nothing_selected_is_a_noop_bell():
+    session = NavigableFakeSession(["ESCAPE", "s"])
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Create thing", fields=[_name_field()],
+            draft={"name": "lobby"},
+            save=_save_dict, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        )
+    )
+    assert result["name"] == "lobby"
+    assert "\a" in _written_text(session)
 
 
 def test_ctrl_h_and_ctrl_c_still_work_through_the_navigable_session():

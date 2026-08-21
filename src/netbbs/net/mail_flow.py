@@ -178,6 +178,8 @@ async def _render_mail_menu(
 async def _show_inbox(session: Session, lane: DatabaseLane, user: User) -> None:
     description_level = await lane.run(menu_description_level, user)
     redraw_in_place = await lane.run(redraw_in_place_enabled, user)
+    unicode_style = await lane.run(unicode_style_enabled, user)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, user)
     while True:
         messages = await lane.run(list_inbox, user)
         display_format, display_timezone = await lane.run(resolve_display_preferences)
@@ -200,6 +202,8 @@ async def _show_inbox(session: Session, lane: DatabaseLane, user: User) -> None:
             empty_message="Your inbox is empty. New mail will appear here.",
             description_level=description_level,
             redraw_in_place=redraw_in_place,
+            unicode_style=unicode_style,
+            collapsed=collapsed,
         )
         if message is None:
             return
@@ -209,6 +213,8 @@ async def _show_inbox(session: Session, lane: DatabaseLane, user: User) -> None:
 async def _show_sent(session: Session, lane: DatabaseLane, user: User) -> None:
     description_level = await lane.run(menu_description_level, user)
     redraw_in_place = await lane.run(redraw_in_place_enabled, user)
+    unicode_style = await lane.run(unicode_style_enabled, user)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, user)
     while True:
         messages = await lane.run(list_sent, user)
         display_format, display_timezone = await lane.run(resolve_display_preferences)
@@ -240,6 +246,8 @@ async def _show_sent(session: Session, lane: DatabaseLane, user: User) -> None:
             empty_message="You haven't sent any mail. Compose one from the Mail menu.",
             description_level=description_level,
             redraw_in_place=redraw_in_place,
+            unicode_style=unicode_style,
+            collapsed=collapsed,
         )
         if message is None:
             return

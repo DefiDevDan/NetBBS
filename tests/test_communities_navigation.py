@@ -259,7 +259,14 @@ def test_community_scoped_board_browsing_shows_community_name_in_title(tmp_path)
 
     _run_main_menu(session, db, bob)
 
-    assert "Vintage Computing › message boards" in _written_text(session)
+    # Dogfood-reported bug: this used to be baked into the title text
+    # itself ("Vintage Computing › message boards"), which visually
+    # mimicked screen_title's own ancestor/current-location color split
+    # without actually being one -- the whole string rendered in one
+    # flat color. It's now a real breadcrumb ancestor segment, muted
+    # like every other ancestor, with only "Message boards" itself in
+    # the current-location color.
+    assert "NetBBS › Vintage Computing › Message boards" in _visible_text(session)
     db.close()
 
 
@@ -272,7 +279,10 @@ def test_uncategorized_browsing_shows_uncategorized_in_title(tmp_path):
 
     _run_main_menu(session, db, bob)
 
-    assert "Uncategorized › message boards" in _written_text(session)
+    # See test_community_scoped_board_browsing_shows_community_name_in_title's
+    # own comment: "Uncategorized" is now a real breadcrumb ancestor
+    # segment, not baked into the title text.
+    assert "NetBBS › Uncategorized › Message boards" in _visible_text(session)
     db.close()
 
 

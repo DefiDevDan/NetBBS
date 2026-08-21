@@ -81,7 +81,7 @@ def test_pending_private_message_shown_before_the_menu_on_entry(db):
     output = session.output
     assert "Private message from bob: hi there" in output
     # It genuinely arrived *before* the menu, not just somewhere in the output.
-    assert output.index("Private message from bob") < output.index("Main menu:")
+    assert output.index("Private message from bob") < output.index("Main menu")
 
 
 def test_message_is_only_shown_once_not_on_every_redraw(db):

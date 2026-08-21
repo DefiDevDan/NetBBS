@@ -84,7 +84,7 @@ def db_(tmp_path):
 def test_history_screen_reports_no_sessions_yet(tmp_path):
     database = db_(tmp_path)
     alice = create_user(database, "alice", password="hunter2", user_level=10)
-    session = FakeSession(["h", "l", "y"])
+    session = FakeSession(["h", " ", "l", "y"])
 
     asyncio.run(_run_main_menu(session, database, alice))
 
@@ -98,7 +98,7 @@ def test_history_screen_shows_a_recorded_session(tmp_path):
     bob = create_user(database, "bob", password="hunter2", user_level=10)
     record_session_start(database, bob)
 
-    session = FakeSession(["h", "l", "y"])
+    session = FakeSession(["h", " ", "l", "y"])
     asyncio.run(_run_main_menu(session, database, alice))
 
     assert "bob" in _written_text(session)
@@ -112,7 +112,7 @@ def test_history_screen_shows_still_connected_for_an_open_session(tmp_path):
     alice = create_user(database, "alice", password="hunter2", user_level=10)
     record_session_start(database, alice)
 
-    session = FakeSession(["h", "l", "y"])
+    session = FakeSession(["h", " ", "l", "y"])
     asyncio.run(_run_main_menu(session, database, alice))
 
     assert "still connected" in _written_text(session)
@@ -134,7 +134,7 @@ def test_history_screen_shows_connection_lost_after_startup_reconciliation(tmp_p
     record_session_start(database, bob)  # never ended -- simulates a crash/kill
     reconcile_interrupted_sessions(database)  # what a real restart would run
 
-    session = FakeSession(["h", "l", "y"])
+    session = FakeSession(["h", " ", "l", "y"])
     asyncio.run(_run_main_menu(session, database, alice))
 
     text = _written_text(session)
@@ -150,7 +150,7 @@ def test_history_screen_hides_name_when_target_opted_out(tmp_path):
     set_session_history_name_visible(database, bob, False)
     record_session_start(database, bob)
 
-    session = FakeSession(["h", "l", "y"])
+    session = FakeSession(["h", " ", "l", "y"])
     asyncio.run(_run_main_menu(session, database, alice))
 
     text = _written_text(session)
@@ -168,7 +168,7 @@ def test_history_screen_sysop_always_sees_real_names(tmp_path):
     set_session_history_name_visible(database, bob, False)
     record_session_start(database, bob)
 
-    session = FakeSession(["h", "l", "y"])
+    session = FakeSession(["h", " ", "l", "y"])
     asyncio.run(_run_main_menu(session, database, sysop))
 
     text = _written_text(session)
@@ -192,7 +192,7 @@ def test_history_screen_shows_denormalized_label_for_a_deleted_account(tmp_path)
     record_session_start(database, bob)
     delete_user(database, bob, deleted_by=sysop)
 
-    session = FakeSession(["h", "l", "y"])
+    session = FakeSession(["h", " ", "l", "y"])
     asyncio.run(_run_main_menu(session, database, alice))
 
     assert "bob" in _written_text(session)
@@ -215,7 +215,7 @@ def test_history_screen_keeps_a_deleted_accounts_opted_out_name_hidden(tmp_path)
     record_session_start(database, bob)
     delete_user(database, bob, deleted_by=sysop)
 
-    session = FakeSession(["h", "l", "y"])
+    session = FakeSession(["h", " ", "l", "y"])
     asyncio.run(_run_main_menu(session, database, alice))
 
     text = _written_text(session)
@@ -238,7 +238,7 @@ def test_history_screen_sysop_sees_real_name_even_for_a_deleted_opted_out_accoun
     record_session_start(database, bob)
     delete_user(database, bob, deleted_by=sysop)
 
-    session = FakeSession(["h", "l", "y"])
+    session = FakeSession(["h", " ", "l", "y"])
     asyncio.run(_run_main_menu(session, database, sysop))
 
     text = _written_text(session)
@@ -275,7 +275,7 @@ def test_profile_shows_color_capability_provenance(tmp_path):
     asyncio.run(_run_main_menu(session, database, alice, lane=lane))
 
     text = _written_text(session)
-    assert "  Color depth: " in text
+    assert colored("  Color depth", fg_color=LABEL_COLOR) + ": " in text
     assert colored("Transport report: ", fg_color=LABEL_COLOR) in text
     assert colored(session.truecolor_diagnostic, fg_color=METADATA_COLOR) in text
     lane.close()
@@ -287,7 +287,7 @@ def test_history_narrow_truncation_preserves_complete_ansi_sequences(tmp_path):
     alice = create_user(database, "alice", password="hunter2", user_level=10)
     bob = create_user(database, "bob", password="hunter2", user_level=10)
     record_session_start(database, bob)
-    session = FakeSession(["h", "l", "y"])
+    session = FakeSession(["h", " ", "l", "y"])
     session.terminal_width = 28
 
     asyncio.run(_run_main_menu(session, database, alice))

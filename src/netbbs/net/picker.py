@@ -87,6 +87,7 @@ async def pick_item(
     stable_id_of: Callable[[T], int],
     description_of: Callable[[T], str | None] = lambda item: None,
     title: str,
+    breadcrumb: Sequence[str] = (),
     empty_message: str,
     refresh: Callable[[], Awaitable[Sequence[T]]] | None = None,
     on_sort: Callable[[], Awaitable[Sequence[T] | None]] | None = None,
@@ -120,6 +121,18 @@ async def pick_item(
     name_of(item).lower()`) deliberately uses the *raw*, unsanitized
     name — matching is a text-comparison operation, not something
     written to the terminal, so there's nothing to protect there.
+
+    `breadcrumb` supplies ancestor location segments (e.g. a category
+    or Community name) between the node name and `title` — a real
+    dogfood-reported bug: callers used to fold that context into
+    `title` itself (`f"{category_name} › message boards"`), which
+    visually mimicked `screen_title`'s own ancestor/current-location
+    color split (muted ancestors, only the last segment in
+    `HEADER_COLOR`) without actually being one — the whole hand-built
+    string rendered in one flat color as if it were all "current
+    location." Passing the category/Community name here instead gets
+    the real thing for free. Empty by default, matching every existing
+    caller's byte-for-byte output.
 
     The page/nav block, and the `"Choice: "` prompt itself, are drawn
     once on entry and again only after an actual state change (paging
@@ -225,7 +238,7 @@ async def pick_item(
         await session.write_line(
             "\r\n" + screen_title(
                 title,
-            breadcrumb=(session.node_display_name,),
+                breadcrumb=(session.node_display_name, *breadcrumb),
                 subtitle=f"page {page_index + 1}/{total_pages}, {len(working_set)} total",
                 width=session.terminal_width,
                 clear=redraw_in_place,
