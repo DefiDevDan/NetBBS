@@ -226,6 +226,7 @@ from netbbs.net.shutdown import (
 )
 from netbbs.net.menu_description_preference import menu_description_level
 from netbbs.net.redraw_preference import redraw_in_place_enabled, redraw_in_place_ever_set
+from netbbs.net.breadcrumb_preference import breadcrumb_collapsed_enabled
 from netbbs.net.unicode_style_preference import unicode_style_enabled
 from netbbs.operational_history import list_operational_run_history
 from netbbs.selfupdate import (
@@ -452,6 +453,7 @@ async def _draw_admin_menu(
             "description_level": menu_description_level(db, actor),
             "redraw_in_place": redraw_in_place_enabled(db, actor),
             "unicode_style": unicode_style_enabled(db, actor),
+            "collapsed": breadcrumb_collapsed_enabled(db, actor),
         }
 
     if state is None:
@@ -461,14 +463,15 @@ async def _draw_admin_menu(
     lockdown = node_controls.maintenance.is_lockdown_active() if node_controls is not None else False
 
     unicode_style = state["unicode_style"]
+    collapsed = state["collapsed"]
     await session.write_line(
         "\r\n" + screen_title(
             "SysOp operations console",
-            breadcrumb=("NetBBS",),
+            breadcrumb=(session.node_display_name,),
             subtitle="Live health, attention queues, and administrative controls.",
             width=session.terminal_width,
             clear=state["redraw_in_place"],
-            unicode_style=unicode_style,
+            unicode_style=unicode_style, collapsed=collapsed,
         )
     )
 
@@ -627,8 +630,9 @@ async def _users_menu(
     use it directly."""
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
-    await _draw_users_menu(session, description_level, redraw_in_place, unicode_style)
+    await _draw_users_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -638,33 +642,34 @@ async def _users_menu(
         elif choice == "c":
             await session.write_line("")
             await _create_user_screen(session, lane, actor)
-            await _draw_users_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_users_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "l":
             await session.write_line("")
             await _pick_and_edit_user(session, lane, actor, node_controls, title="Registered users")
-            await _draw_users_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_users_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "r":
             await session.write_line("")
             await _registration_settings_screen(session, lane, actor)
-            await _draw_users_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_users_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "p":
             await session.write_line("")
             await _pick_and_edit_user(session, lane, actor, node_controls, title="Promote/demote which user?")
-            await _draw_users_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_users_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "e":
             await session.write_line("")
             await _pick_and_edit_user(session, lane, actor, node_controls, title="Enable/disable which user?")
-            await _draw_users_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_users_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "d":
             await session.write_line("")
             await _pick_and_edit_user(session, lane, actor, node_controls, title="Delete which user?")
-            await _draw_users_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_users_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
-async def _draw_users_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool) -> None:
-    await session.write_line("\r\n" + screen_title("Users", width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style))
+async def _draw_users_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool, collapsed: bool) -> None:
+    await session.write_line("\r\n" + screen_title("Users",
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed))
     await session.write_line(
         _menu_row(
             [
@@ -698,17 +703,19 @@ async def _operations_menu(
     """Operational observation and intervention, separate from durable settings."""
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     while True:
         await session.write_line(
             "\r\n" + screen_title(
                 "Operations",
-                breadcrumb=("NetBBS", "SysOp"),
+                breadcrumb=(session.node_display_name, "SysOp"),
                 subtitle="Observe the running node, investigate trouble, and recover work.",
                 width=session.terminal_width,
                 clear=redraw_in_place,
-                unicode_style=unicode_style,
+                unicode_style=unicode_style, collapsed=collapsed,
             )
         )
         options = [
@@ -772,6 +779,7 @@ async def _system_menu(
     operations console."""
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
     await _draw_system_menu(session, node_controls, link_context, description_level, redraw_in_place, unicode_style)
     while True:
@@ -835,8 +843,10 @@ async def _draw_system_menu(
     description_level: str = "off",
     redraw_in_place: bool = False,
     unicode_style: bool = False,
+    collapsed: bool = False,
 ) -> None:
-    await session.write_line("\r\n" + screen_title("Settings", width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style))
+    await session.write_line("\r\n" + screen_title("Settings",
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed))
     option_list = [
         MenuEntry(label=menu_key("W", "elcome banner"), brief="First-login greeting text"),
         MenuEntry(label=menu_key("U", "pdate"), brief="Software update settings"),
@@ -856,19 +866,21 @@ async def _draw_system_menu(
 async def _trust_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     while True:
         authorities = await lane.run(list_sole_authorities)
         await session.write_line(
             "\r\n"
             + screen_title(
                 "Trust policy",
-                breadcrumb=("NetBBS", "System"),
+                breadcrumb=(session.node_display_name, "System"),
                 subtitle="Inspect policy, explain restrictions, and manage trusted authorities.",
                 width=session.terminal_width,
                 clear=redraw_in_place,
-                unicode_style=unicode_style,
+                unicode_style=unicode_style, collapsed=collapsed,
             )
         )
         options = [
@@ -949,6 +961,7 @@ async def _trust_subjects_screen(session: Session, lane: DatabaseLane, actor: Us
         return
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
     while True:
         states = [
@@ -1693,6 +1706,7 @@ async def _pick_target_user(session: Session, lane: DatabaseLane, actor: User, *
         return None
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
 
     def _total_pages() -> int:
         return max(1, math.ceil(len(working_set) / _user_picker_page_size(session)))
@@ -1713,11 +1727,11 @@ async def _pick_target_user(session: Session, lane: DatabaseLane, actor: User, *
         await session.write_line(
             "\r\n" + screen_title(
                 title,
+            breadcrumb=(session.node_display_name,),
                 subtitle=f"page {page_index + 1}/{total_pages}, {len(working_set)} total",
                 width=session.terminal_width,
                 clear=redraw_in_place,
-                unicode_style=unicode_style,
-            )
+                unicode_style=unicode_style, collapsed=collapsed)
         )
         await session.write_line(colored(f"Sorted by: {label} {arrow}", fg_color=MUTED_COLOR))
         await session.write_line(
@@ -1893,6 +1907,7 @@ def _user_description(user: User) -> str:
 async def _draw_user_detail(
     session: Session, lane: DatabaseLane, target: User, description_level: str, redraw_in_place: bool,
     unicode_style: bool,
+    collapsed: bool,
 ) -> bool:
     """Returns whether `target` is currently on the local blocklist --
     unlike `disabled_at`, blocked status isn't a field on `User` itself,
@@ -1902,7 +1917,8 @@ async def _draw_user_detail(
     hand a caller-needed piece of drawn state back to their own dispatch
     loops."""
     await session.write_line(
-        "\r\n" + screen_title(sanitize_text(target.username), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style)
+        "\r\n" + screen_title(sanitize_text(target.username),
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
     )
     await session.write_line(f"Level: {target.user_level}")
     await session.write_line(f"Status: {_status_label(target)}")
@@ -1995,8 +2011,9 @@ async def _user_detail_screen(
     """
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
-    blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style)
+    blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style, collapsed)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -2008,7 +2025,7 @@ async def _user_detail_screen(
             if await prompt_yes_no(session, "Approve this account so it can log in?", default=False):
                 target = await lane.run(approve_pending_user, target, approved_by=actor)
                 await session.write_line(f"{target.username!r} approved.")
-            blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style)
+            blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "l":
             await session.write_line("")
             await session.write(f"New level for {target.username!r} [{target.user_level}]: ")
@@ -2025,7 +2042,7 @@ async def _user_detail_screen(
                         await session.write_line(colored(str(exc), fg_color=MUTED_COLOR))
                     else:
                         await session.write_line(f"{target.username!r} is now level {target.user_level}.")
-            blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style)
+            blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "t":
             await session.write_line("")
             currently_disabled = target.disabled_at is not None
@@ -2041,7 +2058,7 @@ async def _user_detail_screen(
                     )
                     if target.disabled_at is not None:
                         await _revoke_live_sessions(session, node_controls, target, actor)
-            blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style)
+            blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "i":
             await session.write_line("")
             new_state = "revoke" if target.can_verify_identity else "grant"
@@ -2055,7 +2072,7 @@ async def _user_detail_screen(
                     f"{target.username!r} can now verify identity: "
                     f"{'yes' if target.can_verify_identity else 'no'}."
                 )
-            blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style)
+            blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "k":
             await session.write_line("")
             verb = "Replace" if target.fingerprint else "Add"
@@ -2073,7 +2090,7 @@ async def _user_detail_screen(
                         await session.write_line(colored(str(exc), fg_color=MUTED_COLOR))
                     else:
                         await session.write_line(f"Public key set for {target.username!r}.")
-            blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style)
+            blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "r":
             await session.write_line("")
             action_word = "Unrestrict" if blocked else "Restrict"
@@ -2094,13 +2111,13 @@ async def _user_detail_screen(
                     else:
                         await session.write_line(f"{target.username!r} is now blocked from logging in.")
                         await _revoke_live_sessions(session, node_controls, target, actor)
-            blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style)
+            blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "d":
             await session.write_line("")
             deleted = await _delete_user_confirm(session, lane, actor, target, node_controls)
             if deleted:
                 return
-            blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style)
+            blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style, collapsed)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -2261,16 +2278,17 @@ async def _update_settings_screen(session: Session, lane: DatabaseLane, actor: U
     auto_enabled, checked_at, outcome, masked_token = await lane.run(_load)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
 
     await session.write_line(
         "\r\n"
         + screen_title(
             "Self-update",
-            breadcrumb=("NetBBS", "System"),
+            breadcrumb=(session.node_display_name, "System"),
             subtitle="Release checks only; applying an update remains an operator action.",
             width=session.terminal_width,
             clear=redraw_in_place,
-            unicode_style=unicode_style,
+            unicode_style=unicode_style, collapsed=collapsed,
         )
     )
     await session.write_line(
@@ -2416,16 +2434,17 @@ async def _backup_status_screen(session: Session, lane: DatabaseLane, actor: Use
     history = await lane.run(list_operational_run_history, "backup", limit=5)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
 
     await session.write_line(
         "\r\n"
         + screen_title(
             "Backup status",
-            breadcrumb=("NetBBS", "System"),
+            breadcrumb=(session.node_display_name, "System"),
             subtitle="Last recorded operator backup for this node.",
             width=session.terminal_width,
             clear=redraw_in_place,
-            unicode_style=unicode_style,
+            unicode_style=unicode_style, collapsed=collapsed,
         )
     )
     if checked_at is not None:
@@ -2548,16 +2567,17 @@ async def _link_status_screen(
     config = link_context.link_config
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
 
     await session.write_line(
         "\r\n"
         + screen_title(
             "Link status",
-            breadcrumb=("NetBBS", "System"),
+            breadcrumb=(session.node_display_name, "System"),
             subtitle="Identity, capacity, relay activity, and verified peers.",
             width=session.terminal_width,
             clear=redraw_in_place,
-            unicode_style=unicode_style,
+            unicode_style=unicode_style, collapsed=collapsed,
         )
     )
     await session.write_line(
@@ -2721,6 +2741,7 @@ async def _outbox_screen(session: Session, lane: DatabaseLane, actor: User) -> N
 
     actionable = [item for item in items if item.status in ("retrying", "dead_lettered")]
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     arrow = " → " if unicode_style else " -> "
     selected = await pick_item(
         session, actionable,
@@ -3078,8 +3099,9 @@ async def _node_menu(session: Session, lane: DatabaseLane, actor: User, node_con
     # cancellation timing.
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
-    await _draw_node_menu(session, node_controls, description_level, redraw_in_place, unicode_style)
+    await _draw_node_menu(session, node_controls, description_level, redraw_in_place, unicode_style, collapsed)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -3089,23 +3111,23 @@ async def _node_menu(session: Session, lane: DatabaseLane, actor: User, node_con
         elif choice == "w":
             await session.write_line("")
             await _who_screen(session, lane, actor, node_controls)
-            await _draw_node_menu(session, node_controls, description_level, redraw_in_place, unicode_style)
+            await _draw_node_menu(session, node_controls, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "s":
             await session.write_line("")
             await _shutdown_screen(session, lane, actor, node_controls)
-            await _draw_node_menu(session, node_controls, description_level, redraw_in_place, unicode_style)
+            await _draw_node_menu(session, node_controls, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "m":
             await session.write_line("")
             await _maintenance_mode_screen(session, lane, actor, node_controls)
-            await _draw_node_menu(session, node_controls, description_level, redraw_in_place, unicode_style)
+            await _draw_node_menu(session, node_controls, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "d":
             await session.write_line("")
             await _drain_screen(session, lane, actor, node_controls)
-            await _draw_node_menu(session, node_controls, description_level, redraw_in_place, unicode_style)
+            await _draw_node_menu(session, node_controls, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "l":
             await session.write_line("")
             await _lock_and_drain_screen(session, lane, actor, node_controls)
-            await _draw_node_menu(session, node_controls, description_level, redraw_in_place, unicode_style)
+            await _draw_node_menu(session, node_controls, description_level, redraw_in_place, unicode_style, collapsed)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -3121,6 +3143,7 @@ def _shutdown_source_label(source: str | None) -> str:
 async def _draw_node_menu(
     session: Session, node_controls: NodeControls, description_level: str, redraw_in_place: bool,
     unicode_style: bool,
+    collapsed: bool,
 ) -> None:
     """
     Design doc -- node management, Thiesi's own dogfood-testing report:
@@ -3133,7 +3156,8 @@ async def _draw_node_menu(
     the node-management screen, not a place that needs restraint about
     operational detail) rather than only when something's active.
     """
-    await session.write_line("\r\n" + screen_title("Node management", width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style))
+    await session.write_line("\r\n" + screen_title("Node management",
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed))
     await session.write_line(
         _menu_row(
             [
@@ -3641,8 +3665,9 @@ async def _lock_and_drain_screen(session: Session, lane: DatabaseLane, actor: Us
 async def _welcome_banner_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
-    await _draw_welcome_banner_menu(session, lane, description_level, redraw_in_place, unicode_style)
+    await _draw_welcome_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -3652,19 +3677,19 @@ async def _welcome_banner_menu(session: Session, lane: DatabaseLane, actor: User
         elif choice == "p":
             await session.write_line("")
             await _preview_welcome_banner_screen(session, lane)
-            await _draw_welcome_banner_menu(session, lane, description_level, redraw_in_place, unicode_style)
+            await _draw_welcome_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "e":
             await session.write_line("")
             await _enable_welcome_banner_screen(session, lane, actor)
-            await _draw_welcome_banner_menu(session, lane, description_level, redraw_in_place, unicode_style)
+            await _draw_welcome_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "d":
             await session.write_line("")
             await _disable_welcome_banner_screen(session, lane, actor)
-            await _draw_welcome_banner_menu(session, lane, description_level, redraw_in_place, unicode_style)
+            await _draw_welcome_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "x":
             await session.write_line("")
             await _edit_welcome_banner_screen(session, lane, actor)
-            await _draw_welcome_banner_menu(session, lane, description_level, redraw_in_place, unicode_style)
+            await _draw_welcome_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -3672,6 +3697,7 @@ async def _welcome_banner_menu(session: Session, lane: DatabaseLane, actor: User
 async def _draw_welcome_banner_menu(
     session: Session, lane: DatabaseLane, description_level: str, redraw_in_place: bool,
     unicode_style: bool,
+    collapsed: bool,
 ) -> None:
     status = await lane.run(welcome_banner_status)
     state = "ENABLED" if status.enabled else "disabled"
@@ -3687,7 +3713,8 @@ async def _draw_welcome_banner_menu(
         + colored(str(status.path), fg_color=METADATA_COLOR)
         + colored(f" ({file_state})", fg_color=file_color)
     )
-    await session.write_line("\r\n" + screen_title("Welcome banner", width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style))
+    await session.write_line("\r\n" + screen_title("Welcome banner",
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed))
     await session.write_line(detail)
     await session.write_line(
         _menu_row(
@@ -3820,8 +3847,9 @@ async def _content_menu(
 ) -> None:
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
-    await _draw_content_menu(session, description_level, redraw_in_place, unicode_style)
+    await _draw_content_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -3831,38 +3859,39 @@ async def _content_menu(
         elif choice == "m":
             await session.write_line("")
             await _board_menu(session, lane, actor, link_context=link_context)
-            await _draw_content_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_content_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "f":
             await session.write_line("")
             await _area_menu(session, lane, actor, link_context=link_context)
-            await _draw_content_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_content_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "n":
             await session.write_line("")
             await _channel_menu(session, lane, actor, link_context=link_context)
-            await _draw_content_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_content_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "c":
             await session.write_line("")
             await _category_menu(session, lane, actor)
-            await _draw_content_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_content_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "o":
             await session.write_line("")
             await _community_menu(session, lane, actor)
-            await _draw_content_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_content_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "g":
             await session.write_line("")
             await _grant_moderator_screen(session, lane, actor)
-            await _draw_content_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_content_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "r":
             await session.write_line("")
             await _revoke_moderator_screen(session, lane, actor)
-            await _draw_content_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_content_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
-async def _draw_content_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool) -> None:
+async def _draw_content_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool, collapsed: bool) -> None:
     await session.write_line(
-        "\r\n" + screen_title("Manage message boards/file areas/chat channels", width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style)
+        "\r\n" + screen_title("Manage message boards/file areas/chat channels",
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
     )
     await session.write_line(
         _menu_row(
@@ -4225,8 +4254,9 @@ def _community_label(db: Database, community_id: int | None) -> str:
 async def _community_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
-    await _draw_community_menu(session, description_level, redraw_in_place, unicode_style)
+    await _draw_community_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -4236,17 +4266,18 @@ async def _community_menu(session: Session, lane: DatabaseLane, actor: User) -> 
         elif choice == "c":
             await session.write_line("")
             await _community_screen(session, lane, actor)
-            await _draw_community_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_community_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "l":
             await session.write_line("")
             await _list_communities_screen(session, lane, actor)
-            await _draw_community_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_community_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
-async def _draw_community_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool) -> None:
-    await session.write_line("\r\n" + screen_title("Communities", width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style))
+async def _draw_community_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool, collapsed: bool) -> None:
+    await session.write_line("\r\n" + screen_title("Communities",
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed))
     await session.write_line(
         _menu_row(
             [
@@ -4383,6 +4414,7 @@ async def _community_screen(
         description_level=await lane.run(menu_description_level, actor),
         redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
         unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
     )
     if community is not None:
         verb = "Updated" if existing is not None else "Created Community"
@@ -4413,8 +4445,9 @@ async def _community_detail_screen(session: Session, lane: DatabaseLane, actor: 
     holds no content of its own (design doc §16)."""
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
-    await _draw_community_detail(session, community, description_level, redraw_in_place, unicode_style)
+    await _draw_community_detail(session, community, description_level, redraw_in_place, unicode_style, collapsed)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -4426,13 +4459,13 @@ async def _community_detail_screen(session: Session, lane: DatabaseLane, actor: 
             updated = await _community_screen(session, lane, actor, existing=community)
             if updated is not None:
                 community = updated
-            await _draw_community_detail(session, community, description_level, redraw_in_place, unicode_style)
+            await _draw_community_detail(session, community, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "d":
             await session.write_line("")
             deleted = await _delete_community_screen(session, lane, actor, community)
             if deleted:
                 return
-            await _draw_community_detail(session, community, description_level, redraw_in_place, unicode_style)
+            await _draw_community_detail(session, community, description_level, redraw_in_place, unicode_style, collapsed)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -4440,9 +4473,11 @@ async def _community_detail_screen(session: Session, lane: DatabaseLane, actor: 
 async def _draw_community_detail(
     session: Session, community: Community, description_level: str, redraw_in_place: bool,
     unicode_style: bool,
+    collapsed: bool,
 ) -> None:
     await session.write_line(
-        "\r\n" + screen_title(sanitize_text(community.name), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style)
+        "\r\n" + screen_title(sanitize_text(community.name),
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
     )
     await session.write_line(
         f"Description: {sanitize_text(community.description) if community.description else '(none)'}"
@@ -4510,8 +4545,9 @@ async def _board_menu(
 ) -> None:
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
-    await _draw_board_menu(session, description_level, redraw_in_place, unicode_style)
+    await _draw_board_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -4521,17 +4557,18 @@ async def _board_menu(
         elif choice == "c":
             await session.write_line("")
             await _board_screen(session, lane, actor)
-            await _draw_board_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_board_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "l":
             await session.write_line("")
             await _list_boards_screen(session, lane, actor, link_context=link_context)
-            await _draw_board_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_board_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
-async def _draw_board_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool) -> None:
-    await session.write_line("\r\n" + screen_title("Message boards", width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style))
+async def _draw_board_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool, collapsed: bool) -> None:
+    await session.write_line("\r\n" + screen_title("Message boards",
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed))
     await session.write_line(
         _menu_row(
             [
@@ -4694,6 +4731,7 @@ async def _board_screen(
         description_level=await lane.run(menu_description_level, actor),
         redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
         unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
     )
     if board is not None:
         verb = "Updated" if existing is not None else "Created message board"
@@ -4730,10 +4768,11 @@ async def _board_detail_screen(
     linked = await lane.run(is_board_linked, board) if link_context is not None else False
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
     is_origin, has_incoming_offer, is_closed = await _draw_board_detail(
         session, lane, board, linked=linked, link_context=link_context, description_level=description_level,
-        redraw_in_place=redraw_in_place, unicode_style=unicode_style,
+        redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
     )
     while True:
         choice = (await session.read_key()).lower()
@@ -4749,7 +4788,7 @@ async def _board_detail_screen(
             is_origin, has_incoming_offer, is_closed = await _draw_board_detail(
                 session, lane, board, linked=linked, link_context=link_context,
                 description_level=description_level, redraw_in_place=redraw_in_place,
-                unicode_style=unicode_style,
+                unicode_style=unicode_style, collapsed=collapsed,
             )
         elif choice == "d":
             await session.write_line("")
@@ -4759,7 +4798,7 @@ async def _board_detail_screen(
             is_origin, has_incoming_offer, is_closed = await _draw_board_detail(
                 session, lane, board, linked=linked, link_context=link_context,
                 description_level=description_level, redraw_in_place=redraw_in_place,
-                unicode_style=unicode_style,
+                unicode_style=unicode_style, collapsed=collapsed,
             )
         elif choice == "p":
             await session.write_line("")
@@ -4767,7 +4806,7 @@ async def _board_detail_screen(
             is_origin, has_incoming_offer, is_closed = await _draw_board_detail(
                 session, lane, board, linked=linked, link_context=link_context,
                 description_level=description_level, redraw_in_place=redraw_in_place,
-                unicode_style=unicode_style,
+                unicode_style=unicode_style, collapsed=collapsed,
             )
         elif choice == "l" and link_context is not None and not linked:
             await session.write_line("")
@@ -4776,7 +4815,7 @@ async def _board_detail_screen(
             is_origin, has_incoming_offer, is_closed = await _draw_board_detail(
                 session, lane, board, linked=linked, link_context=link_context,
                 description_level=description_level, redraw_in_place=redraw_in_place,
-                unicode_style=unicode_style,
+                unicode_style=unicode_style, collapsed=collapsed,
             )
         elif choice == "t" and link_context is not None and linked and is_origin and not is_closed:
             await session.write_line("")
@@ -4784,7 +4823,7 @@ async def _board_detail_screen(
             is_origin, has_incoming_offer, is_closed = await _draw_board_detail(
                 session, lane, board, linked=linked, link_context=link_context,
                 description_level=description_level, redraw_in_place=redraw_in_place,
-                unicode_style=unicode_style,
+                unicode_style=unicode_style, collapsed=collapsed,
             )
         elif choice == "c" and link_context is not None and linked and is_origin and not is_closed:
             await session.write_line("")
@@ -4792,7 +4831,7 @@ async def _board_detail_screen(
             is_origin, has_incoming_offer, is_closed = await _draw_board_detail(
                 session, lane, board, linked=linked, link_context=link_context,
                 description_level=description_level, redraw_in_place=redraw_in_place,
-                unicode_style=unicode_style,
+                unicode_style=unicode_style, collapsed=collapsed,
             )
         elif choice == "a" and has_incoming_offer:
             await session.write_line("")
@@ -4800,7 +4839,7 @@ async def _board_detail_screen(
             is_origin, has_incoming_offer, is_closed = await _draw_board_detail(
                 session, lane, board, linked=linked, link_context=link_context,
                 description_level=description_level, redraw_in_place=redraw_in_place,
-                unicode_style=unicode_style,
+                unicode_style=unicode_style, collapsed=collapsed,
             )
         else:
             await session.write(reject_unhandled_key(choice))
@@ -5065,6 +5104,7 @@ async def _draw_board_detail(
     description_level: str = "off",
     redraw_in_place: bool = False,
     unicode_style: bool = False,
+    collapsed: bool = False,
 ) -> tuple[bool, bool, bool]:
     """
     Returns `(is_origin, has_incoming_offer, is_closed)` (design doc
@@ -5079,7 +5119,8 @@ async def _draw_board_detail(
     recomputation immediately after.
     """
     await session.write_line(
-        "\r\n" + screen_title(sanitize_text(board.name), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style)
+        "\r\n" + screen_title(sanitize_text(board.name),
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
     )
     await session.write_line(f"Description: {sanitize_text(board.description) if board.description else '(none)'}")
     # Dogfood follow-up: nothing on this screen (or the board-list picker)
@@ -5211,9 +5252,11 @@ async def _pending_posts_screen(
 async def _draw_post_action(
     session: Session, post: Post, description_level: str, redraw_in_place: bool,
     unicode_style: bool,
+    collapsed: bool,
 ) -> None:
     await session.write_line(
-        "\r\n" + screen_title(sanitize_text(post.subject), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style)
+        "\r\n" + screen_title(sanitize_text(post.subject),
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
     )
     await session.write_line(f"By: {sanitize_text(post.author_label)}")
     await session.write_line(reflow(sanitize_text(post.body, allow_newlines=True), width=session.terminal_width))
@@ -5244,8 +5287,9 @@ async def _post_action_screen(
 ) -> None:
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
-    await _draw_post_action(session, post, description_level, redraw_in_place, unicode_style)
+    await _draw_post_action(session, post, description_level, redraw_in_place, unicode_style, collapsed)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -5267,18 +5311,18 @@ async def _post_action_screen(
                 await lane.run(delete_post, post, deleted_by=actor)
             except PostError as exc:
                 await session.write_line(f"Error: {exc}")
-                await _draw_post_action(session, post, description_level, redraw_in_place, unicode_style)
+                await _draw_post_action(session, post, description_level, redraw_in_place, unicode_style, collapsed)
                 continue
             await session.write_line("Rejected.")
             return
         elif choice == "p":
             await session.write_line("")
             post = await lane.run(set_post_pinned, post, not post.pinned, changed_by=actor)
-            await _draw_post_action(session, post, description_level, redraw_in_place, unicode_style)
+            await _draw_post_action(session, post, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "x":
             await session.write_line("")
             post = await lane.run(set_post_exempt, post, not post.exempt_from_expiry, changed_by=actor)
-            await _draw_post_action(session, post, description_level, redraw_in_place, unicode_style)
+            await _draw_post_action(session, post, description_level, redraw_in_place, unicode_style, collapsed)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -5291,8 +5335,9 @@ async def _area_menu(
 ) -> None:
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
-    await _draw_area_menu(session, description_level, redraw_in_place, unicode_style)
+    await _draw_area_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -5302,21 +5347,22 @@ async def _area_menu(
         elif choice == "c":
             await session.write_line("")
             await _area_screen(session, lane, actor)
-            await _draw_area_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_area_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "l":
             await session.write_line("")
             await _list_areas_screen(session, lane, actor, link_context=link_context)
-            await _draw_area_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_area_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "g":
             await session.write_line("")
             await _gc_screen(session, lane)
-            await _draw_area_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_area_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
-async def _draw_area_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool) -> None:
-    await session.write_line("\r\n" + screen_title("File areas", width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style))
+async def _draw_area_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool, collapsed: bool) -> None:
+    await session.write_line("\r\n" + screen_title("File areas",
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed))
     await session.write_line(
         menu_grid(
             [(
@@ -5536,6 +5582,7 @@ async def _area_screen(
         description_level=await lane.run(menu_description_level, actor),
         redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
         unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
     )
     if area is not None:
         verb = "Updated" if existing is not None else "Created file area"
@@ -5572,8 +5619,9 @@ async def _area_detail_screen(
     linked = await lane.run(is_area_linked, area) if link_context is not None else False
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
-    await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style)
+    await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -5585,22 +5633,22 @@ async def _area_detail_screen(
             updated = await _area_screen(session, lane, actor, existing=area)
             if updated is not None:
                 area = updated
-            await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style)
+            await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
         elif choice == "d":
             await session.write_line("")
             deleted = await _delete_area_screen(session, lane, actor, area)
             if deleted:
                 return
-            await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style)
+            await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
         elif choice == "p":
             await session.write_line("")
             await _pending_files_screen(session, lane, actor, area)
-            await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style)
+            await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
         elif choice == "l" and link_context is not None and not linked:
             await session.write_line("")
             await _link_area_screen(session, lane, area, link_context)
             linked = await lane.run(is_area_linked, area)
-            await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style)
+            await _draw_area_detail(session, lane, area, linked=linked, link_context=link_context, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -5615,9 +5663,11 @@ async def _draw_area_detail(
     description_level: str = "off",
     redraw_in_place: bool = False,
     unicode_style: bool = False,
+    collapsed: bool = False,
 ) -> None:
     await session.write_line(
-        "\r\n" + screen_title(sanitize_text(area.name), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style)
+        "\r\n" + screen_title(sanitize_text(area.name),
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
     )
     await session.write_line(f"Description: {sanitize_text(area.description) if area.description else '(none)'}")
     file_count, last_file_at = await lane.run(count_visible_files, area)
@@ -5760,9 +5810,11 @@ async def _pending_files_screen(session: Session, lane: DatabaseLane, actor: Use
 async def _draw_file_action(
     session: Session, entry: FileEntry, description_level: str, redraw_in_place: bool,
     unicode_style: bool,
+    collapsed: bool,
 ) -> None:
     await session.write_line(
-        "\r\n" + screen_title(sanitize_text(entry.filename), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style)
+        "\r\n" + screen_title(sanitize_text(entry.filename),
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
     )
     await session.write_line(f"By: {sanitize_text(entry.uploader_label)}")
     if entry.description:
@@ -5787,8 +5839,9 @@ async def _draw_file_action(
 async def _file_action_screen(session: Session, lane: DatabaseLane, actor: User, entry: FileEntry) -> None:
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
-    await _draw_file_action(session, entry, description_level, redraw_in_place, unicode_style)
+    await _draw_file_action(session, entry, description_level, redraw_in_place, unicode_style, collapsed)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -5808,11 +5861,11 @@ async def _file_action_screen(session: Session, lane: DatabaseLane, actor: User,
         elif choice == "p":
             await session.write_line("")
             entry = await lane.run(set_file_pinned, entry, not entry.pinned, changed_by=actor)
-            await _draw_file_action(session, entry, description_level, redraw_in_place, unicode_style)
+            await _draw_file_action(session, entry, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "x":
             await session.write_line("")
             entry = await lane.run(set_file_exempt, entry, not entry.exempt_from_expiry, changed_by=actor)
-            await _draw_file_action(session, entry, description_level, redraw_in_place, unicode_style)
+            await _draw_file_action(session, entry, description_level, redraw_in_place, unicode_style, collapsed)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -5836,8 +5889,9 @@ async def _channel_menu(
 ) -> None:
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
-    await _draw_channel_menu(session, description_level, redraw_in_place, unicode_style)
+    await _draw_channel_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -5847,17 +5901,18 @@ async def _channel_menu(
         elif choice == "c":
             await session.write_line("")
             await _channel_screen(session, lane, actor)
-            await _draw_channel_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_channel_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "l":
             await session.write_line("")
             await _list_channels_screen(session, lane, actor, link_context=link_context)
-            await _draw_channel_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_channel_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
-async def _draw_channel_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool) -> None:
-    await session.write_line("\r\n" + screen_title("Chat channels", width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style))
+async def _draw_channel_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool, collapsed: bool) -> None:
+    await session.write_line("\r\n" + screen_title("Chat channels",
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed))
     await session.write_line(
         _menu_row(
             [
@@ -6013,6 +6068,7 @@ async def _channel_screen(
         description_level=await lane.run(menu_description_level, actor),
         redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
         unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
     )
     if channel is not None:
         verb = "Updated" if existing is not None else "Created chat channel"
@@ -6051,8 +6107,9 @@ async def _channel_detail_screen(
     linked = await lane.run(is_channel_linked, channel) if link_context is not None else False
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
-    await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style)
+    await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -6064,22 +6121,22 @@ async def _channel_detail_screen(
             updated = await _channel_screen(session, lane, actor, existing=channel)
             if updated is not None:
                 channel = updated
-            await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style)
+            await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
         elif choice == "d":
             await session.write_line("")
             deleted = await _delete_channel_screen(session, lane, actor, channel)
             if deleted:
                 return
-            await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style)
+            await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
         elif choice == "r":
             await session.write_line("")
             await _channel_restrictions_screen(session, lane, actor, channel)
-            await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style)
+            await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
         elif choice == "l" and link_context is not None and not linked:
             await session.write_line("")
             await _link_channel_screen(session, lane, channel, link_context)
             linked = await lane.run(is_channel_linked, channel)
-            await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style)
+            await _draw_channel_detail(session, lane, channel, linked=linked, link_context=link_context, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -6094,9 +6151,11 @@ async def _draw_channel_detail(
     description_level: str = "off",
     redraw_in_place: bool = False,
     unicode_style: bool = False,
+    collapsed: bool = False,
 ) -> None:
     await session.write_line(
-        "\r\n" + screen_title(sanitize_text(channel.name), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style)
+        "\r\n" + screen_title(sanitize_text(channel.name),
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
     )
     await session.write_line(
         f"Description: {sanitize_text(channel.description) if channel.description else '(none)'}"
@@ -6283,8 +6342,9 @@ async def _delete_channel_screen(session: Session, lane: DatabaseLane, actor: Us
 async def _category_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
-    await _draw_category_menu(session, description_level, redraw_in_place, unicode_style)
+    await _draw_category_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -6299,7 +6359,7 @@ async def _category_menu(session: Session, lane: DatabaseLane, actor: User) -> N
                 list_subcategories=list_board_subcategories, delete=delete_board_category,
                 error_type=CategoryError, title="Message board categories",
             )
-            await _draw_category_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_category_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "f":
             await session.write_line("")
             await _generic_category_screen(
@@ -6308,7 +6368,7 @@ async def _category_menu(session: Session, lane: DatabaseLane, actor: User) -> N
                 list_subcategories=list_file_subcategories, delete=delete_file_category,
                 error_type=FileCategoryError, title="File-area categories",
             )
-            await _draw_category_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_category_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "c":
             await session.write_line("")
             await _generic_category_screen(
@@ -6317,13 +6377,14 @@ async def _category_menu(session: Session, lane: DatabaseLane, actor: User) -> N
                 list_subcategories=list_channel_subcategories, delete=delete_channel_category,
                 error_type=ChannelCategoryError, title="Chat channel categories",
             )
-            await _draw_category_menu(session, description_level, redraw_in_place, unicode_style)
+            await _draw_category_menu(session, description_level, redraw_in_place, unicode_style, collapsed)
         else:
             await session.write(reject_unhandled_key(choice))
 
 
-async def _draw_category_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool) -> None:
-    await session.write_line("\r\n" + screen_title("Categories", width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style))
+async def _draw_category_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool, collapsed: bool) -> None:
+    await session.write_line("\r\n" + screen_title("Categories",
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed))
     await session.write_line(
         _menu_row(
             [
@@ -6346,8 +6407,9 @@ async def _generic_category_screen(
 ) -> None:
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
-    await _draw_generic_category_menu(session, title, description_level, redraw_in_place, unicode_style)
+    await _draw_generic_category_menu(session, title, description_level, redraw_in_place, unicode_style, collapsed)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -6359,14 +6421,14 @@ async def _generic_category_screen(
             await _create_category_screen(
                 session, lane, actor, create=create, list_top_level=list_top_level, error_type=error_type,
             )
-            await _draw_generic_category_menu(session, title, description_level, redraw_in_place, unicode_style)
+            await _draw_generic_category_menu(session, title, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "l":
             await session.write_line("")
             await _list_categories_screen(
                 session, lane, actor, list_top_level=list_top_level,
                 list_subcategories=list_subcategories, delete=delete,
             )
-            await _draw_generic_category_menu(session, title, description_level, redraw_in_place, unicode_style)
+            await _draw_generic_category_menu(session, title, description_level, redraw_in_place, unicode_style, collapsed)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -6374,8 +6436,10 @@ async def _generic_category_screen(
 async def _draw_generic_category_menu(
     session: Session, title: str, description_level: str, redraw_in_place: bool,
     unicode_style: bool,
+    collapsed: bool,
 ) -> None:
-    await session.write_line("\r\n" + screen_title(title, width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style))
+    await session.write_line("\r\n" + screen_title(title,
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed))
     await session.write_line(
         _menu_row(
             [

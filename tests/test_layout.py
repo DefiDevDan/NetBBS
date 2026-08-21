@@ -95,6 +95,53 @@ def test_screen_title_truncates_every_visible_line_to_terminal_width():
     assert all(visible_width(line) <= 12 for line in result.split("\r\n"))
 
 
+# -- breadcrumb collapse (dogfood feature request, follow-up to the ---------
+# -- pre-5.0.0 style rollout) ------------------------------------------------
+
+
+def test_screen_title_shows_the_full_breadcrumb_when_it_fits():
+    result = visible(screen_title("Trust policy", breadcrumb=("NetBBS", "System"), width=80))
+    assert result.split("\r\n")[0] == "NetBBS / System / Trust policy"
+
+
+def test_screen_title_dynamically_collapses_when_the_full_breadcrumb_does_not_fit():
+    """The actual bug fix: the old ellipsis-based truncation cut off the
+    *current location* -- the one thing a breadcrumb needs to say --
+    while keeping the least useful ancestor prefix. A too-narrow
+    terminal must show the current segment, not a chopped "NetBBS /
+    Sys..."."""
+    result = visible(screen_title("Trust policy", breadcrumb=("NetBBS", "System"), width=15))
+    assert result.split("\r\n")[0] == "Trust policy"
+
+
+def test_screen_title_collapsed_true_forces_the_short_form_even_with_room_to_spare():
+    result = visible(
+        screen_title("Trust policy", breadcrumb=("NetBBS", "System"), width=80, collapsed=True)
+    )
+    assert result.split("\r\n")[0] == "Trust policy"
+
+
+def test_screen_title_collapse_is_a_no_op_with_no_breadcrumb_ancestors():
+    """A single-segment title has nothing to collapse away from --
+    `collapsed=True` must not do anything strange to it."""
+    plain = visible(screen_title("Home", breadcrumb=(), width=80))
+    collapsed = visible(screen_title("Home", breadcrumb=(), width=80, collapsed=True))
+    assert plain == collapsed == "Home\r\n------------"  # divider has a 12-char floor
+
+
+def test_screen_title_collapsed_divider_matches_the_collapsed_titles_own_length():
+    """The divider rule underlines what's actually shown, not the
+    hypothetical full breadcrumb -- a long "NetBBS / System" prefix
+    collapsing away shouldn't leave a divider longer than the short
+    title now displayed above it."""
+    result = visible(
+        screen_title("Trust policy", breadcrumb=("NetBBS", "System"), width=80, collapsed=True)
+    )
+    lines = result.split("\r\n")
+    assert lines[0] == "Trust policy"
+    assert lines[-1] == "-" * len("Trust policy")
+
+
 def test_screen_title_cuts_cjk_text_at_a_display_column_boundary():
     """Dogfood report: international users found non-ASCII handling
     poor. A naive character slice (the old `location[:width]`) can

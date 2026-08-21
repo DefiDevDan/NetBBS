@@ -106,7 +106,7 @@ from netbbs.communities import (
     get_effective_name_requirement,
     list_communities,
 )
-from netbbs.config import RegistrationMode, get_registration_mode
+from netbbs.config import RegistrationMode, get_node_display_name, get_registration_mode
 from netbbs.directory import (
     MAX_BIO_BYTES,
     MAX_BIO_LINES,
@@ -152,6 +152,7 @@ from netbbs.net.chat_flow import (
     run_direct_chat_invite_flow,
     run_direct_chat_loop,
 )
+from netbbs.net.breadcrumb_preference import breadcrumb_collapsed_enabled, set_breadcrumb_collapsed_enabled
 from netbbs.net.color_depth_preference import color_depth_override, set_color_depth_override
 from netbbs.net.menu_description_preference import menu_description_level, set_menu_description_level
 from netbbs.net.redraw_preference import redraw_in_place_enabled, set_redraw_in_place_enabled
@@ -598,7 +599,7 @@ async def _confirm_unicode_style(session: Session, db: Database, user: User) -> 
     )
     await session.write_line(
         screen_title(
-            "Example", breadcrumb=("NetBBS", "System"), width=session.terminal_width, unicode_style=True
+            "Example", breadcrumb=(session.node_display_name, "System"), width=session.terminal_width, unicode_style=True
         ).split("\r\n")[0]
     )
     switch_off = await prompt_yes_no(
@@ -659,6 +660,14 @@ async def run_authenticated_session(
     check at all, matching this function's own established
     degrade-gracefully convention.
     """
+    # Resolved once, right here, rather than looked up fresh by every
+    # screen_title() call site below (netbbs.net.session.Session.
+    # node_display_name's own docstring): the same value for every
+    # caller on the node, so a session-lifetime cache is enough -- a
+    # SysOp renaming the node takes effect for new connections, not
+    # this one already in progress.
+    session.node_display_name = get_node_display_name(db)
+
     if (
         node_controls is not None
         and node_controls.maintenance.is_lockdown_active()
@@ -671,7 +680,16 @@ async def run_authenticated_session(
     # rather than repeated on every single menu redraw the way list
     # screens' own Ctrl-L/Ctrl-R hint is (netbbs.net.picker) -- the main
     # menu's own options line is already dense enough without adding a
-    # permanent trailer to it too.
+    # permanent trailer to it too. Separator matches the main menu's own
+    # subtitle line just below it (style spec, round following the
+    # pre-5.0.0 "beautify" audit) instead of the flat, always-ASCII "/"
+    # this used to hardcode -- built by hand rather than via field_row
+    # since the username segment keeps its own pre-existing `bold=True`,
+    # which that shared helper doesn't (and doesn't need to, for its
+    # other callers) support per-field.
+    welcome_separator = (
+        colored(" › ", fg_color=METADATA_COLOR) if unicode_style_enabled(db, user) else "  /  "
+    )
     welcome = (
         "\r\n"
         + colored(
@@ -679,8 +697,10 @@ async def run_authenticated_session(
             fg_color=ACCENT_COLOR,
             bold=True,
         )
-        + colored(f"  /  level {user.user_level}", fg_color=METADATA_COLOR)
-        + colored("  /  Ctrl-L redraws", fg_color=METADATA_COLOR)
+        + welcome_separator
+        + colored(f"level {user.user_level}", fg_color=VALUE_COLOR)
+        + welcome_separator
+        + colored("Ctrl-L redraws", fg_color=METADATA_COLOR)
     )
     if (
         node_controls is not None
@@ -1128,6 +1148,7 @@ async def _draw_main_menu(
     system_options.append(MenuEntry(label=menu_key("L", "ogoff"), brief="Disconnect from this node"))
 
     unicode_style = unicode_style_enabled(db, user)
+    collapsed = breadcrumb_collapsed_enabled(db, user)
     # "mail" pluralized is "mails," which reads oddly -- the Mail submenu's
     # own header (`_render_mail_menu`) already settled this exact wording as
     # "message(s)"; matching it here fixes both the missing pluralization
@@ -1139,6 +1160,7 @@ async def _draw_main_menu(
     )
     title = screen_title(
         "Main menu:",
+        breadcrumb=(session.node_display_name,),
         subtitle=field_row(
             [
                 (sanitize_text(user.username), ACCENT_COLOR),
@@ -1149,8 +1171,7 @@ async def _draw_main_menu(
         ),
         width=session.terminal_width,
         clear=redraw_in_place_enabled(db, user),
-        unicode_style=unicode_style,
-    )
+        unicode_style=unicode_style, collapsed=collapsed)
     options = menu_grid(
         [("Explore", explore_options), ("You", personal_options), ("System", system_options)],
         width=session.terminal_width,
@@ -1503,6 +1524,7 @@ async def _handle_incoming_invite(
             session, hub, presence, user, invite.inviter, invite.room_token,
             redraw_in_place=redraw_in_place_enabled(db, user),
             unicode_style=unicode_style_enabled(db, user),
+            collapsed=breadcrumb_collapsed_enabled(db, user),
         )
     else:
         await session.write_line(colored("Declined.", fg_color=MUTED_COLOR))
@@ -1771,11 +1793,11 @@ async def _find_screen(
     await session.write_line(
         "\r\n" + screen_title(
             "Search",
+            breadcrumb=(session.node_display_name,),
             subtitle="Find posts, files, and retained chat on this node.",
             width=session.terminal_width,
             clear=redraw_in_place_enabled(db, user),
-            unicode_style=unicode_style_enabled(db, user),
-        )
+            unicode_style=unicode_style_enabled(db, user), collapsed=breadcrumb_collapsed_enabled(db, user))
     )
     await session.write("Search terms (Enter cancels): ")
     query = (await session.read_line()).strip()
@@ -2300,6 +2322,7 @@ async def _resource_type_menu(
     description_level = menu_description_level(db, user)
     redraw_in_place = redraw_in_place_enabled(db, user)
     unicode_style = unicode_style_enabled(db, user)
+    collapsed = breadcrumb_collapsed_enabled(db, user)
     while True:
         show_boards = not community_scoped or _has_visible_boards(
             db, user, community_id=community_id, community_scoped=community_scoped
@@ -2321,11 +2344,11 @@ async def _resource_type_menu(
         option_list.append(MenuEntry(label=menu_key("B", "ack"), brief="Return to the previous menu"))
         heading = screen_title(
             menu_header,
-            breadcrumb=("NetBBS", "Communities") if community_scoped else ("NetBBS",),
+            breadcrumb=(session.node_display_name, "Communities") if community_scoped else ("NetBBS",),
             subtitle="Choose a space to explore",
             width=session.terminal_width,
             clear=redraw_in_place,
-            unicode_style=unicode_style,
+            unicode_style=unicode_style, collapsed=collapsed,
         )
         await session.write_line(f"\r\n{heading}")
         await session.write_line(
@@ -2622,6 +2645,7 @@ async def _browse_boards_in_category(
         return SORT_MODE_LABELS[mode_box["mode"]]
 
     unicode_style = unicode_style_enabled(db, user)
+    collapsed = breadcrumb_collapsed_enabled(db, user)
     title_sep = "›" if unicode_style else "-"
     title = f"{title_prefix} {title_sep} message boards" if title_prefix is not None else "Available message boards"
 
@@ -2645,6 +2669,7 @@ async def _browse_boards_in_category(
             on_sort=on_sort_flat,
             sort_label=_sort_label,
             unicode_style=unicode_style,
+            collapsed=collapsed,
         )
         if board is not None:
             await _show_board(session, db, board, user, link_context=link_context)
@@ -2682,6 +2707,7 @@ async def _browse_boards_in_category(
         title=title,
         empty_message="No message boards are available to you yet.",
         unicode_style=unicode_style,
+        collapsed=collapsed,
     )
     if selected is None:
         return
@@ -2734,6 +2760,7 @@ async def _render_board_page(
     description_level: str,
     redraw_in_place: bool,
     unicode_style: bool = False,
+    collapsed: bool = False,
 ) -> None:
     """Renders one page of posts plus its navigation options — the unit
     that should be redrawn on an actual page change (initial entry,
@@ -2741,7 +2768,7 @@ async def _render_board_page(
     whether anything changed."""
     await _render_post_page(
         session, db, board_name, page, name_requirement=name_requirement, redraw_in_place=redraw_in_place,
-        unicode_style=unicode_style,
+        unicode_style=unicode_style, collapsed=collapsed,
     )
     options = []
     if page.has_older:
@@ -2805,6 +2832,7 @@ async def _show_board(
     description_level = menu_description_level(db, user)
     redraw_in_place = redraw_in_place_enabled(db, user)
     unicode_style = unicode_style_enabled(db, user)
+    collapsed = breadcrumb_collapsed_enabled(db, user)
 
     def _refetch_current_page() -> PostPage:
         """Re-fetches whichever page is currently on screen, using the
@@ -2831,6 +2859,7 @@ async def _show_board(
             description_level=description_level,
             redraw_in_place=redraw_in_place,
             unicode_style=unicode_style,
+            collapsed=collapsed,
         )
         if current_page.posts:
             record_board_seen(db, user, board, current_page.posts[-1])
@@ -2878,6 +2907,7 @@ async def _show_board(
                 description_level=description_level,
                 redraw_in_place=redraw_in_place,
                 unicode_style=unicode_style,
+                collapsed=collapsed,
             )
             if action is ReviewAction.CANCEL:
                 await session.write_line(colored("Post cancelled.", fg_color=MUTED_COLOR))
@@ -2984,7 +3014,7 @@ async def _show_board(
         # navigation loop (nothing to browse either way), but offers the
         # same explicit choice before composing anything.
         await session.write_line(
-            f"\r\n{screen_title(board_name, breadcrumb=('NetBBS', 'Message boards'), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style)}"
+            f"\r\n{screen_title(board_name, breadcrumb=(session.node_display_name, 'Message boards'), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)}"
         )
         await session.write_line(
             f"\r\n{empty_state('This message board has no posts yet', detail='It is ready for its first conversation.', width=session.terminal_width)}"
@@ -3271,14 +3301,15 @@ async def _render_post_page(
     name_requirement: str | None,
     redraw_in_place: bool = False,
     unicode_style: bool = False,
+    collapsed: bool = False,
 ) -> None:
     header = screen_title(
         board_name,
-        breadcrumb=("NetBBS", "Message boards"),
+        breadcrumb=(session.node_display_name, "Message boards"),
         subtitle=f"{len(page.posts)} post{'s' if len(page.posts) != 1 else ''} on this page",
         width=session.terminal_width,
         clear=redraw_in_place,
-        unicode_style=unicode_style,
+        unicode_style=unicode_style, collapsed=collapsed,
     )
     await session.write_line(f"\r\n{header}")
     for position, post in enumerate(page.posts, start=1):
@@ -3383,11 +3414,12 @@ async def _show_vcard(session: Session, db: Database, target: User, requesting_u
     await session.write_line(
         "\r\n" + screen_title(
             username,
-            breadcrumb=("NetBBS", "Directory"),
+            breadcrumb=(session.node_display_name, "Directory"),
             subtitle="Member profile",
             width=session.terminal_width,
             clear=redraw_in_place_enabled(db, requesting_user),
             unicode_style=unicode_style_enabled(db, requesting_user),
+            collapsed=breadcrumb_collapsed_enabled(db, requesting_user),
         )
     )
     await session.write_line(
@@ -3499,11 +3531,12 @@ async def _caller_who_screen(
     await session.write_line(
         "\r\n" + screen_title(
             target.username,
-            breadcrumb=("NetBBS", "Who's online"),
+            breadcrumb=(session.node_display_name, "Who's online"),
             subtitle="Choose how you would like to connect.",
             width=session.terminal_width,
             clear=redraw_in_place_enabled(db, user),
             unicode_style=unicode_style_enabled(db, user),
+            collapsed=breadcrumb_collapsed_enabled(db, user),
         )
     )
     options = [MenuEntry(label=menu_key("M", "essage"), brief="Send a one-off message")]
@@ -3765,6 +3798,7 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
     description_level = await lane.run(menu_description_level, user)
     redraw_in_place = await lane.run(redraw_in_place_enabled, user)
     unicode_style = await lane.run(unicode_style_enabled, user)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, user)
 
     draft: Draft = {
         "bio": await lane.run(get_bio, user) or "",
@@ -3777,6 +3811,7 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
         "description_level": description_level,
         "redraw_in_place": redraw_in_place,
         "unicode_style": unicode_style,
+        "breadcrumb_collapsed": collapsed,
         "sort_preference_count": len(await lane.run(list_sort_preferences, user)),
         "ssh_fingerprint": user.fingerprint,
     }
@@ -3952,6 +3987,16 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
             brief="Unicode arrows/bullets vs. plain ASCII",
         ),
         FieldSpec(
+            key="breadcrumb_collapsed", hotkey="l", menu_text=menu_key("L", "ocation style"),
+            label="Location style",
+            render=lambda d: "always collapsed" if d["breadcrumb_collapsed"] else "auto",
+            prompt=live_choice_field(
+                "breadcrumb_collapsed", [False, True],
+                persist=lambda lane, v: lane.run(set_breadcrumb_collapsed_enabled, user, v),
+            ),
+            brief="Always show only the current location, not the full path",
+        ),
+        FieldSpec(
             key="ssh_public_key", hotkey="k", menu_text=menu_key("k", "ey", prefix="SSH public "),
             label="SSH public key",
             render=lambda d: d["ssh_fingerprint"] or "(none set)",
@@ -3971,6 +4016,7 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
         redraw_in_place=redraw_in_place,
         preamble=_preamble,
         unicode_style=unicode_style,
+        collapsed=collapsed,
     )
 
 
@@ -4107,6 +4153,7 @@ async def _identity_details_screen(session: Session, lane: DatabaseLane, user: U
     description_level = await lane.run(menu_description_level, user)
     redraw_in_place = await lane.run(redraw_in_place_enabled, user)
     unicode_style = await lane.run(unicode_style_enabled, user)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, user)
 
     draft: Draft = {
         "display_name": await lane.run(get_display_name, user),
@@ -4257,6 +4304,7 @@ async def _identity_details_screen(session: Session, lane: DatabaseLane, user: U
         redraw_in_place=redraw_in_place,
         preamble=_preamble,
         unicode_style=unicode_style,
+        collapsed=collapsed,
     )
 
 

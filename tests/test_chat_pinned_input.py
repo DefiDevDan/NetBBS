@@ -121,6 +121,7 @@ def test_input_row_repaint_reflects_a_long_line_via_truncation(db, hub, presence
         def __init__(self):
             self.written = []
             self.terminal_width = 10
+            self.node_display_name = "NetBBS"
             self.terminal_height = 24
 
         async def write(self, text: str) -> None:
@@ -174,6 +175,7 @@ class _LiveTypingSession(Session):
         self._queue: asyncio.Queue[int] = asyncio.Queue()
         self.written: list[str] = []
         self.terminal_width = 80
+        self.node_display_name = "NetBBS"
         self.terminal_height = 24
         self.peer_address = "203.0.113.5"
 

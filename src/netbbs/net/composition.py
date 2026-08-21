@@ -258,6 +258,7 @@ async def review_composition(
     description_level: str = "off",
     redraw_in_place: bool = False,
     unicode_style: bool = False,
+    collapsed: bool = False,
 ) -> ReviewAction:
     """Render a complete draft and return one explicit review action.
 
@@ -273,11 +274,11 @@ async def review_composition(
     resolved preference, not looked up here."""
     heading = screen_title(
         "Review composition",
-        breadcrumb=("NetBBS", "Compose"),
+        breadcrumb=(session.node_display_name, "Compose"),
         subtitle="Check the draft before continuing",
         width=session.terminal_width,
         clear=redraw_in_place,
-        unicode_style=unicode_style,
+        unicode_style=unicode_style, collapsed=collapsed,
     )
     await session.write_line(f"\r\n{heading}")
     if recipient is not None:

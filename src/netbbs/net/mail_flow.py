@@ -63,6 +63,7 @@ from netbbs.net.confirm import prompt_yes_no
 from netbbs.net.editor_preference import fullscreen_editor_enabled
 from netbbs.net.menu_description_preference import menu_description_level
 from netbbs.net.redraw_preference import redraw_in_place_enabled
+from netbbs.net.breadcrumb_preference import breadcrumb_collapsed_enabled
 from netbbs.net.unicode_style_preference import unicode_style_enabled
 from netbbs.net.picker import pick_item
 from netbbs.net.prose_editor import edit_prose
@@ -123,7 +124,8 @@ async def browse_mail(
     description_level = await lane.run(menu_description_level, user)
     redraw_in_place = await lane.run(redraw_in_place_enabled, user)
     unicode_style = await lane.run(unicode_style_enabled, user)
-    await _render_mail_menu(session, lane, user, description_level, redraw_in_place, unicode_style)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, user)
+    await _render_mail_menu(session, lane, user, description_level, redraw_in_place, unicode_style, collapsed)
     while True:
         choice = (await session.read_key()).lower()
 
@@ -133,15 +135,15 @@ async def browse_mail(
         elif choice == "i":
             await session.write_line("")
             await _show_inbox(session, lane, user)
-            await _render_mail_menu(session, lane, user, description_level, redraw_in_place, unicode_style)
+            await _render_mail_menu(session, lane, user, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "s":
             await session.write_line("")
             await _show_sent(session, lane, user)
-            await _render_mail_menu(session, lane, user, description_level, redraw_in_place, unicode_style)
+            await _render_mail_menu(session, lane, user, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "c":
             await session.write_line("")
             await _compose_mail(session, lane, user, link_context=link_context)
-            await _render_mail_menu(session, lane, user, description_level, redraw_in_place, unicode_style)
+            await _render_mail_menu(session, lane, user, description_level, redraw_in_place, unicode_style, collapsed)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -149,6 +151,7 @@ async def browse_mail(
 async def _render_mail_menu(
     session: Session, lane: DatabaseLane, user: User, description_level: str, redraw_in_place: bool = False,
     unicode_style: bool = False,
+    collapsed: bool = False,
 ) -> None:
     unread = await lane.run(unread_count, user)
     subtitle = (
@@ -156,7 +159,8 @@ async def _render_mail_menu(
         if unread
         else colored("Inbox caught up", fg_color=SUCCESS_COLOR)
     )
-    header = screen_title("Mail", subtitle=subtitle, width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style)
+    header = screen_title("Mail",
+            breadcrumb=(session.node_display_name,), subtitle=subtitle, width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
     await session.write_line(f"\r\n{header}")
 
     options = [
@@ -250,14 +254,15 @@ async def _render_message(
     to_label: str | None,
     redraw_in_place: bool = False,
     unicode_style: bool = False,
+    collapsed: bool = False,
 ) -> None:
     mailbox = "Sent" if to_label is not None else "Inbox"
     header = screen_title(
         sanitize_text(message.subject),
-        breadcrumb=("NetBBS", "Mail", mailbox),
+        breadcrumb=(session.node_display_name, "Mail", mailbox),
         width=session.terminal_width,
         clear=redraw_in_place,
-        unicode_style=unicode_style,
+        unicode_style=unicode_style, collapsed=collapsed,
     )
     await session.write_line(f"\r\n{header}")
     if to_label is not None:
@@ -289,6 +294,7 @@ async def _show_inbox_message(session: Session, lane: DatabaseLane, user: User, 
         session, lane, message=message, to_label=None,
         redraw_in_place=await lane.run(redraw_in_place_enabled, user),
         unicode_style=await lane.run(unicode_style_enabled, user),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, user),
     )
     description_level = await lane.run(menu_description_level, user)
 
@@ -339,6 +345,7 @@ async def _show_sent_message(session: Session, lane: DatabaseLane, user: User, m
         session, lane, message=message, to_label=to_label,
         redraw_in_place=await lane.run(redraw_in_place_enabled, user),
         unicode_style=await lane.run(unicode_style_enabled, user),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, user),
     )
     description_level = await lane.run(menu_description_level, user)
 
@@ -452,6 +459,7 @@ async def _compose_mail(
     review_description_level = await lane.run(menu_description_level, user)
     review_redraw_in_place = await lane.run(redraw_in_place_enabled, user)
     review_unicode_style = await lane.run(unicode_style_enabled, user)
+    review_collapsed = await lane.run(breadcrumb_collapsed_enabled, user)
     while True:
         action = await review_composition(
             session,
@@ -464,6 +472,7 @@ async def _compose_mail(
             description_level=review_description_level,
             redraw_in_place=review_redraw_in_place,
             unicode_style=review_unicode_style,
+            collapsed=review_collapsed,
         )
         if action is ReviewAction.CANCEL:
             await session.write_line(colored("Message cancelled.", fg_color=MUTED_COLOR))

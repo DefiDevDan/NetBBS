@@ -16,6 +16,7 @@ class FakeSession(Session):
         self._keys = list(keys)
         self.written: list[str] = []
         self.terminal_width = 80
+        self.node_display_name = "NetBBS"
         self.terminal_height = 24
         self.peer_address = None
 

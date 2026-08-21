@@ -110,6 +110,48 @@ def set_invitation_expiry_days(db: Database, days: int | None) -> None:
     set_config(db, INVITATION_EXPIRY_DAYS_CONFIG_KEY, "" if days is None else str(days))
 
 
+# Config key for the node's own display name (dogfood feature request)
+# -- shown as the root breadcrumb segment on every post-login screen
+# (`netbbs.net.session.Session.node_display_name`, resolved once per
+# session in `netbbs.net.login_flow.run_authenticated_session`, not
+# looked up fresh on every single screen redraw the way a per-user
+# preference is: this is the same value for every caller on the node,
+# so caching it for the session's lifetime avoids hammering node_config
+# for something that essentially never changes -- a SysOp renaming the
+# node takes effect for new connections, not sessions already
+# established, the same "config resolved once, not live-reactive"
+# trade-off `netbbs.net.nodeconfig`'s own startup-time settings already
+# accept). Deliberately distinct from `netbbs.net.nodeconfig.NodeConfig
+# .node_name` -- that one is purely the label attached to the node's
+# Link identity key material (never shown to a caller at all); this one
+# is purely cosmetic, shown to every caller, with no effect on Link/
+# identity in either direction. Defaults to "NetBBS" so an unconfigured
+# node's screens render byte-for-byte as before this setting existed.
+NODE_DISPLAY_NAME_CONFIG_KEY = "node_display_name"
+
+_DEFAULT_NODE_DISPLAY_NAME = "NetBBS"
+
+# Generous enough for a real BBS name, short enough that it can't crowd
+# out the rest of a breadcrumb line on an 80-column terminal (design
+# doc, dogfood feature request) -- roughly the same reasoning as
+# netbbs.boards.boards' own board-name length cap, just sized for a
+# string shown on every single screen rather than one board listing.
+MAX_NODE_DISPLAY_NAME_LENGTH = 32
+
+
+def get_node_display_name(db: Database) -> str:
+    return get_config(db, NODE_DISPLAY_NAME_CONFIG_KEY) or _DEFAULT_NODE_DISPLAY_NAME
+
+
+def set_node_display_name(db: Database, name: str) -> None:
+    name = name.strip()
+    if not name:
+        raise ValueError("node display name must not be blank")
+    if len(name) > MAX_NODE_DISPLAY_NAME_LENGTH:
+        raise ValueError(f"node display name cannot exceed {MAX_NODE_DISPLAY_NAME_LENGTH} characters, got {len(name)}")
+    set_config(db, NODE_DISPLAY_NAME_CONFIG_KEY, name)
+
+
 class RegistrationMode(str, Enum):
     """
     A node's registration posture (design doc) -- three real

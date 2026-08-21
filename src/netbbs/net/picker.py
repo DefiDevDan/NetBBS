@@ -94,6 +94,7 @@ async def pick_item(
     description_level: str = "off",
     redraw_in_place: bool = False,
     unicode_style: bool = False,
+    collapsed: bool = False,
 ) -> T | None:
     """
     Let the user browse/search/jump through `items` and pick one, or
@@ -224,11 +225,11 @@ async def pick_item(
         await session.write_line(
             "\r\n" + screen_title(
                 title,
+            breadcrumb=(session.node_display_name,),
                 subtitle=f"page {page_index + 1}/{total_pages}, {len(working_set)} total",
                 width=session.terminal_width,
                 clear=redraw_in_place,
-                unicode_style=unicode_style,
-            )
+                unicode_style=unicode_style, collapsed=collapsed)
         )
         for position, item in enumerate(page_items, start=1):
             # Two numbers shown per line, deliberately: the 2-digit

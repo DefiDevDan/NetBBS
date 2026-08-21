@@ -20,6 +20,7 @@ class _FakeSession(Session):
     def __init__(self, supports_truecolor: bool):
         self.supports_truecolor = supports_truecolor
         self.terminal_width = 80
+        self.node_display_name = "NetBBS"
         self.terminal_height = 24
         self.peer_address = None
 

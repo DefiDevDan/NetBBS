@@ -87,6 +87,7 @@ from netbbs.net.sort_ui import SORT_MODE_LABELS, prompt_sort_change
 from netbbs.permissions import meets_level
 from netbbs.net.menu_description_preference import menu_description_level
 from netbbs.net.redraw_preference import redraw_in_place_enabled
+from netbbs.net.breadcrumb_preference import breadcrumb_collapsed_enabled
 from netbbs.net.unicode_style_preference import unicode_style_enabled
 from netbbs.rendering import (
     ACCENT_COLOR,
@@ -258,6 +259,7 @@ async def _browse_areas_in_category(
     description_level = await lane.run(menu_description_level, user)
     redraw_in_place = await lane.run(redraw_in_place_enabled, user)
     unicode_style = await lane.run(unicode_style_enabled, user)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, user)
     mode_box = {"mode": current_mode}
 
     async def _persist_sort_choice(mode: str, scope_kwargs: dict) -> None:
@@ -378,6 +380,7 @@ async def _render_area_page(
     description_level: str = "off",
     redraw_in_place: bool = False,
     unicode_style: bool = False,
+    collapsed: bool = False,
 ) -> None:
     """Renders one page of files plus its navigation options and command
     hints — the unit that should be redrawn on an actual page change
@@ -385,7 +388,7 @@ async def _render_area_page(
     regardless of whether anything changed."""
     await _render_file_page(
         session, lane, area_name, page, name_requirement=name_requirement, redraw_in_place=redraw_in_place,
-        unicode_style=unicode_style,
+        unicode_style=unicode_style, collapsed=collapsed,
     )
     options = []
     if page.has_older:
@@ -493,10 +496,10 @@ async def _show_area(
         return (
             page, effective_name_requirement, can_write, is_area_linked(db, area),
             menu_description_level(db, user), redraw_in_place_enabled(db, user),
-            unicode_style_enabled(db, user),
+            unicode_style_enabled(db, user), breadcrumb_collapsed_enabled(db, user),
         )
 
-    page, effective_name_requirement, can_write, area_linked, description_level, redraw_in_place, unicode_style = (
+    page, effective_name_requirement, can_write, area_linked, description_level, redraw_in_place, unicode_style, collapsed = (
         await lane.run(_load)
     )
 
@@ -509,15 +512,15 @@ async def _show_area(
         await _render_area_page(
             session, lane, area_name, current_page, can_write=can_write, name_requirement=effective_name_requirement,
             show_remote_hint=show_remote_hint, description_level=description_level, redraw_in_place=redraw_in_place,
-            unicode_style=unicode_style,
+            unicode_style=unicode_style, collapsed=collapsed,
         )
         if current_page.entries:
             await lane.run(record_file_area_seen, user, area, current_page.entries[-1])
 
     if not page.entries:
         heading = screen_title(
-            area_name, breadcrumb=("NetBBS", "Files"), width=session.terminal_width, clear=redraw_in_place,
-            unicode_style=unicode_style,
+            area_name, breadcrumb=(session.node_display_name, "Files"), width=session.terminal_width, clear=redraw_in_place,
+            unicode_style=unicode_style, collapsed=collapsed,
         )
         await session.write_line(f"\r\n{heading}")
         state = empty_state(
@@ -607,13 +610,14 @@ async def _browse_remote_files(
     remote_files = await lane.run(list_remote_files, area)
     redraw_in_place = await lane.run(redraw_in_place_enabled, user)
     unicode_style = await lane.run(unicode_style_enabled, user)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, user)
     if not remote_files:
         heading = screen_title(
             "Remote catalogue",
-            breadcrumb=("NetBBS", "Files", sanitize_text(area.name)),
+            breadcrumb=(session.node_display_name, "Files", sanitize_text(area.name)),
             width=session.terminal_width,
             clear=redraw_in_place,
-            unicode_style=unicode_style,
+            unicode_style=unicode_style, collapsed=collapsed,
         )
         await session.write_line(f"\r\n{heading}")
         state = empty_state(
@@ -661,6 +665,7 @@ async def _browse_remote_files(
 
     await _fetch_remote_file(
         session, lane, selected, link_context, redraw_in_place=redraw_in_place, unicode_style=unicode_style,
+        collapsed=collapsed,
     )
 
 
@@ -672,6 +677,7 @@ async def _fetch_remote_file(
     *,
     redraw_in_place: bool = False,
     unicode_style: bool = False,
+    collapsed: bool = False,
 ) -> None:
     """
     Drives `netbbs.link.transport.fetch_next_file_chunk` in a loop until
@@ -710,11 +716,11 @@ async def _fetch_remote_file(
 
     heading = screen_title(
         "Fetching file",
-        breadcrumb=("NetBBS", "Files", "Link"),
+        breadcrumb=(session.node_display_name, "Files", "Link"),
         subtitle=sanitize_text(remote_file.filename),
         width=session.terminal_width,
         clear=redraw_in_place,
-        unicode_style=unicode_style,
+        unicode_style=unicode_style, collapsed=collapsed,
     )
     await session.write_line(f"\r\n{heading}")
     transfer = None
@@ -774,14 +780,15 @@ async def _render_file_page(
     name_requirement: str | None,
     redraw_in_place: bool = False,
     unicode_style: bool = False,
+    collapsed: bool = False,
 ) -> None:
     header = screen_title(
         area_name,
-        breadcrumb=("NetBBS", "Files"),
+        breadcrumb=(session.node_display_name, "Files"),
         subtitle=f"{len(page.entries)} file{'s' if len(page.entries) != 1 else ''} on this page",
         width=session.terminal_width,
         clear=redraw_in_place,
-        unicode_style=unicode_style,
+        unicode_style=unicode_style, collapsed=collapsed,
     )
     await session.write_line(f"\r\n{header}")
     display_format, display_timezone = await lane.run(resolve_display_preferences)
@@ -813,11 +820,12 @@ async def _handle_upload(session: Session, lane: DatabaseLane, area: FileArea, u
     """
     heading = screen_title(
         "Upload",
-        breadcrumb=("NetBBS", "Files", sanitize_text(area.name)),
+        breadcrumb=(session.node_display_name, "Files", sanitize_text(area.name)),
         subtitle="Zmodem transfer",
         width=session.terminal_width,
         clear=await lane.run(redraw_in_place_enabled, user),
         unicode_style=await lane.run(unicode_style_enabled, user),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, user),
     )
     await session.write_line(f"\r\n{heading}")
     await session.write_line("Start your terminal's Zmodem send (sz) now. Waiting for the transfer to begin...")
@@ -868,11 +876,12 @@ async def _handle_download(session: Session, lane: DatabaseLane, area: FileArea,
     entry_filename = sanitize_text(entry.filename)
     heading = screen_title(
         "Download",
-        breadcrumb=("NetBBS", "Files", sanitize_text(area.name)),
+        breadcrumb=(session.node_display_name, "Files", sanitize_text(area.name)),
         subtitle=f"{entry_filename} / {_format_size(entry.size_bytes)}",
         width=session.terminal_width,
         clear=await lane.run(redraw_in_place_enabled, user),
         unicode_style=await lane.run(unicode_style_enabled, user),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, user),
     )
     await session.write_line(f"\r\n{heading}")
     await session.write_line(f"Starting Zmodem send of {entry_filename!r} — accept the transfer in your terminal.")

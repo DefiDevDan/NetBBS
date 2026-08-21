@@ -57,6 +57,7 @@ class FakeSession:
         self._keys = iter(keys or [])
         self.written: list[str] = []
         self.terminal_width = 80
+        self.node_display_name = "NetBBS"
         self.terminal_height = 24
         self.peer_address = peer_address
         self.supports_truecolor = False

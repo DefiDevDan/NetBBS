@@ -107,6 +107,20 @@ class Session(ABC):
     #: this conservative default with their own exact negotiation path.
     truecolor_diagnostic: str = "transport did not report truecolor capability; using 256-color"
 
+    #: This node's own display name (`netbbs.config.get_node_display_
+    #: name`), shown as the root breadcrumb segment on every post-login
+    #: screen. Unlike `terminal_width`/`supports_truecolor` above, not
+    #: transport-negotiated -- no transport ever sets this itself;
+    #: `netbbs.net.login_flow.run_authenticated_session` resolves it
+    #: once, right after authentication (when `db` first becomes
+    #: available), the same "conservative class default, reassigned in
+    #: place once the real value is known" shape those two already use,
+    #: just from node_config instead of client negotiation. The
+    #: class-level default ("NetBBS") is what every screen rendered
+    #: before login (or by a test/direct call site that never reaches
+    #: `run_authenticated_session`) still sees.
+    node_display_name: str = "NetBBS"
+
     #: Best-known remote address (host only, no port) for this
     #: connection, or `None` if a transport genuinely has no such
     #: concept. Used for per-source login throttling (see

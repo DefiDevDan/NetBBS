@@ -44,6 +44,7 @@ class FakeSession:
         self._lines = iter(lines)
         self.written: list[str] = []
         self.terminal_width = 80
+        self.node_display_name = "NetBBS"
         self.terminal_height = 24
         self.peer_address = "203.0.113.5"
         self.supports_truecolor = False

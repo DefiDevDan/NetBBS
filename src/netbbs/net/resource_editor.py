@@ -140,6 +140,7 @@ async def edit_resource_draft(
     redraw_hint: bool = False,
     preamble: str | Callable[[Draft], str] | None = None,
     unicode_style: bool = False,
+    collapsed: bool = False,
 ) -> Any | None:
     """
     Drives one draft-based create/edit screen: renders `title` plus
@@ -255,9 +256,9 @@ async def edit_resource_draft(
     while True:
         await session.write_line(
             "\r\n" + screen_title(
-                title, subtitle=subtitle, width=session.terminal_width, clear=redraw_in_place,
-                unicode_style=unicode_style,
-            )
+                title,
+            breadcrumb=(session.node_display_name,), subtitle=subtitle, width=session.terminal_width, clear=redraw_in_place,
+                unicode_style=unicode_style, collapsed=collapsed)
         )
         preamble_text = preamble(draft) if callable(preamble) else preamble
         if preamble_text:

@@ -199,6 +199,7 @@ def screen_title(
     width: int = 80,
     clear: bool = False,
     unicode_style: bool = False,
+    collapsed: bool = False,
 ) -> str:
     """Render a compact location/title block with a divider.
 
@@ -240,12 +241,32 @@ def screen_title(
     preference's would have silently changed output (and broken
     literal-text assertions) for every one of `screen_title`'s many
     existing callers/tests before any of them opted in on purpose.
+
+    `collapsed` (dogfood feature request, follow-up to the pre-5.0.0
+    style rollout) shows only `title` -- no ancestor segments, no
+    separator -- instead of the full breadcrumb. This happens
+    automatically, regardless of `collapsed`, whenever the full
+    breadcrumb genuinely doesn't fit `width`: the previous behavior
+    (falling through to `colored_truncate`'s own ellipsis) truncated
+    left-to-right, which could cut off the *current location* -- the
+    one thing a breadcrumb actually needs to communicate -- while
+    keeping the least useful part ("NetBBS / Sys..."). `collapsed=True`
+    (`netbbs.net.breadcrumb_preference.breadcrumb_collapsed_enabled`)
+    additionally forces this same short form even when the full
+    breadcrumb *would* fit -- a caller who just doesn't want the
+    ancestor noise. `False` by default, same "safe local default"
+    reasoning as `unicode_style` above.
     """
     if width < 1:
         raise ValueError("width must be >= 1")
     segments = (*breadcrumb, title) if breadcrumb else (title,)
     plain_location = " / ".join(segments)
-    if unicode_style and len(segments) > 1:
+    show_collapsed = len(segments) > 1 and (collapsed or display_width(plain_location) > width)
+    if show_collapsed:
+        divider_basis = segments[-1]
+        location_line = colored(cut_to_width(segments[-1], width), fg_color=HEADER_COLOR, bold=True)
+    elif unicode_style and len(segments) > 1:
+        divider_basis = plain_location
         colored_segments: list[tuple[str, int | None]] = []
         for segment in segments[:-1]:
             colored_segments.append((segment, METADATA_COLOR))
@@ -253,6 +274,7 @@ def screen_title(
         colored_segments.append((segments[-1], HEADER_COLOR))
         location_line = colored_truncate(colored_segments, width, ellipsis="")
     else:
+        divider_basis = plain_location
         location_line = colored(cut_to_width(plain_location, width), fg_color=HEADER_COLOR, bold=True)
     lines = [location_line]
     if subtitle:
@@ -266,7 +288,7 @@ def screen_title(
         else:
             lines.append(colored(cut_to_width(subtitle, width), fg_color=METADATA_COLOR))
     rule_char = "─" if unicode_style else "-"
-    lines.append(colored(rule_char * min(width, max(12, display_width(plain_location))), fg_color=METADATA_COLOR))
+    lines.append(colored(rule_char * min(width, max(12, display_width(divider_basis))), fg_color=METADATA_COLOR))
     result = "\r\n".join(lines)
     return f"{clear_screen()}{result}" if clear else result
 

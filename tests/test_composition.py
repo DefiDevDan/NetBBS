@@ -12,6 +12,7 @@ class FakeSession:
         self._keys = iter(keys)
         self.written: list[str] = []
         self.terminal_width = width
+        self.node_display_name = "NetBBS"
         self.terminal_height = height
 
     async def write(self, text: str) -> None:

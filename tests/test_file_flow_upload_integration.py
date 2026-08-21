@@ -70,6 +70,7 @@ class _ServerSession(Session):
         self._write_pipe = write_pipe
         self.written: list[str] = []
         self.terminal_width = 80
+        self.node_display_name = "NetBBS"
         self.terminal_height = 24
         self.peer_address = "203.0.113.5"
 
