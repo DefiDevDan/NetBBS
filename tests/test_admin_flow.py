@@ -3002,7 +3002,7 @@ def test_create_board_assigns_a_community(db, lane, sysop):
     inputs = [
         "m", "m", "c",
         "n", "Amiga",
-        "u", "y", "0", "1",  # Community field -> assign? yes -> pick #01
+        "u", "0", "1",  # Community field -> straight to the picker -> pick #01
         "s",
         "b", "b", "b",
     ]
@@ -3024,16 +3024,15 @@ def test_admin_category_picker_leak_prevention(db, lane, sysop):
     create_board(db, "elections", community_id=politics.id, category_id=hardware.id, creator=sysop)
 
     # content menu -> boards -> create: set name, assign a Community
-    # (yes, pick Vintage Computing, #02), assign a category (yes) --
-    # "Hardware" is only used by a Politics board, so it must not be
-    # offered here (design doc §16's admin-side leak prevention): the
-    # picker reports no categories exist for this Community rather
-    # than showing Hardware.
+    # (pick Vintage Computing, #02), open the category field -- "Hardware"
+    # is only used by a Politics board, so it must not be offered here
+    # (design doc §16's admin-side leak prevention): the picker reports
+    # no categories exist for this Community rather than showing Hardware.
     inputs = [
         "m", "m", "c",
         "n", "Amiga",
-        "u", "y", "0", "2",
-        "c", "y",
+        "u", "0", "2",
+        "c",
         "s",
         "b", "b", "b",
     ]

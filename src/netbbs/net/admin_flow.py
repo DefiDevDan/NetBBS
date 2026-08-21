@@ -4035,13 +4035,16 @@ async def _pick_optional_category(
     title: str,
     community_id: int | None = None,
     resources: list | None = None,
+    redraw_in_place: bool = False,
+    unicode_style: bool = False,
+    collapsed: bool = False,
 ):
     """Optional category picker shared by board/channel/area create+edit
     screens. Top-level categories are shown first; picking one that has
     sub-categories offers picking one of those instead, matching the
     two-level design (`netbbs.boards.categories`/`netbbs.chat.categories`/
     `netbbs.files.categories`). Returns the chosen category's id, or
-    `None` if declined or none exist.
+    `None` if cancelled (the picker's own `[B]ack`) or none exist.
 
     `community_id`/`resources` (design doc §16's category
     leak-prevention, admin-side half -- see
@@ -4056,10 +4059,18 @@ async def _pick_optional_category(
     Community was assigned, since the leak this guards against is
     specifically cross-Community, not a concern for an Uncategorized
     resource's own category choice.
-    """
-    if not await prompt_yes_no(session, "Assign a category?", default=False):
-        return None
 
+    Dogfood-reported bug: this used to gate the whole picker behind an
+    "Assign a category?" yes/no first -- a holdover from before this
+    was a directly addressable field (`_category_field`) on the
+    cursor-nav field list; a caller who presses this field's own hotkey
+    has already made the "yes, I want to interact with this field"
+    choice once, and the picker's own `[B]ack` is the actual "decline"
+    affordance. `pick_item` itself already reports "No categories exist
+    yet." and returns immediately when there's nothing to offer -- that
+    part stays, since it's useful feedback in its own right; only the
+    redundant upfront yes/no is gone.
+    """
     used_category_ids: set[int] | None = None
     if community_id is not None and resources is not None:
         in_community = [r for r in resources if r.community_id == community_id]
@@ -4083,6 +4094,9 @@ async def _pick_optional_category(
         stable_id_of=lambda c: c.id,
         title=title,
         empty_message="No categories exist yet.",
+        redraw_in_place=redraw_in_place,
+        unicode_style=unicode_style,
+        collapsed=collapsed,
     )
     if selected is None:
         return None
@@ -4099,26 +4113,40 @@ async def _pick_optional_category(
         stable_id_of=lambda c: c.id,
         title=f"Sub-category of {selected.name!r}",
         empty_message="No sub-categories.",
+        redraw_in_place=redraw_in_place,
+        unicode_style=unicode_style,
+        collapsed=collapsed,
     )
     return sub_selected.id if sub_selected is not None else selected.id
 
 
-async def _pick_optional_community(session: Session, lane: DatabaseLane) -> int | None:
+async def _pick_optional_community(
+    session: Session,
+    lane: DatabaseLane,
+    *,
+    redraw_in_place: bool = False,
+    unicode_style: bool = False,
+    collapsed: bool = False,
+) -> int | None:
     """Optional Community picker shared by board/channel/area create+
     edit screens (design doc §16) -- mirrors
     `_pick_optional_category` exactly, but flat (a Community has no
     two-level sub-structure the way categories do). Prompted *before*
     the existing category prompt at every call site -- Community is the
     outer layer, chosen first. Returns the chosen Community's id, or
-    `None` if declined or none exist yet."""
-    if not await prompt_yes_no(session, "Assign a Community?", default=False):
-        return None
+    `None` if cancelled (the picker's own `[B]ack`) or none exist yet
+    -- see `_pick_optional_category`'s own docstring for why this no
+    longer gates the picker behind a separate "Assign a Community?"
+    yes/no first."""
     selected = await pick_item(
         session, await lane.run(list_communities),
         name_of=lambda c: c.name,
         stable_id_of=lambda c: c.id,
         title="Community",
         empty_message="No Communities exist yet.",
+        redraw_in_place=redraw_in_place,
+        unicode_style=unicode_style,
+        collapsed=collapsed,
     )
     return selected.id if selected is not None else None
 
@@ -4228,16 +4256,33 @@ _NAME_REQUIREMENT_HELP = (
 )
 
 
-def _community_field(key: str = "community_id") -> Callable[[Session, DatabaseLane, dict], Awaitable[None]]:
+def _community_field(
+    key: str = "community_id",
+    *,
+    redraw_in_place: bool = False,
+    unicode_style: bool = False,
+    collapsed: bool = False,
+) -> Callable[[Session, DatabaseLane, dict], Awaitable[None]]:
     """Also stashes the chosen Community's own name into
     `draft[f"{key}_label"]` -- the field's `render` callback must stay
     a pure, synchronous dict read (`edit_resource_draft`'s own
     contract), so the name is resolved here, at prompt time, where a
     `lane` round-trip is already in flight, rather than re-fetched on
-    every redraw."""
+    every redraw.
+
+    `redraw_in_place`/`unicode_style`/`collapsed`: this factory is
+    called once, at field-list construction time, by a caller that has
+    already resolved these same three preferences for its own
+    `edit_resource_draft` call a few lines later -- threaded straight
+    through and closed over here rather than widening `FieldSpec.
+    prompt`'s own fixed `(session, lane, draft)` contract, which every
+    other field on this screen (and every other draft-editor screen)
+    also implements and would otherwise all need to change."""
 
     async def prompt(session: Session, lane: DatabaseLane, draft: dict) -> None:
-        community_id = await _pick_optional_community(session, lane)
+        community_id = await _pick_optional_community(
+            session, lane, redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed
+        )
         draft[key] = community_id
         community = await lane.run(get_community, community_id) if community_id is not None else None
         draft[f"{key}_label"] = community.name if community is not None else None
@@ -4246,7 +4291,15 @@ def _community_field(key: str = "community_id") -> Callable[[Session, DatabaseLa
 
 
 def _category_field(
-    *, list_top_level, list_subcategories, title: str, list_resources, get_by_id
+    *,
+    list_top_level,
+    list_subcategories,
+    title: str,
+    list_resources,
+    get_by_id,
+    redraw_in_place: bool = False,
+    unicode_style: bool = False,
+    collapsed: bool = False,
 ) -> Callable[[Session, DatabaseLane, dict], Awaitable[None]]:
     """`list_resources` is the plain `netbbs.<kind>.list_*` domain
     function (e.g. `list_boards`) -- dispatched through `lane` here,
@@ -4254,12 +4307,15 @@ def _category_field(
     did, rather than asking every field-spec builder to pre-fetch it.
     `get_by_id` resolves the chosen category's own name into
     `draft["category_id_label"]`, same reasoning as `_community_field`'s
-    own `_label` companion above."""
+    own `_label` companion above. `redraw_in_place`/`unicode_style`/
+    `collapsed`: see `_community_field`'s own docstring -- identical
+    reasoning, applied here too."""
 
     async def prompt(session: Session, lane: DatabaseLane, draft: dict) -> None:
         category_id = await _pick_optional_category(
             session, lane, list_top_level=list_top_level, list_subcategories=list_subcategories,
             title=title, community_id=draft.get("community_id"), resources=await lane.run(list_resources),
+            redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
         )
         draft["category_id"] = category_id
         category = await lane.run(get_by_id, category_id) if category_id is not None else None
@@ -4615,9 +4671,14 @@ async def _draw_board_menu(session: Session, description_level: str, redraw_in_p
     await session.write("Choice: ")
 
 
-def _board_field_specs() -> list[FieldSpec]:
+def _board_field_specs(
+    *, redraw_in_place: bool = False, unicode_style: bool = False, collapsed: bool = False
+) -> list[FieldSpec]:
     """One shared field list drives both create and edit (design doc,
-    dogfood feature request) -- see `_board_screen`."""
+    dogfood feature request) -- see `_board_screen`. `redraw_in_place`/
+    `unicode_style`/`collapsed`: threaded straight through to the
+    Community/Category fields -- see `_community_field`'s own
+    docstring."""
     return [
         FieldSpec(
             key="name", hotkey="n", menu_text=menu_key("N", "ame"), label="Name",
@@ -4646,7 +4707,9 @@ def _board_field_specs() -> list[FieldSpec]:
         FieldSpec(
             key="community_id", hotkey="u", menu_text=menu_key("U", "nity", prefix="Comm"), label="Community",
             render=lambda d: d.get("community_id_label") or "(none)",
-            prompt=_community_field(),
+            prompt=_community_field(
+                redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed
+            ),
             brief="Parent community, if any",
         ),
         FieldSpec(
@@ -4655,6 +4718,7 @@ def _board_field_specs() -> list[FieldSpec]:
             prompt=_category_field(
                 list_top_level=list_top_level_board_categories, list_subcategories=list_board_subcategories,
                 title="Message board category", list_resources=list_boards, get_by_id=get_board_category_by_id,
+                redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
             ),
             brief="Where it's grouped in listings",
         ),
@@ -4754,15 +4818,18 @@ async def _board_screen(
         )
 
     redraw_in_place, redraw_hint = await lane.run(_resolve_redraw_preference, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     board = await edit_resource_draft(
         session, lane,
         title="Edit message board" if existing is not None else "Create message board",
-        fields=_board_field_specs(), draft=draft, save=save, error_type=BoardError,
+        fields=_board_field_specs(redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed),
+        draft=draft, save=save, error_type=BoardError,
         save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
         description_level=await lane.run(menu_description_level, actor),
         redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
-        unicode_style=await lane.run(unicode_style_enabled, actor),
-        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+        unicode_style=unicode_style,
+        collapsed=collapsed,
     )
     if board is not None:
         verb = "Updated" if existing is not None else "Created message board"
@@ -5483,7 +5550,9 @@ async def _write_gc_report(session: Session, report: GCReport) -> None:
         await session.write_line(colored(f"Error: {error}", fg_color=MUTED_COLOR))
 
 
-def _area_field_specs() -> list[FieldSpec]:
+def _area_field_specs(
+    *, redraw_in_place: bool = False, unicode_style: bool = False, collapsed: bool = False
+) -> list[FieldSpec]:
     """One shared field list drives both create and edit (design doc,
     dogfood feature request) -- see `_area_screen`. Identical shape to
     `_board_field_specs`, just "file" in place of "post" throughout."""
@@ -5515,7 +5584,9 @@ def _area_field_specs() -> list[FieldSpec]:
         FieldSpec(
             key="community_id", hotkey="u", menu_text=menu_key("U", "nity", prefix="Comm"), label="Community",
             render=lambda d: d.get("community_id_label") or "(none)",
-            prompt=_community_field(),
+            prompt=_community_field(
+                redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed
+            ),
             brief="Parent community, if any",
         ),
         FieldSpec(
@@ -5524,6 +5595,7 @@ def _area_field_specs() -> list[FieldSpec]:
             prompt=_category_field(
                 list_top_level=list_top_level_file_categories, list_subcategories=list_file_subcategories,
                 title="File-area category", list_resources=list_file_areas, get_by_id=get_file_area_category_by_id,
+                redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
             ),
             brief="Where it's grouped in listings",
         ),
@@ -5616,15 +5688,18 @@ async def _area_screen(
         )
 
     redraw_in_place, redraw_hint = await lane.run(_resolve_redraw_preference, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     area = await edit_resource_draft(
         session, lane,
         title="Edit file area" if existing is not None else "Create file area",
-        fields=_area_field_specs(), draft=draft, save=save, error_type=FileAreaError,
+        fields=_area_field_specs(redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed),
+        draft=draft, save=save, error_type=FileAreaError,
         save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
         description_level=await lane.run(menu_description_level, actor),
         redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
-        unicode_style=await lane.run(unicode_style_enabled, actor),
-        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+        unicode_style=unicode_style,
+        collapsed=collapsed,
     )
     if area is not None:
         verb = "Updated" if existing is not None else "Created file area"
@@ -5976,7 +6051,9 @@ async def _draw_channel_menu(session: Session, description_level: str, redraw_in
     await session.write("Choice: ")
 
 
-def _channel_field_specs() -> list[FieldSpec]:
+def _channel_field_specs(
+    *, redraw_in_place: bool = False, unicode_style: bool = False, collapsed: bool = False
+) -> list[FieldSpec]:
     """One shared field list drives both create and edit (design doc,
     dogfood feature request) -- see `_channel_screen`."""
     return [
@@ -6001,7 +6078,9 @@ def _channel_field_specs() -> list[FieldSpec]:
         FieldSpec(
             key="community_id", hotkey="u", menu_text=menu_key("U", "nity", prefix="Comm"), label="Community",
             render=lambda d: d.get("community_id_label") or "(none)",
-            prompt=_community_field(),
+            prompt=_community_field(
+                redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed
+            ),
             brief="Parent community, if any",
         ),
         FieldSpec(
@@ -6010,6 +6089,7 @@ def _channel_field_specs() -> list[FieldSpec]:
             prompt=_category_field(
                 list_top_level=list_top_level_channel_categories, list_subcategories=list_channel_subcategories,
                 title="Chat channel category", list_resources=list_channels, get_by_id=get_channel_category_by_id,
+                redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
             ),
             brief="Where it's grouped in listings",
         ),
@@ -6108,15 +6188,20 @@ async def _channel_screen(
         )
 
     redraw_in_place, redraw_hint = await lane.run(_resolve_redraw_preference, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     channel = await edit_resource_draft(
         session, lane,
         title="Edit chat channel" if existing is not None else "Create chat channel",
-        fields=_channel_field_specs(), draft=draft, save=save, error_type=ChannelError,
+        fields=_channel_field_specs(
+            redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed
+        ),
+        draft=draft, save=save, error_type=ChannelError,
         save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
         description_level=await lane.run(menu_description_level, actor),
         redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
-        unicode_style=await lane.run(unicode_style_enabled, actor),
-        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+        unicode_style=unicode_style,
+        collapsed=collapsed,
     )
     if channel is not None:
         verb = "Updated" if existing is not None else "Created chat channel"
