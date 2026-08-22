@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from netbbs.config import get_config, set_config
-from netbbs.rendering import HEADER_COLOR, RESET, colored, decode_ansi_bytes, gradient_text
+from netbbs.rendering import ACCENT_COLOR, HEADER_COLOR, RESET, colored, decode_ansi_bytes, gradient_text
 from netbbs.rendering.layout import double_frame
 from netbbs.storage.database import Database
 
@@ -55,37 +55,42 @@ DEFAULT_WELCOME_BANNER = (
     double_frame(
         [
             "",
-            colored(" " * 21 + "N E T B B S", fg_color=HEADER_COLOR, bold=True),
+            " " * 21 + gradient_text("N E T B B S", "rainbow", bold=True, truecolor=False),
             colored(" " * 7 + "conversations across independent nodes", fg_color=HEADER_COLOR, bold=True),
             "",
         ],
         width=58,
     )
     + "\r\n"
-    + colored("  NetBBS Link  ›  private experimental federation", fg_color=HEADER_COLOR, bold=True)
+    + colored("  NetBBS Link", fg_color=ACCENT_COLOR, bold=True)
+    + colored("  ›  private experimental federation", fg_color=HEADER_COLOR, bold=True)
 )
 
 
 def _default_welcome_banner(*, truecolor: bool) -> str:
-    """`DEFAULT_WELCOME_BANNER` stays a static, precomputed, 256-color-
-    safe constant -- correct for every client -- since it can't itself
-    depend on a per-session flag that doesn't exist at import time. This
-    builds the truecolor variant per-call instead: the "NetBBS" name
-    gets `gradient_text`'s per-character flair, composed alongside the
-    surrounding flat-`HEADER_COLOR` border/subtitle via concatenated
-    `colored()`/`gradient_text()` spans -- the same "one colored() call
-    per span, concatenated" shape `netbbs.rendering.reflow.
-    colored_truncate` already uses, just assembled by hand here since
-    this banner isn't a segment list."""
+    """`DEFAULT_WELCOME_BANNER` stays a static, precomputed constant --
+    correct for every client -- since it can't itself depend on a
+    per-session flag that doesn't exist at import time; it already
+    gradients its own wordmark/subtitle at the safe 256-color depth
+    every client is assumed to support (`gradient_text(...,
+    truecolor=False)`), same as this function's own truecolor variant,
+    just quantized. This builds the *truecolor* variant per-call
+    instead: the same "rainbow" wordmark plus a full-width gradiented
+    border, composed alongside the surrounding flat-`HEADER_COLOR`
+    blank/tagline lines via concatenated `colored()`/`gradient_text()`
+    spans -- the same "one colored() call per span, concatenated" shape
+    `netbbs.rendering.reflow.colored_truncate` already uses, just
+    assembled by hand here since this banner isn't a segment list."""
     if not truecolor:
         return DEFAULT_WELCOME_BANNER
     # The full-width border makes negotiated truecolor unmistakable at a
     # glance instead of confining the showcase to six subtly shaded letters.
-    # The 256-color fallback above intentionally remains one flat cyan span.
     border_text = "╔══════════════════════════════════════════════════════╗"
-    border = gradient_text(border_text, "blue", bold=True, truecolor=True)
-    bottom_border = gradient_text(border_text.replace("╔", "╚").replace("╗", "╝"), "blue", bold=True, truecolor=True)
-    wordmark = gradient_text("N E T B B S", "blue", bold=True, truecolor=True)
+    border = gradient_text(border_text, "rainbow", bold=True, truecolor=True)
+    bottom_border = gradient_text(
+        border_text.replace("╔", "╚").replace("╗", "╝"), "rainbow", bold=True, truecolor=True
+    )
+    wordmark = gradient_text("N E T B B S", "rainbow", bold=True, truecolor=True)
     welcome_line = colored("║                      ", fg_color=HEADER_COLOR, bold=True) + wordmark + colored(
         "                     ║", fg_color=HEADER_COLOR, bold=True
     )
@@ -95,8 +100,9 @@ def _default_welcome_banner(*, truecolor: bool) -> str:
         fg_color=HEADER_COLOR,
         bold=True,
     )
-    subtitle = colored(
-        "  NetBBS Link  ›  private experimental federation", fg_color=HEADER_COLOR, bold=True
+    subtitle = (
+        colored("  NetBBS Link", fg_color=(255, 215, 0), bold=True)
+        + colored("  ›  private experimental federation", fg_color=HEADER_COLOR, bold=True)
     )
     return "\r\n".join([border, blank, welcome_line, tagline, blank, bottom_border, subtitle])
 

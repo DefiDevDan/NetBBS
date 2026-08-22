@@ -34,6 +34,18 @@ GRADIENTS: dict[str, list[tuple[int, int, int]]] = {
     "red": [(255, 0, 0), (139, 0, 0)],
     "blue": [(0, 0, 255), (0, 255, 255)],
     "gold": [(255, 215, 0), (139, 69, 19)],
+    # Multi-stop, unlike the single-hue presets above -- for a caller
+    # that wants an actual "many distinct colors" effect (e.g. the
+    # welcome banner's own wordmark) rather than a shade-to-shade fade.
+    "rainbow": [
+        (255, 0, 0),
+        (255, 165, 0),
+        (255, 255, 0),
+        (0, 200, 0),
+        (0, 200, 255),
+        (80, 80, 255),
+        (200, 0, 255),
+    ],
 }
 
 
