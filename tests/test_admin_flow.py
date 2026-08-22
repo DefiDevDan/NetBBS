@@ -3248,6 +3248,37 @@ def test_preview_screen_when_disabled_shows_default_and_says_so(db, lane, sysop)
     assert "enabled=False" in text
 
 
+def test_preview_screen_color_depth_override_forces_truecolor(db, lane, sysop):
+    # Dogfood follow-up: this screen used to read session.supports_
+    # truecolor directly, silently ignoring the previewing SysOp's own
+    # [C]olor depth override -- the one screen that override's own help
+    # text promised control over. session.supports_truecolor stays at
+    # its default False (no negotiated truecolor) to prove the override
+    # alone is what flips the rendering.
+    from netbbs.net.color_depth_preference import set_color_depth_override
+
+    set_color_depth_override(db, sysop, "truecolor")
+    session = FakeSession(["s", "w", "p", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "rendering: truecolor gradient" in text
+    assert "\x1b[38;2;" in text  # a real truecolor escape, not just the label
+
+
+def test_preview_screen_color_depth_override_forces_256_color(db, lane, sysop):
+    # The reverse direction: override wins even when supports_truecolor
+    # says the client actually negotiated truecolor.
+    from netbbs.net.color_depth_preference import set_color_depth_override
+
+    set_color_depth_override(db, sysop, "256")
+    session = FakeSession(["s", "w", "p", "b", "b", "b"])
+    session.supports_truecolor = True
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "rendering: 256-color fallback" in text
+    assert "\x1b[38;2;" not in text
+
+
 def test_edit_option_opens_the_ansi_editor_and_a_save_round_trips_into_banner_path(db, lane, sysop):
     from netbbs.net.welcome_banner import banner_path
     from netbbs.rendering.ansi_art import decode_ansi_bytes

@@ -239,6 +239,7 @@ from netbbs.net.redraw_preference import (
     set_redraw_in_place_enabled,
 )
 from netbbs.net.breadcrumb_preference import breadcrumb_collapsed_enabled
+from netbbs.net.color_depth_preference import effective_truecolor
 from netbbs.net.unicode_style_preference import unicode_style_enabled
 from netbbs.operational_history import list_operational_run_history
 from netbbs.selfupdate import (
@@ -4035,7 +4036,7 @@ async def _welcome_banner_menu(session: Session, lane: DatabaseLane, actor: User
             return
         elif choice == "p":
             await session.write_line("")
-            await _preview_welcome_banner_screen(session, lane)
+            await _preview_welcome_banner_screen(session, lane, actor)
             await _draw_welcome_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
         elif choice == "e":
             await session.write_line("")
@@ -4092,17 +4093,25 @@ async def _draw_welcome_banner_menu(
     await session.write("Choice: ")
 
 
-async def _preview_welcome_banner_screen(session: Session, lane: DatabaseLane) -> None:
+async def _preview_welcome_banner_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
     """Renders the exact banner `netbbs.net.login_flow` would show at
     login right now -- the same `load_welcome_banner` call, used as a
-    smoke test of the loading path itself, not a separate rendering."""
+    smoke test of the loading path itself, not a separate rendering.
 
-    truecolor = session.supports_truecolor
+    Dogfood follow-up: this used to read `session.supports_truecolor`
+    directly, ignoring the previewing SysOp's own `[C]olor depth`
+    override (`netbbs.net.color_depth_preference`) -- the one screen
+    that override's own help text ("force a terminal color depth")
+    promised control over silently didn't honor it.
+    `effective_truecolor` is the shared "override wins over negotiated"
+    resolution every post-login truecolor decision should go through
+    (its own docstring); this is that function's first real caller."""
 
     def _load(db: Database) -> tuple:
-        return welcome_banner_status(db), load_welcome_banner(db, truecolor=truecolor)
+        truecolor = effective_truecolor(session, db, actor)
+        return welcome_banner_status(db), load_welcome_banner(db, truecolor=truecolor), truecolor
 
-    status, banner_text = await lane.run(_load)
+    status, banner_text, truecolor = await lane.run(_load)
     await session.write_line(colored("\r\nPreviewing welcome banner as shown at login:", fg_color=MUTED_COLOR))
     await session.write_line(
         colored("Capability: ", fg_color=LABEL_COLOR)
