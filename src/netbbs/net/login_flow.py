@@ -2222,6 +2222,18 @@ async def _register_new_account(
                 return None
             continue
 
+        # Dogfood report: three testers on modern (ANSI-capable) clients
+        # never discovered in-place redraw existed, so never turned it
+        # on. New accounts now start with it already on -- rather than
+        # flipping `redraw_in_place_enabled`'s own resolve default,
+        # which would silently change behavior for every existing
+        # account with an unset preference too, not just new ones.
+        set_redraw_in_place_enabled(db, new_user, True)
+        redraw_notice = colored(
+            "In-place redraw is on by default -- turn it off anytime in Your profile if you'd rather scroll.",
+            fg_color=MUTED_COLOR,
+        )
+
         if require_approval:
             await session.write_line(
                 colored(
@@ -2230,11 +2242,13 @@ async def _register_new_account(
                     bold=True,
                 )
             )
+            await session.write_line(redraw_notice)
             return None
 
         await session.write_line(
             colored(f"Account {new_user.username!r} created.", fg_color=SUCCESS_COLOR, bold=True)
         )
+        await session.write_line(redraw_notice)
         return new_user
     return None  # unreachable: the loop's last iteration always returns via _offer_signup_retry
 

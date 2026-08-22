@@ -12,7 +12,7 @@ from __future__ import annotations
 from enum import Enum, auto
 from pathlib import Path
 
-from netbbs.net.char_input import CANCEL_KEY, reject_unhandled_key
+from netbbs.net.char_input import CANCEL_KEY, EditorKey, EditorKeyKind, reject_unhandled_key
 from netbbs.net.draft_storage import delete_draft, load_draft, offer_draft_recovery, save_draft
 from netbbs.net.session import Session
 from netbbs.rendering import (
@@ -246,6 +246,42 @@ def _preview_body(body: str, width: int) -> str:
     return "\n".join(reflow(line, width=max(1, width)) if line else "" for line in safe.split("\n"))
 
 
+def _review_field_line(hotkey: str, label: str, value: str, *, selected: str | None, bold_value: bool) -> str:
+    """Dogfood feature request, issue #160's cursor-navigation follow-up
+    (item 2 of the prioritized list): the same `>`-cursor/highlight
+    convention `netbbs.net.resource_editor.edit_resource_draft` and
+    `netbbs.net.admin_flow`'s own user-detail screen already render
+    their fields with -- duplicated rather than imported, since this
+    screen (like that one) is a bespoke dispatch loop, not a draft
+    editor: `review_composition` is stateless and called fresh by each
+    of its callers' own outer edit loops (mail/board/channel
+    composition), unlike a draft this module owns end to end, so it has
+    no `draft` dict of its own for a shared `FieldSpec` list to mutate.
+    `label` already carries its own trailing punctuation (e.g. `"To: "`),
+    matching this function's pre-existing labels exactly."""
+    prefix = (
+        colored(f"> {label}", fg_color=ACCENT_COLOR, bold=True)
+        if selected == hotkey
+        else colored(f"  {label}", fg_color=LABEL_COLOR)
+    )
+    return prefix + colored(value, fg_color=ACCENT_COLOR, bold=bold_value)
+
+
+async def _read_review_key(session: Session) -> EditorKey:
+    """`netbbs.net.resource_editor._read_navigable_key`'s own fallback
+    shape, duplicated per this project's "duplicate rather than reach
+    into another module's private helper" convention (see
+    `netbbs.link.files._file_area_from_row`'s own docstring)."""
+    read_editor_key = getattr(session, "read_editor_key", None)
+    if read_editor_key is not None:
+        try:
+            return await read_editor_key(distinguish_ctrl_h=False)
+        except NotImplementedError:
+            pass
+    raw = await session.read_key()
+    return EditorKey(EditorKeyKind.CHAR, char=raw)
+
+
 async def review_composition(
     session: Session,
     *,
@@ -271,41 +307,16 @@ async def review_composition(
     preference, same caching rule as every other screen in this rollout.
     `redraw_in_place` (dogfood feature request, `netbbs.net.
     redraw_preference`) is the same shape -- the caller's already-
-    resolved preference, not looked up here."""
-    heading = screen_title(
-        "Review composition",
-        breadcrumb=(session.node_display_name, "Compose"),
-        subtitle="Check the draft before continuing",
-        width=session.terminal_width,
-        clear=redraw_in_place,
-        unicode_style=unicode_style, collapsed=collapsed,
-    )
-    await session.write_line(f"\r\n{heading}")
-    if recipient is not None:
-        await session.write_line(
-            colored("To: ", fg_color=LABEL_COLOR)
-            + colored(sanitize_text(recipient), fg_color=ACCENT_COLOR)
-        )
-    await session.write_line(
-        colored("Subject: ", fg_color=LABEL_COLOR)
-        + colored(sanitize_text(subject), fg_color=ACCENT_COLOR, bold=True)
-    )
-    await session.write_line(colored("Body", fg_color=MUTED_COLOR, bold=True))
-    await session.write_line(_preview_body(body, session.terminal_width))
+    resolved preference, not looked up here.
 
-    options = [MenuEntry(label=menu_key(commit_key.upper(), commit_label), brief=commit_brief)]
-    if recipient is not None:
-        options.append(MenuEntry(label=menu_key("T", "o"), brief="Change the recipient"))
-    options.extend([
-        MenuEntry(label=menu_key("U", "pdate subject"), brief="Change the subject"),
-        MenuEntry(label=menu_key("B", "ody"), brief="Edit the body text"),
-        MenuEntry(label=menu_key("C", "ancel"), brief="Discard this draft"),
-    ])
-    await session.write_line(
-        f"\r\n{_menu_row(options, width=session.terminal_width, height=session.terminal_height, description_level=description_level)}"
-    )
-    await session.write("Choice: ")
-
+    Dogfood feature request, issue #160's cursor-navigation follow-up
+    (item 2 of the prioritized list): `[T]o`/`[U]pdate subject`/`[B]ody`
+    are also reachable by moving a `>` cursor with Up/Down and
+    activating the highlighted one with Space or Enter -- purely
+    additive, every hotkey letter keeps working exactly as before. The
+    commit action and `[C]ancel` are never arrow-selectable, the same
+    "always hotkey-only" treatment `edit_resource_draft` gives Save/Back."""
+    field_order = (("t",) if recipient is not None else ()) + ("u", "b")
     actions = {
         commit_key.lower(): ReviewAction.COMMIT,
         "u": ReviewAction.EDIT_SUBJECT,
@@ -316,8 +327,83 @@ async def review_composition(
     }
     if recipient is not None:
         actions["t"] = ReviewAction.EDIT_RECIPIENT
+
+    selected: str | None = None
+
+    async def draw() -> None:
+        heading = screen_title(
+            "Review composition",
+            breadcrumb=(session.node_display_name, "Compose"),
+            subtitle="Check the draft before continuing",
+            width=session.terminal_width,
+            clear=redraw_in_place,
+            unicode_style=unicode_style, collapsed=collapsed,
+        )
+        await session.write_line(f"\r\n{heading}")
+        if recipient is not None:
+            await session.write_line(
+                _review_field_line("t", "To: ", sanitize_text(recipient), selected=selected, bold_value=False)
+            )
+        await session.write_line(
+            _review_field_line("u", "Subject: ", sanitize_text(subject), selected=selected, bold_value=True)
+        )
+        body_prefix = (
+            colored("> Body", fg_color=ACCENT_COLOR, bold=True)
+            if selected == "b"
+            else colored("  Body", fg_color=MUTED_COLOR, bold=True)
+        )
+        await session.write_line(body_prefix)
+        await session.write_line(_preview_body(body, session.terminal_width))
+
+        options = [MenuEntry(label=menu_key(commit_key.upper(), commit_label), brief=commit_brief)]
+        if recipient is not None:
+            options.append(MenuEntry(label=menu_key("T", "o"), brief="Change the recipient"))
+        options.extend([
+            MenuEntry(label=menu_key("U", "pdate subject"), brief="Change the subject"),
+            MenuEntry(label=menu_key("B", "ody"), brief="Edit the body text"),
+            MenuEntry(label=menu_key("C", "ancel"), brief="Discard this draft"),
+        ])
+        await session.write_line(
+            f"\r\n{_menu_row(options, width=session.terminal_width, height=session.terminal_height, description_level=description_level)}"
+        )
+        await session.write("Choice: ")
+
+    await draw()
     while True:
-        choice = (await session.read_key()).lower()
+        key = await _read_review_key(session)
+
+        if key.kind == EditorKeyKind.UP:
+            index = field_order.index(selected) if selected in field_order else 0
+            selected = field_order[(index - 1) % len(field_order)]
+            await draw()
+            continue
+        if key.kind == EditorKeyKind.DOWN:
+            index = field_order.index(selected) if selected in field_order else -1
+            selected = field_order[(index + 1) % len(field_order)]
+            await draw()
+            continue
+        if key.kind == EditorKeyKind.ESCAPE:
+            if selected is not None:
+                selected = None
+                await draw()
+                continue
+            await session.write("\a")
+            continue
+        if key.kind == EditorKeyKind.ENTER or (key.kind == EditorKeyKind.CHAR and key.char == " "):
+            if selected is None:
+                await session.write("\a")
+                continue
+            choice = selected
+        elif key.kind == EditorKeyKind.CHAR and key.char is not None:
+            choice = key.char.lower()
+            if choice in field_order:
+                selected = choice
+        else:
+            # Left/Right/Backspace/Tab/Home/End/Page Up/Page Down --
+            # nothing on this screen defines a step, same silent no-op
+            # `edit_resource_draft` gives Left/Right on a step-less field.
+            continue
+
         action = actions.get(choice)
         if action is not None:
             await session.write_line("")

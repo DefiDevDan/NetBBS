@@ -204,7 +204,7 @@ from netbbs.moderation.roles import (
     list_grants_for_community,
     revoke_permissions,
 )
-from netbbs.net.char_input import REDRAW_KEY, REFRESH_KEY, reject_unhandled_key
+from netbbs.net.char_input import REDRAW_KEY, REFRESH_KEY, EditorKey, EditorKeyKind, reject_unhandled_key
 from netbbs.net.confirm import prompt_yes_no, prompt_yes_no_or_keep
 from netbbs.net.draft_storage import DraftPruneReport, prune_stale_drafts
 from netbbs.net.picker import pick_item
@@ -225,7 +225,11 @@ from netbbs.net.shutdown import (
     run_shutdown_sequence,
 )
 from netbbs.net.menu_description_preference import menu_description_level
-from netbbs.net.redraw_preference import redraw_in_place_enabled, redraw_in_place_ever_set
+from netbbs.net.redraw_preference import (
+    redraw_in_place_enabled,
+    redraw_in_place_ever_set,
+    set_redraw_in_place_enabled,
+)
 from netbbs.net.breadcrumb_preference import breadcrumb_collapsed_enabled
 from netbbs.net.unicode_style_preference import unicode_style_enabled
 from netbbs.operational_history import list_operational_run_history
@@ -1511,49 +1515,116 @@ async def _trust_config_history_screen(session: Session, lane: DatabaseLane) -> 
 # -- create ------------------------------------------------------------
 
 
+def _create_user_password_field() -> Callable[[Session, DatabaseLane, dict], Awaitable[None]]:
+    """Reuses `_prompt_optional_password` as-is on every activation --
+    "no" always (re)clears `draft["password"]` to `None`, "yes" always
+    prompts a fresh password and replaces whatever was there, so the
+    field's own y/n gate doubles as its only clear/replace mechanism.
+    Deliberately not a richer set/replace/clear menu of its own: this
+    screen's draft is never seeded from an existing account (create-only,
+    unlike `edit_resource_draft`'s other callers), so there's no "current
+    real password" a clear/keep distinction would need to protect."""
+
+    async def prompt(session: Session, lane: DatabaseLane, draft: dict) -> None:
+        draft["password"] = await _prompt_optional_password(session)
+
+    return prompt
+
+
+def _create_user_pubkey_field() -> Callable[[Session, DatabaseLane, dict], Awaitable[None]]:
+    """`_create_user_password_field`'s counterpart for the public key,
+    same reused-prompt/replace-or-clear shape."""
+
+    async def prompt(session: Session, lane: DatabaseLane, draft: dict) -> None:
+        draft["verify_key"] = await _prompt_optional_pubkey(session)
+
+    return prompt
+
+
+def _create_user_field_specs() -> list[FieldSpec]:
+    """Dogfood feature request, issue #160's cursor-navigation follow-up
+    (item 4 of the prioritized list): the linear username -> password? ->
+    key? -> level wizard forced every field in sequence with no way to
+    revisit or skip ahead. Same draft-editor shape as every other
+    create/edit screen -- see `netbbs.net.resource_editor`'s own module
+    docstring -- except this one has no `existing` counterpart to edit:
+    account creation is the only thing this screen does."""
+    return [
+        FieldSpec(
+            key="username", hotkey="u", menu_text=menu_key("U", "sername"), label="Username",
+            render=lambda d: d.get("username") or "",
+            prompt=text_field("username", required=True),
+        ),
+        FieldSpec(
+            key="password", hotkey="p", menu_text=menu_key("P", "assword"), label="Password",
+            render=lambda d: "set" if d.get("password") else "(not set)",
+            prompt=_create_user_password_field(),
+        ),
+        FieldSpec(
+            key="verify_key", hotkey="k", menu_text=menu_key("K", "ey"), label="Public key",
+            render=lambda d: "set" if d.get("verify_key") else "(not set)",
+            prompt=_create_user_pubkey_field(),
+        ),
+        FieldSpec(
+            key="level", hotkey="l", menu_text=menu_key("L", "evel", prefix="Starting "), label="Starting level",
+            render=lambda d: str(d.get("level", 0)),
+            prompt=_int_field("level", "Starting level"),
+        ),
+    ]
+
+
 async def _create_user_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
-    await session.write_line(colored("\r\nCreate user", fg_color=HEADER_COLOR, bold=True))
-    await session.write("Username: ")
-    username = (await session.read_line()).strip()
-    if not username:
-        await session.write_line(colored("Cancelled: username cannot be blank.", fg_color=MUTED_COLOR))
-        return
+    draft: dict = {"username": "", "password": None, "verify_key": None, "level": 0}
 
-    password = await _prompt_optional_password(session)
-    verify_key = await _prompt_optional_pubkey(session)
-    if password is None and verify_key is None:
-        await session.write_line(
-            colored("Cancelled: an account needs a password, a public key, or both.", fg_color=MUTED_COLOR)
-        )
-        return
-
-    await session.write("Starting level [0]: ")
-    level_raw = (await session.read_line()).strip()
-    try:
-        level = int(level_raw) if level_raw else 0
-    except ValueError:
-        await session.write_line(colored("Not a number -- cancelled.", fg_color=MUTED_COLOR))
-        return
-
-    try:
-        # create_user, not create_user_async -- the latter's
-        # off-loop hashing split existed specifically to keep Argon2
-        # hashing off the *raw* event loop; lane.run() already dispatches
-        # this whole call to a worker thread, so the plain synchronous
-        # create_user (per its own docstring, "for command-line/admin
-        # callers") does the hash and the write in one lane dispatch.
+    async def save(draft: dict) -> User:
+        # create_user, not create_user_async -- the latter's off-loop
+        # hashing split existed specifically to keep Argon2 hashing off
+        # the *raw* event loop; lane.run() already dispatches this whole
+        # call to a worker thread, so the plain synchronous create_user
+        # (per its own docstring, "for command-line/admin callers") does
+        # the hash and the write in one lane dispatch. Blank username and
+        # "neither password nor key" are both rejected by create_user
+        # itself (AuthError), so this closure has no validation of its
+        # own to duplicate.
         new_user = await lane.run(
-            create_user, username, password=password, verify_key=verify_key, user_level=level
+            create_user, draft["username"], password=draft["password"],
+            verify_key=draft["verify_key"], user_level=draft["level"],
         )
-    except AuthError as exc:
-        await session.write_line(colored(f"Could not create account: {exc}", fg_color=MUTED_COLOR))
-        return
+        await lane.run(
+            record_action, actor=actor, action="create_user", target_user_id=new_user.id,
+            detail=f"created user {new_user.username!r} at level {draft['level']}",
+        )
+        # Dogfood report: three testers on modern (ANSI-capable) clients
+        # never discovered in-place redraw existed, so never turned it
+        # on. New accounts (self-registered or SysOp-created) now start
+        # with it already on -- see the matching self-registration
+        # change in login_flow._register_new_account for the full
+        # rationale.
+        await lane.run(set_redraw_in_place_enabled, new_user, True)
+        return new_user
 
-    await lane.run(
-        record_action, actor=actor, action="create_user", target_user_id=new_user.id,
-        detail=f"created user {new_user.username!r} at level {level}",
+    redraw_in_place, redraw_hint = await lane.run(_resolve_redraw_preference, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
+    new_user = await edit_resource_draft(
+        session, lane,
+        title="Create user",
+        fields=_create_user_field_specs(),
+        draft=draft, save=save, error_type=AuthError,
+        save_menu_text=menu_key("C", "reate"), save_hotkey="c", back_menu_text=menu_key("B", "ack"),
+        description_level=await lane.run(menu_description_level, actor),
+        redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
+        unicode_style=unicode_style,
+        collapsed=collapsed,
     )
-    await session.write_line(f"Created {new_user.username!r} at level {level}.")
+    if new_user is not None:
+        await session.write_line(f"Created {new_user.username!r} at level {new_user.user_level}.")
+        await session.write_line(
+            colored(
+                "In-place redraw is on by default for this account -- they can turn it off in Your profile.",
+                fg_color=MUTED_COLOR,
+            )
+        )
 
 
 async def _prompt_optional_password(session: Session) -> str | None:
@@ -1911,10 +1982,30 @@ def _user_description(user: User) -> str:
     return f"level {user.user_level}, {_status_label(user)}"
 
 
+def _user_detail_field_line(hotkey: str, label: str, value: str, *, selected: str | None) -> str:
+    """Dogfood feature request, issue #160's cursor-navigation follow-up
+    (item 1 of the prioritized list): the same `>`-cursor/`ACCENT_COLOR`
+    highlight convention `netbbs.net.resource_editor.edit_resource_draft`
+    already renders its own fields with -- duplicated rather than
+    imported, since this screen is a bespoke dispatch loop (below), not
+    a draft-editor call. One `colored()` call per side, same reasoning
+    as that module's own field-row rendering: a marker/label split
+    across two `colored()` calls would insert an SGR reset between them,
+    breaking what should read as one contiguous highlighted run."""
+    prefix = (
+        colored(f"> {label}", fg_color=ACCENT_COLOR, bold=True)
+        if selected == hotkey
+        else colored(f"  {label}", fg_color=LABEL_COLOR)
+    )
+    return f"{prefix}: {colored(value, fg_color=MUTED_COLOR)}"
+
+
 async def _draw_user_detail(
     session: Session, lane: DatabaseLane, target: User, description_level: str, redraw_in_place: bool,
     unicode_style: bool,
     collapsed: bool,
+    *,
+    selected: str | None = None,
 ) -> bool:
     """Returns whether `target` is currently on the local blocklist --
     unlike `disabled_at`, blocked status isn't a field on `User` itself,
@@ -1922,13 +2013,20 @@ async def _draw_user_detail(
     which of `[R]estrict`'s two directions a confirmation should offer,
     same shape `_render_profile`/`_draw_channel_detail` already use to
     hand a caller-needed piece of drawn state back to their own dispatch
-    loops."""
+    loops.
+
+    `selected` (issue #160's cursor-navigation follow-up), if given one
+    of this screen's five field hotkeys (`l`/`t`/`i`/`k`/`r`), highlights
+    that line's own `>` cursor -- `None` (nothing arrow-highlighted yet,
+    or a `[A]pprove`/`[D]elete`/`[B]ack` action, none of which are
+    arrow-selectable fields, matching `edit_resource_draft`'s own
+    Save/Back convention) renders identically to before this feature."""
     await session.write_line(
         "\r\n" + screen_title(sanitize_text(target.username),
             breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
     )
-    await session.write_line(f"Level: {target.user_level}")
-    await session.write_line(f"Status: {_status_label(target)}")
+    await session.write_line(_user_detail_field_line("l", "Level", str(target.user_level), selected=selected))
+    await session.write_line(_user_detail_field_line("t", "Status", _status_label(target), selected=selected))
     display_format, display_timezone = await lane.run(resolve_display_preferences)
     member_since = format_for_display(
         target.created_at, override_format=display_format, override_timezone=display_timezone
@@ -1937,10 +2035,16 @@ async def _draw_user_detail(
     # Design doc §18: a narrow, SysOp-grantable permission independent
     # of the four moderator scope tiers.
     await session.write_line(
-        f"Can verify identity (age/name attestation): {'yes' if target.can_verify_identity else 'no'}"
+        _user_detail_field_line(
+            "i", "Can verify identity (age/name attestation)",
+            "yes" if target.can_verify_identity else "no", selected=selected,
+        )
     )
     await session.write_line(
-        f"Public key (SSH/Link login): {target.fingerprint if target.fingerprint else '(none)'}"
+        _user_detail_field_line(
+            "k", "Public key (SSH/Link login)",
+            target.fingerprint if target.fingerprint else "(none)", selected=selected,
+        )
     )
     # Dogfood follow-up (`netbbs.moderation.blocklist`): the local
     # blocklist enforcement path was real and already wired into login
@@ -1955,7 +2059,9 @@ async def _draw_user_detail(
     # (module docstring) -- a real, separate capability, not just a
     # second button for the same thing.
     blocked = await lane.run(is_blocked, target)
-    await session.write_line(f"Blocked (local blocklist): {'yes' if blocked else 'no'}")
+    await session.write_line(
+        _user_detail_field_line("r", "Blocked (local blocklist)", "yes" if blocked else "no", selected=selected)
+    )
 
     entries = await lane.run(list_actions_for_target_user, target.id)
     if not entries:
@@ -2003,6 +2109,32 @@ async def _draw_user_detail(
     return blocked
 
 
+_USER_DETAIL_FIELD_ORDER = ("l", "t", "i", "k", "r")
+
+
+async def _read_user_detail_key(session: Session) -> EditorKey:
+    """`netbbs.net.resource_editor._read_navigable_key`'s own fallback
+    shape, duplicated here rather than imported -- this project's own
+    "duplicate rather than reach into another module's private helper"
+    convention (see `netbbs.link.files._file_area_from_row`'s own
+    docstring for the identical reasoning), since this screen is a
+    bespoke dispatch loop (below), not an `edit_resource_draft` caller:
+    `[A]pprove` (conditional) and `[D]elete` (which ends the whole
+    screen mid-field, not just mutates one) don't fit that shared
+    driver's fields-plus-save-plus-back shape, so this screen keeps its
+    own hand-rolled loop and borrows only the cursor-navigation
+    mechanics, matching this same file's own `_USER_SORT_MODES`
+    precedent for when a bespoke screen beats a generic extension."""
+    read_editor_key = getattr(session, "read_editor_key", None)
+    if read_editor_key is not None:
+        try:
+            return await read_editor_key(distinguish_ctrl_h=False)
+        except NotImplementedError:
+            pass
+    raw = await session.read_key()
+    return EditorKey(EditorKeyKind.CHAR, char=raw)
+
+
 async def _user_detail_screen(
     session: Session, lane: DatabaseLane, actor: User, target: User, node_controls: NodeControls | None
 ) -> None:
@@ -2015,14 +2147,65 @@ async def _user_detail_screen(
     to be. A SysOp can now promote, then disable, then delete the exact
     same already-selected account without leaving this screen or
     re-picking them through three separate single-purpose flows.
+
+    Dogfood feature request, issue #160's cursor-navigation follow-up
+    (item 1 of the prioritized list): the five status lines
+    (`_USER_DETAIL_FIELD_ORDER`) are also reachable by moving a `>`
+    cursor with Up/Down and activating the highlighted one with Space
+    or Enter -- purely additive, every hotkey letter keeps working
+    exactly as before. `[A]pprove`/`[D]elete`/`[B]ack` are never
+    arrow-selectable, the same "always hotkey-only" treatment
+    `edit_resource_draft` already gives its own Save/Back.
     """
     description_level = await lane.run(menu_description_level, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
     collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
-    blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style, collapsed)
+    selected: str | None = None
+    blocked = await _draw_user_detail(
+        session, lane, target, description_level, redraw_in_place, unicode_style, collapsed, selected=selected
+    )
     while True:
-        choice = (await session.read_key()).lower()
+        key = await _read_user_detail_key(session)
+
+        if key.kind == EditorKeyKind.UP:
+            index = _USER_DETAIL_FIELD_ORDER.index(selected) if selected in _USER_DETAIL_FIELD_ORDER else 0
+            selected = _USER_DETAIL_FIELD_ORDER[(index - 1) % len(_USER_DETAIL_FIELD_ORDER)]
+            blocked = await _draw_user_detail(
+                session, lane, target, description_level, redraw_in_place, unicode_style, collapsed, selected=selected
+            )
+            continue
+        if key.kind == EditorKeyKind.DOWN:
+            index = _USER_DETAIL_FIELD_ORDER.index(selected) if selected in _USER_DETAIL_FIELD_ORDER else -1
+            selected = _USER_DETAIL_FIELD_ORDER[(index + 1) % len(_USER_DETAIL_FIELD_ORDER)]
+            blocked = await _draw_user_detail(
+                session, lane, target, description_level, redraw_in_place, unicode_style, collapsed, selected=selected
+            )
+            continue
+        if key.kind == EditorKeyKind.ESCAPE:
+            if selected is not None:
+                selected = None
+                blocked = await _draw_user_detail(
+                    session, lane, target, description_level, redraw_in_place, unicode_style, collapsed,
+                    selected=selected,
+                )
+                continue
+            await session.write("\a")
+            continue
+        if key.kind == EditorKeyKind.ENTER or (key.kind == EditorKeyKind.CHAR and key.char == " "):
+            if selected is None:
+                await session.write("\a")
+                continue
+            choice = selected
+        elif key.kind == EditorKeyKind.CHAR and key.char is not None:
+            choice = key.char.lower()
+            if choice in _USER_DETAIL_FIELD_ORDER:
+                selected = choice
+        else:
+            # Left/Right/Backspace/Tab/Home/End/Page Up/Page Down --
+            # nothing on this screen defines a step, same silent no-op
+            # `edit_resource_draft` gives Left/Right on a step-less field.
+            continue
 
         if choice == "b":
             await session.write_line("")
@@ -2032,7 +2215,9 @@ async def _user_detail_screen(
             if await prompt_yes_no(session, "Approve this account so it can log in?", default=False):
                 target = await lane.run(approve_pending_user, target, approved_by=actor)
                 await session.write_line(f"{target.username!r} approved.")
-            blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style, collapsed)
+            blocked = await _draw_user_detail(
+                session, lane, target, description_level, redraw_in_place, unicode_style, collapsed, selected=selected,
+            )
         elif choice == "l":
             await session.write_line("")
             await session.write(f"New level for {target.username!r} [{target.user_level}]: ")
@@ -2049,7 +2234,9 @@ async def _user_detail_screen(
                         await session.write_line(colored(str(exc), fg_color=MUTED_COLOR))
                     else:
                         await session.write_line(f"{target.username!r} is now level {target.user_level}.")
-            blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style, collapsed)
+            blocked = await _draw_user_detail(
+                session, lane, target, description_level, redraw_in_place, unicode_style, collapsed, selected=selected,
+            )
         elif choice == "t":
             await session.write_line("")
             currently_disabled = target.disabled_at is not None
@@ -2065,7 +2252,9 @@ async def _user_detail_screen(
                     )
                     if target.disabled_at is not None:
                         await _revoke_live_sessions(session, node_controls, target, actor)
-            blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style, collapsed)
+            blocked = await _draw_user_detail(
+                session, lane, target, description_level, redraw_in_place, unicode_style, collapsed, selected=selected,
+            )
         elif choice == "i":
             await session.write_line("")
             new_state = "revoke" if target.can_verify_identity else "grant"
@@ -2079,7 +2268,9 @@ async def _user_detail_screen(
                     f"{target.username!r} can now verify identity: "
                     f"{'yes' if target.can_verify_identity else 'no'}."
                 )
-            blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style, collapsed)
+            blocked = await _draw_user_detail(
+                session, lane, target, description_level, redraw_in_place, unicode_style, collapsed, selected=selected,
+            )
         elif choice == "k":
             await session.write_line("")
             verb = "Replace" if target.fingerprint else "Add"
@@ -2097,7 +2288,9 @@ async def _user_detail_screen(
                         await session.write_line(colored(str(exc), fg_color=MUTED_COLOR))
                     else:
                         await session.write_line(f"Public key set for {target.username!r}.")
-            blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style, collapsed)
+            blocked = await _draw_user_detail(
+                session, lane, target, description_level, redraw_in_place, unicode_style, collapsed, selected=selected,
+            )
         elif choice == "r":
             await session.write_line("")
             action_word = "Unrestrict" if blocked else "Restrict"
@@ -2118,13 +2311,17 @@ async def _user_detail_screen(
                     else:
                         await session.write_line(f"{target.username!r} is now blocked from logging in.")
                         await _revoke_live_sessions(session, node_controls, target, actor)
-            blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style, collapsed)
+            blocked = await _draw_user_detail(
+                session, lane, target, description_level, redraw_in_place, unicode_style, collapsed, selected=selected,
+            )
         elif choice == "d":
             await session.write_line("")
             deleted = await _delete_user_confirm(session, lane, actor, target, node_controls)
             if deleted:
                 return
-            blocked = await _draw_user_detail(session, lane, target, description_level, redraw_in_place, unicode_style, collapsed)
+            blocked = await _draw_user_detail(
+                session, lane, target, description_level, redraw_in_place, unicode_style, collapsed, selected=selected,
+            )
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -2503,48 +2700,76 @@ async def _timestamp_settings_screen(session: Session, lane: DatabaseLane, actor
     just sat at its hardcoded UTC default forever, with no admin
     surface to change it (Thiesi's own report).
 
-    Two independent settings, each with its own "show current, prompt
-    for a new value, blank leaves it unchanged" turn -- format controls
-    the *shape* of a displayed timestamp, timezone controls *which
-    instant* it shows (see `format_for_display`'s own docstring for why
-    getting one right without the other still leaves users looking at
-    the wrong wall-clock time, just reshaped) -- so a SysOp who only
-    wants to fix one doesn't have to re-enter the other unchanged.
+    Dogfood feature request, issue #160's cursor-navigation follow-up
+    (item 3 of the prioritized list): the two independent settings --
+    format controls the *shape* of a displayed timestamp, timezone
+    controls *which instant* it shows (see `format_for_display`'s own
+    docstring for why getting one right without the other still leaves
+    users looking at the wrong wall-clock time, just reshaped) -- used
+    to always be asked back-to-back in one linear pass. Rebuilt as an
+    immediate-mode `edit_resource_draft` screen (`save=None`, the same
+    shape `netbbs.net.login_flow`'s own profile screen uses): each
+    field persists itself the instant it's edited, so a SysOp who only
+    wants to fix one genuinely never has to visit the other at all.
     """
     fmt, tz_name = await lane.run(resolve_display_preferences)
+    draft: dict = {"format": fmt, "timezone": tz_name}
 
-    header = colored("\r\nTimestamp display:", fg_color=HEADER_COLOR, bold=True)
-    await session.write_line(header)
-    await session.write_line(f"Current format: {fmt!r}")
-    await session.write_line(f"Current timezone: {tz_name}")
+    async def _format_field(session: Session, lane: DatabaseLane, draft: dict) -> None:
+        await session.write(f"New format [{draft['format']!r}] (blank to leave unchanged): ")
+        new_fmt = (await session.read_line()).strip()
+        if not new_fmt:
+            return
 
-    await session.write(colored("\r\nNew format (blank to leave unchanged): ", fg_color=MUTED_COLOR))
-    new_fmt = (await session.read_line()).strip()
-    if new_fmt:
-        def _apply_format(db: Database) -> None:
+        def _apply(db: Database) -> None:
             set_display_format(db, new_fmt)
             record_action(db, actor=actor, action="set_display_format", detail=new_fmt)
 
         try:
-            await lane.run(_apply_format)
+            await lane.run(_apply)
         except ValueError as exc:
             await session.write_line(colored(str(exc), fg_color=MUTED_COLOR))
         else:
-            await session.write_line(f"Display format is now: {new_fmt!r}")
+            draft["format"] = new_fmt
 
-    await session.write(colored("New timezone (blank to leave unchanged): ", fg_color=MUTED_COLOR))
-    new_tz = (await session.read_line()).strip()
-    if new_tz:
-        def _apply_timezone(db: Database) -> None:
+    async def _timezone_field(session: Session, lane: DatabaseLane, draft: dict) -> None:
+        await session.write(f"New timezone [{draft['timezone']}] (blank to leave unchanged): ")
+        new_tz = (await session.read_line()).strip()
+        if not new_tz:
+            return
+
+        def _apply(db: Database) -> None:
             set_display_timezone(db, new_tz)
             record_action(db, actor=actor, action="set_display_timezone", detail=new_tz)
 
         try:
-            await lane.run(_apply_timezone)
+            await lane.run(_apply)
         except ValueError as exc:
             await session.write_line(colored(str(exc), fg_color=MUTED_COLOR))
         else:
-            await session.write_line(f"Display timezone is now: {new_tz}")
+            draft["timezone"] = new_tz
+
+    fields = [
+        FieldSpec(
+            key="format", hotkey="f", menu_text=menu_key("F", "ormat"), label="Format",
+            render=lambda d: d["format"], prompt=_format_field,
+        ),
+        FieldSpec(
+            key="timezone", hotkey="z", menu_text=menu_key("z", "one", prefix="Time"), label="Timezone",
+            render=lambda d: d["timezone"], prompt=_timezone_field,
+        ),
+    ]
+    await edit_resource_draft(
+        session, lane,
+        title="Timestamp display",
+        fields=fields,
+        draft=draft, save=None,
+        back_menu_text=menu_key("B", "ack"),
+        description_level=await lane.run(menu_description_level, actor),
+        redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+        unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+    )
 
 
 # -- Link status (issue #60, narrow scope) -----------------------------------

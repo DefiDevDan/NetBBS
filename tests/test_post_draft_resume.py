@@ -66,7 +66,7 @@ class FakeSession(Session):
             raise AssertionError("FakeSession ran out of scripted input (read_key)")
         return self._inputs.pop(0)
 
-    async def read_editor_key(self) -> EditorKey:
+    async def read_editor_key(self, *, distinguish_ctrl_h: bool = False) -> EditorKey:
         if not self._inputs:
             await asyncio.Event().wait()
             raise AssertionError("unreachable")

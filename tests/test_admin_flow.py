@@ -505,8 +505,15 @@ def test_sysop_menu_can_reject_remote_attestation_for_one_user(db, lane, sysop):
 # -- create user ----------------------------------------------------------
 
 
+# Dogfood feature request, issue #160's cursor-navigation follow-up
+# (item 4 of the prioritized list): create-user is now a draft-editor
+# screen, every field addressable by its own hotkey in any order --
+# "u" (username)/"p" (password)/"k" (public key)/"l" (starting level),
+# then "c" to create -- rather than the old forced-sequence wizard.
+
+
 def test_create_user_with_password_only(db, lane, sysop):
-    session = FakeSession(["u", "c", "alice", "y", "hunter2", "hunter2", "n", "10", "b", "b"])
+    session = FakeSession(["u", "c", "u", "alice", "p", "y", "hunter2", "hunter2", "l", "10", "c", "b", "b"])
     _run(session, lane, sysop)
     created = next(u for u in list_users(db) if u.username == "alice")
     assert created.user_level == 10
@@ -516,7 +523,7 @@ def test_create_user_with_password_only(db, lane, sysop):
 def test_create_user_with_pubkey_only_raw_base64(db, lane, sysop):
     verify_key = nacl.signing.SigningKey.generate().verify_key
     raw_b64 = base64.b64encode(bytes(verify_key)).decode()
-    session = FakeSession(["u", "c", "bob", "n", "y", raw_b64, "0", "b", "b"])
+    session = FakeSession(["u", "c", "u", "bob", "k", "y", raw_b64, "c", "b", "b"])
     _run(session, lane, sysop)
     created = next(u for u in list_users(db) if u.username == "bob")
     assert created.fingerprint is not None
@@ -524,7 +531,7 @@ def test_create_user_with_pubkey_only_raw_base64(db, lane, sysop):
 
 def test_create_user_with_pubkey_only_openssh_line(db, lane, sysop):
     verify_key = nacl.signing.SigningKey.generate().verify_key
-    session = FakeSession(["u", "c", "carol", "n", "y", _openssh_line(verify_key), "0", "b", "b"])
+    session = FakeSession(["u", "c", "u", "carol", "k", "y", _openssh_line(verify_key), "c", "b", "b"])
     _run(session, lane, sysop)
     created = next(u for u in list_users(db) if u.username == "carol")
     assert created.fingerprint is not None
@@ -533,23 +540,30 @@ def test_create_user_with_pubkey_only_openssh_line(db, lane, sysop):
 def test_create_user_with_both_password_and_pubkey(db, lane, sysop):
     verify_key = nacl.signing.SigningKey.generate().verify_key
     raw_b64 = base64.b64encode(bytes(verify_key)).decode()
-    session = FakeSession(["u", "c", "dave", "y", "hunter2", "hunter2", "y", raw_b64, "0", "b", "b"])
+    session = FakeSession(["u", "c", "u", "dave", "p", "y", "hunter2", "hunter2", "k", "y", raw_b64, "c", "b", "b"])
     _run(session, lane, sysop)
     created = next(u for u in list_users(db) if u.username == "dave")
     assert created.fingerprint is not None
 
 
 def test_create_user_with_neither_is_cancelled(db, lane, sysop):
-    session = FakeSession(["u", "c", "eve", "n", "n", "b", "b"])
+    # Attempting [C]reate with both password and key still unset is
+    # rejected by create_user's own validation (AuthError), shown
+    # inline and the draft kept -- [B]ack then needs a confirmation
+    # since the username field was already touched.
+    session = FakeSession(["u", "c", "u", "eve", "c", "b", "y", "b", "b"])
     _run(session, lane, sysop)
     assert not any(u.username == "eve" for u in list_users(db))
     assert "needs a password" in _written_text(session)
 
 
 def test_create_user_with_blank_username_is_cancelled(db, lane, sysop):
-    session = FakeSession(["u", "c", "", "b", "b"])
+    # create_user checks "has a password or key" before it validates the
+    # username, so a password is set here to actually reach (and prove)
+    # the username-grammar rejection on the still-blank username field.
+    session = FakeSession(["u", "c", "p", "y", "hunter2", "hunter2", "c", "b", "y", "b", "b"])
     _run(session, lane, sysop)
-    assert "cannot be blank" in _written_text(session)
+    assert "usernames may only contain" in _written_text(session)
 
 
 # -- list / detail ---------------------------------------------------------
@@ -559,7 +573,31 @@ def test_list_users_and_select_shows_detail(db, lane, sysop):
     session = FakeSession(["u", "l", "0", "1", "b", "b", "b"])
     _run(session, lane, sysop)
     assert "sysop" in _written_text(session)
-    assert "Level: 255" in _written_text(session)
+    assert "Level: 255" in _visible(_written_text(session))
+
+
+def test_user_detail_arrow_nav_activates_the_highlighted_field(db, lane, sysop):
+    # Dogfood feature request, issue #160's cursor-navigation follow-up
+    # (item 1 of the prioritized list): Down twice from nothing
+    # highlighted lands on "t" (Status), the second of the five
+    # arrow-selectable fields (_USER_DETAIL_FIELD_ORDER = l, t, i, k, r);
+    # Space then activates it exactly like pressing "t" directly would.
+    alice = create_user(db, "alice", password="hunter2", user_level=10)
+    session = FakeSession(["u", "l", "g", str(alice.id), "DOWN", "DOWN", " ", "y", "b", "b", "b"])
+    _run(session, lane, sysop)
+    updated = next(u for u in list_users(db) if u.username == "alice")
+    assert updated.disabled_at is not None
+
+
+def test_user_detail_escape_clears_the_cursor_highlight_without_leaving(db, lane, sysop):
+    alice = create_user(db, "alice", password="hunter2", user_level=10)
+    session = FakeSession(["u", "l", "g", str(alice.id), "DOWN", "ESCAPE", "b", "b", "b"])
+    _run(session, lane, sysop)
+    # Esc only cancels the highlight -- the account is untouched and the
+    # screen is still reachable (proven by the trailing backs succeeding
+    # instead of raising "ran out of scripted input").
+    updated = next(u for u in list_users(db) if u.username == "alice")
+    assert updated.disabled_at is None
 
 
 def test_user_detail_recent_admin_actions_show_who_performed_them(db, lane, sysop):
@@ -617,7 +655,7 @@ def test_list_users_sort_by_highest_level_first_changes_pick_order(db, lane, sys
     # level first.
     session = FakeSession(["u", "l", "l", "l", "0", "1", "b", "b", "b"])
     _run(session, lane, sysop)
-    assert "Level: 255" in _written_text(session)  # sysop, picked as item 01
+    assert "Level: 255" in _visible(_written_text(session))  # sysop, picked as item 01
 
 
 def test_list_users_defaults_to_alphabetical_ascending_with_no_sort_prompt_needed(db, lane, sysop):
@@ -681,14 +719,14 @@ def test_user_picker_search_still_works(db, lane, sysop):
     session = FakeSession(["u", "l", "s", "alice", "b", "b", "b"])
     _run(session, lane, sysop)
     # A single match auto-selects straight into the detail screen.
-    assert "Level: 10" in _written_text(session)
+    assert "Level: 10" in _visible(_written_text(session))
 
 
 def test_user_picker_goto_still_works(db, lane, sysop):
     alice = create_user(db, "alice", password="hunter2", user_level=10)
     session = FakeSession(["u", "l", "g", str(alice.id), "b", "b", "b"])
     _run(session, lane, sysop)
-    assert "Level: 10" in _written_text(session)
+    assert "Level: 10" in _visible(_written_text(session))
 
 
 def test_user_picker_visibility_toggle_hides_disabled_users_on_first_press(db, lane, sysop):
@@ -3510,39 +3548,47 @@ def test_system_menu_shows_the_timestamp_format_option(db, lane, sysop):
     assert "imestamp format" in _written_text(session)
 
 
+# Dogfood feature request, issue #160's cursor-navigation follow-up
+# (item 3 of the prioritized list): rebuilt as an immediate-mode
+# edit_resource_draft screen -- "f" (format)/"z" (timezone), each
+# independently addressable and self-persisting, rather than the old
+# forced back-to-back sequence. [B]ack never confirms (immediate mode
+# has nothing pending), so leaving needs exactly one "b".
+
+
 def test_timestamp_settings_screen_shows_current_format_and_timezone(db, lane, sysop):
-    session = FakeSession(["s", "t", "", "", "b", "b"])
+    session = FakeSession(["s", "t", "b", "b", "b"])
     _run(session, lane, sysop)
-    text = _written_text(session)
-    assert "Current format:" in text
-    assert "Current timezone:" in text
+    text = _visible(_written_text(session))
+    assert "Format:" in text
+    assert "Timezone:" in text
 
 
 def test_timestamp_settings_screen_can_set_a_new_timezone(db, lane, sysop):
     from netbbs.timeutil import resolve_display_preferences
 
-    session = FakeSession(["s", "t", "", "Europe/Berlin", "b", "b"])
+    session = FakeSession(["s", "t", "z", "Europe/Berlin", "b", "b", "b"])
     _run(session, lane, sysop)
     _, tz = resolve_display_preferences(db)
     assert tz == "Europe/Berlin"
-    assert "Display timezone is now: Europe/Berlin" in _written_text(session)
+    assert "Europe/Berlin" in _visible(_written_text(session))
 
 
 def test_timestamp_settings_screen_can_set_a_new_format(db, lane, sysop):
     from netbbs.timeutil import resolve_display_preferences
 
-    session = FakeSession(["s", "t", "%Y-%m-%d %H:%M", "", "b", "b"])
+    session = FakeSession(["s", "t", "f", "%Y-%m-%d %H:%M", "b", "b", "b"])
     _run(session, lane, sysop)
     fmt, _ = resolve_display_preferences(db)
     assert fmt == "%Y-%m-%d %H:%M"
-    assert "Display format is now:" in _written_text(session)
 
 
 def test_timestamp_settings_screen_blank_leaves_both_unchanged(db, lane, sysop):
     from netbbs.timeutil import resolve_display_preferences
 
     before = resolve_display_preferences(db)
-    session = FakeSession(["s", "t", "", "", "b", "b"])
+    # Visit both fields but answer blank each time -- blank = keep.
+    session = FakeSession(["s", "t", "f", "", "z", "", "b", "b", "b"])
     _run(session, lane, sysop)
     assert resolve_display_preferences(db) == before
 
@@ -3551,7 +3597,7 @@ def test_timestamp_settings_screen_rejects_an_invalid_timezone(db, lane, sysop):
     from netbbs.timeutil import resolve_display_preferences
 
     before = resolve_display_preferences(db)
-    session = FakeSession(["s", "t", "", "Not/A/Real/Zone", "b", "b"])
+    session = FakeSession(["s", "t", "z", "Not/A/Real/Zone", "b", "b", "b"])
     _run(session, lane, sysop)
     assert resolve_display_preferences(db) == before  # rejected -- nothing changed
     assert "invalid timezone" in _written_text(session).lower()
@@ -3561,7 +3607,7 @@ def test_timestamp_settings_screen_rejects_an_invalid_format(db, lane, sysop):
     from netbbs.timeutil import resolve_display_preferences
 
     before = resolve_display_preferences(db)
-    session = FakeSession(["s", "t", "%Q nonsense", "", "b", "b"])
+    session = FakeSession(["s", "t", "f", "%Q nonsense", "b", "b", "b"])
     _run(session, lane, sysop)
     assert resolve_display_preferences(db) == before
     assert "invalid" in _written_text(session).lower()
@@ -3578,7 +3624,7 @@ def test_timestamp_settings_screen_setting_a_timezone_fixes_the_chat_status_line
     from netbbs.net.chat_flow import _render_chat_status_line
     from netbbs.timeutil import format_for_display, utc_now_iso
 
-    session = FakeSession(["s", "t", "", "Europe/Berlin", "b", "b"])
+    session = FakeSession(["s", "t", "z", "Europe/Berlin", "b", "b", "b"])
     _run(session, lane, sysop)
 
     channel = create_channel(db, "lobby", creator=sysop)

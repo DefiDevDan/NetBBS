@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from netbbs.net.char_input import CANCEL_KEY
+from netbbs.net.char_input import CANCEL_KEY, EditorKey, EditorKeyKind
 from netbbs.net.composition import ReviewAction, edit_line_body, review_composition
 
 
@@ -36,6 +36,31 @@ class FakeSession:
 
 def _text(session: FakeSession) -> str:
     return "".join(session.written)
+
+
+_EDITOR_KEY_SENTINELS: dict[str, EditorKeyKind] = {
+    "ENTER": EditorKeyKind.ENTER,
+    "UP": EditorKeyKind.UP,
+    "DOWN": EditorKeyKind.DOWN,
+    "ESCAPE": EditorKeyKind.ESCAPE,
+}
+
+
+class NavigableFakeSession(FakeSession):
+    """Same shape as `FakeSession`, but with a real `read_editor_key`
+    (same sentinel convention `tests/test_resource_editor.py`'s own
+    `NavigableFakeSession` already uses) -- for exercising
+    `review_composition`'s cursor-navigation path, which plain
+    `FakeSession`'s missing `read_editor_key` always falls back away
+    from on purpose."""
+
+    async def read_editor_key(self, *, distinguish_ctrl_h: bool = False) -> EditorKey:
+        raw = next(self._keys)
+        if raw in _EDITOR_KEY_SENTINELS:
+            return EditorKey(_EDITOR_KEY_SENTINELS[raw])
+        if raw == " ":
+            return EditorKey(EditorKeyKind.CHAR, char=" ")
+        return EditorKey(EditorKeyKind.CHAR, char=raw)
 
 
 def test_line_editor_can_replace_insert_delete_and_list_submitted_lines():
@@ -173,6 +198,34 @@ def test_review_renders_all_fields_and_returns_explicit_actions():
     assert "Subject: " in text and "Hello" in text
     assert "first\nsecond" in text
     assert "\b" in text  # unsupported key was visibly rejected
+
+
+def test_review_arrow_nav_activates_the_highlighted_field():
+    # Dogfood feature request, issue #160's cursor-navigation follow-up
+    # (item 2 of the prioritized list): Down twice from nothing
+    # highlighted lands on "b" (Body), the second of the two
+    # arrow-selectable fields when there's no recipient (u, b); Space
+    # then activates it exactly like pressing "b" directly would.
+    session = NavigableFakeSession(keys=("DOWN", "DOWN", " "))
+    action = asyncio.run(
+        review_composition(
+            session, recipient=None, subject="Subject", body="Body", commit_key="p", commit_label="ost",
+        )
+    )
+    assert action is ReviewAction.EDIT_BODY
+
+
+def test_review_escape_clears_the_cursor_highlight_without_acting():
+    session = NavigableFakeSession(keys=("DOWN", "ESCAPE", "p"))
+    action = asyncio.run(
+        review_composition(
+            session, recipient=None, subject="Subject", body="Body", commit_key="p", commit_label="ost",
+        )
+    )
+    # Esc only cancels the highlight -- "p" (commit) still has to be
+    # pressed explicitly afterward, proven by it being the action
+    # returned rather than an earlier, unintended EDIT_BODY.
+    assert action is ReviewAction.COMMIT
 
 
 def test_review_ctrl_c_is_an_alias_for_cancel():
