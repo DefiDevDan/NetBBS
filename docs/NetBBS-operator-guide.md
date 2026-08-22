@@ -32,6 +32,15 @@ present at all, and ran a real node from it — `python -m netbbs
 own code, a real listener, and a real Telnet login, all from a plain
 working directory with no relationship to this repository.
 
+**Debian/Ubuntu:** the `venv` module's `ensurepip` support is split into
+a separate package from base `python3` and is commonly absent on
+minimal/server installs — `python3 -m venv` then fails with
+`ensurepip is not available`. Install it first:
+
+```sh
+sudo apt install python3-venv   # or python3.12-venv, matching your python3 -V
+```
+
 ```sh
 python3 -m venv /var/lib/netbbs/.venv
 /var/lib/netbbs/.venv/bin/pip install --upgrade pip
