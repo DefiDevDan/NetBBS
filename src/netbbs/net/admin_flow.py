@@ -204,9 +204,17 @@ from netbbs.moderation.roles import (
     list_grants_for_community,
     revoke_permissions,
 )
-from netbbs.net.char_input import REDRAW_KEY, REFRESH_KEY, EditorKey, EditorKeyKind, reject_unhandled_key
+from netbbs.net.char_input import (
+    HELP_KEY,
+    REDRAW_KEY,
+    REFRESH_KEY,
+    EditorKey,
+    EditorKeyKind,
+    reject_unhandled_key,
+)
 from netbbs.net.confirm import prompt_yes_no, prompt_yes_no_or_keep
 from netbbs.net.draft_storage import DraftPruneReport, prune_stale_drafts
+from netbbs.net.help_overlay import show_help
 from netbbs.net.picker import pick_item
 from netbbs.net.resource_editor import (
     FieldSpec,
@@ -1554,21 +1562,33 @@ def _create_user_field_specs() -> list[FieldSpec]:
             key="username", hotkey="u", menu_text=menu_key("U", "sername"), label="Username",
             render=lambda d: d.get("username") or "",
             prompt=text_field("username", required=True),
+            help="Letters, digits, '_', '-', and '.' only. Case-insensitive uniqueness.",
         ),
         FieldSpec(
             key="password", hotkey="p", menu_text=menu_key("P", "assword"), label="Password",
             render=lambda d: "set" if d.get("password") else "(not set)",
             prompt=_create_user_password_field(),
+            help=(
+                "An account needs a password, a public key, or both. Answering 'no' here "
+                "clears any password already entered on this draft; answering 'yes' always "
+                "prompts for and replaces it with a fresh one."
+            ),
         ),
         FieldSpec(
             key="verify_key", hotkey="k", menu_text=menu_key("K", "ey"), label="Public key",
             render=lambda d: "set" if d.get("verify_key") else "(not set)",
             prompt=_create_user_pubkey_field(),
+            help="For SSH key-based login. Paste as base64, or a full 'ssh-ed25519 ...' line.",
         ),
         FieldSpec(
             key="level", hotkey="l", menu_text=menu_key("L", "evel", prefix="Starting "), label="Starting level",
             render=lambda d: str(d.get("level", 0)),
             prompt=_int_field("level", "Starting level"),
+            help=(
+                "The account's initial permission level. 0 is an ordinary caller; higher "
+                "numbers unlock moderator/SysOp capability (see the Level field on an "
+                "existing account's own detail screen for the specific thresholds)."
+            ),
         ),
     ]
 
@@ -2105,6 +2125,7 @@ async def _draw_user_detail(
         "\r\n"
         + _menu_row(options, description_level, width=session.terminal_width, height=session.terminal_height)
     )
+    await session.write_line(colored("(Ctrl-H for help on these fields)", fg_color=MUTED_COLOR))
     await session.write("Choice: ")
     return blocked
 
@@ -2124,15 +2145,77 @@ async def _read_user_detail_key(session: Session) -> EditorKey:
     driver's fields-plus-save-plus-back shape, so this screen keeps its
     own hand-rolled loop and borrows only the cursor-navigation
     mechanics, matching this same file's own `_USER_SORT_MODES`
-    precedent for when a bespoke screen beats a generic extension."""
+    precedent for when a bespoke screen beats a generic extension.
+
+    `distinguish_ctrl_h=True` (dogfood feature request: this screen had
+    no on-demand help at all until now) -- without it, real byte 0x08
+    collapses into `BACKSPACE`, unreachable as help the same way
+    `edit_resource_draft`'s own Ctrl-H was before that bug was found and
+    fixed (see that module's `_read_navigable_key` docstring). This
+    screen never needs a real Backspace at its own top level either."""
     read_editor_key = getattr(session, "read_editor_key", None)
     if read_editor_key is not None:
         try:
-            return await read_editor_key(distinguish_ctrl_h=False)
+            return await read_editor_key(distinguish_ctrl_h=True)
         except NotImplementedError:
             pass
     raw = await session.read_key()
     return EditorKey(EditorKeyKind.CHAR, char=raw)
+
+
+# Ctrl-H's own content for the five arrow-selectable fields
+# (`_USER_DETAIL_FIELD_ORDER`) -- dogfood feature request, this screen
+# had no on-demand help at all until now. Keyed the same as
+# `_USER_DETAIL_FIELD_ORDER`, not a `FieldSpec` list, since this
+# screen's status lines are drawn by `_draw_user_detail` directly, not
+# through `netbbs.net.resource_editor`.
+_USER_DETAIL_HELP: dict[str, tuple[str, str]] = {
+    "l": (
+        "Level",
+        "The account's permission level. 0 is an ordinary caller; higher numbers unlock "
+        "moderator/SysOp capability.",
+    ),
+    "t": (
+        "Status",
+        "Enable/disable this account. A disabled account can't log in; existing posts/"
+        "files/messages they created are untouched.",
+    ),
+    "i": (
+        "Can verify identity",
+        "A narrow, SysOp-grantable permission (design doc §18) letting this account "
+        "perform age/name attestation for other callers -- independent of the four "
+        "moderator scope tiers.",
+    ),
+    "k": (
+        "Public key",
+        "This account's SSH/Link public key. Setting or replacing it here lets them log "
+        "in over SSH with key-based authentication.",
+    ),
+    "r": (
+        "Blocked",
+        "The local blocklist -- a separate, fingerprint-based mechanism from Status/"
+        "disable, designed to extend to remote nodes/traffic later. Unlike disabling, a "
+        "block also survives the account being re-enabled.",
+    ),
+}
+
+
+async def _show_user_detail_help(session: Session, *, selected: str | None) -> None:
+    """Same "narrow to the highlighted field if one is selected, else
+    list everything" shape `netbbs.net.resource_editor._show_field_help`
+    already establishes for `edit_resource_draft`'s own Ctrl-H."""
+    if selected is not None:
+        label, help_text = _USER_DETAIL_HELP[selected]
+        await show_help(
+            session, "Field help", [colored(label, fg_color=HEADER_COLOR, bold=True), f"  {help_text}"]
+        )
+        return
+    lines: list[str] = []
+    for label, help_text in _USER_DETAIL_HELP.values():
+        lines.append(colored(label, fg_color=HEADER_COLOR, bold=True))
+        lines.append(f"  {help_text}")
+        lines.append("")
+    await show_help(session, "Field help", lines[:-1])
 
 
 async def _user_detail_screen(
@@ -2192,6 +2275,12 @@ async def _user_detail_screen(
                 continue
             await session.write("\a")
             continue
+        if key.kind == EditorKeyKind.CTRL and key.char == "h":
+            await _show_user_detail_help(session, selected=selected)
+            blocked = await _draw_user_detail(
+                session, lane, target, description_level, redraw_in_place, unicode_style, collapsed, selected=selected
+            )
+            continue
         if key.kind == EditorKeyKind.ENTER or (key.kind == EditorKeyKind.CHAR and key.char == " "):
             if selected is None:
                 await session.write("\a")
@@ -2199,6 +2288,17 @@ async def _user_detail_screen(
             choice = selected
         elif key.kind == EditorKeyKind.CHAR and key.char is not None:
             choice = key.char.lower()
+            if choice == HELP_KEY:
+                # A session with no real `read_editor_key` (falls back
+                # to plain `read_key()`) delivers Ctrl-H as an ordinary
+                # character, never as `EditorKeyKind.CTRL` -- same dual
+                # path `edit_resource_draft` itself handles.
+                await _show_user_detail_help(session, selected=selected)
+                blocked = await _draw_user_detail(
+                    session, lane, target, description_level, redraw_in_place, unicode_style, collapsed,
+                    selected=selected,
+                )
+                continue
             if choice in _USER_DETAIL_FIELD_ORDER:
                 selected = choice
         else:
@@ -2753,10 +2853,21 @@ async def _timestamp_settings_screen(session: Session, lane: DatabaseLane, actor
         FieldSpec(
             key="format", hotkey="f", menu_text=menu_key("F", "ormat"), label="Format",
             render=lambda d: d["format"], prompt=_format_field,
+            help=(
+                "A Python strftime pattern controlling the *shape* of every displayed "
+                "timestamp node-wide, e.g. '%Y-%m-%d %H:%M' for '2026-08-22 14:05'. "
+                "Doesn't affect which instant is shown -- see Timezone for that."
+            ),
         ),
         FieldSpec(
             key="timezone", hotkey="z", menu_text=menu_key("z", "one", prefix="Time"), label="Timezone",
             render=lambda d: d["timezone"], prompt=_timezone_field,
+            help=(
+                "An IANA timezone name (e.g. 'Europe/Berlin', 'America/New_York') "
+                "controlling *which instant* every displayed timestamp shows, node-wide. "
+                "Getting this wrong leaves every timestamp reshaped but still pointing at "
+                "the wrong wall-clock time."
+            ),
         ),
     ]
     await edit_resource_draft(
@@ -4615,18 +4726,26 @@ def _community_field_specs() -> list[FieldSpec]:
             render=lambda d: d.get("name") or "(blank)",
             prompt=text_field("name", required=True),
             brief="The community's display name",
+            help="The Community's display name, shown wherever it's listed. Must be non-blank.",
         ),
         FieldSpec(
             key="description", hotkey="d", menu_text=menu_key("D", "escription"), label="Description",
             render=lambda d: d.get("description") or "(none)",
             prompt=text_field("description"),
             brief="Shown in the community directory",
+            help="A short explanation of what this Community is for, shown in the Communities "
+            "directory alongside its name.",
         ),
         FieldSpec(
             key="hidden", hotkey="h", menu_text=menu_key("H", "idden"), label="Hidden",
             render=lambda d: "yes" if d.get("hidden") else "no",
             prompt=bool_field("hidden", "Hidden?"),
             brief="Hide from the communities list",
+            help=(
+                "Delists this Community from ordinary browsing without deleting it. A SysOp "
+                "still sees it everywhere; boards/areas/channels inside keep working normally "
+                "for anyone who already knows to look for them."
+            ),
         ),
         FieldSpec(
             key="default_min_read_level", hotkey="r", menu_text=menu_key("R", "ead level"),
@@ -4634,6 +4753,11 @@ def _community_field_specs() -> list[FieldSpec]:
             render=lambda d: _optional_int_label(d.get("default_min_read_level")),
             prompt=_optional_int_field("default_min_read_level", "Default minimum read level"),
             brief="Default read level, inherited",
+            help=(
+                "The read-level floor every board/area/channel in this Community inherits "
+                "unless it sets its own. 'none' means no inherited floor -- each resource's "
+                "own level (or lack of one) applies instead."
+            ),
         ),
         FieldSpec(
             key="default_min_write_level", hotkey="w", menu_text=menu_key("W", "rite level"),
@@ -4641,6 +4765,10 @@ def _community_field_specs() -> list[FieldSpec]:
             render=lambda d: _optional_int_label(d.get("default_min_write_level")),
             prompt=_optional_int_field("default_min_write_level", "Default minimum write level"),
             brief="Default write level, inherited",
+            help=(
+                "The write-level floor every board/area/channel in this Community inherits "
+                "unless it sets its own. 'none' means no inherited floor."
+            ),
         ),
         FieldSpec(
             key="default_min_age", hotkey="g", menu_text=menu_key("G", "e", prefix="Min a"),
@@ -4648,6 +4776,10 @@ def _community_field_specs() -> list[FieldSpec]:
             render=lambda d: _optional_int_label(d.get("default_min_age")),
             prompt=_min_age_field("default_min_age"),
             brief="Default min. age, inherited",
+            help=(
+                "The minimum-age gate every board/area/channel in this Community inherits "
+                "unless it sets its own. 'none' means no inherited gate."
+            ),
         ),
         FieldSpec(
             key="default_name_requirement", hotkey="q", menu_text=menu_key("q", "uirement", prefix="Name re"),
@@ -4910,24 +5042,36 @@ def _board_field_specs(
             render=lambda d: d.get("name") or "(blank)",
             prompt=text_field("name", required=True),
             brief="The board's display name",
+            help="The board's display name, shown wherever it's listed. Must be non-blank.",
         ),
         FieldSpec(
             key="description", hotkey="d", menu_text=menu_key("D", "escription"), label="Description",
             render=lambda d: d.get("description") or "(none)",
             prompt=text_field("description"),
             brief="Shown when browsing the board",
+            help="A short explanation of what this board is for, shown when browsing/selecting it.",
         ),
         FieldSpec(
             key="min_read_level", hotkey="r", menu_text=menu_key("R", "ead level"), label="Min read level",
             render=lambda d: _optional_int_label(d.get("min_read_level")),
             prompt=_optional_int_field("min_read_level", "Minimum read level"),
             brief="Level required to read it",
+            help=(
+                "The permission level a caller needs to read this board. 'none' inherits "
+                "the parent Community's own default read level if it has one set, or falls "
+                "back to no gate."
+            ),
         ),
         FieldSpec(
             key="min_write_level", hotkey="w", menu_text=menu_key("W", "rite level"), label="Min write level",
             render=lambda d: _optional_int_label(d.get("min_write_level")),
             prompt=_optional_int_field("min_write_level", "Minimum write level"),
             brief="Level required to post",
+            help=(
+                "The permission level a caller needs to post here. 'none' inherits the "
+                "parent Community's own default write level if it has one set, or falls "
+                "back to no gate."
+            ),
         ),
         FieldSpec(
             key="community_id", hotkey="u", menu_text=menu_key("U", "nity", prefix="Comm"), label="Community",
@@ -4936,6 +5080,11 @@ def _board_field_specs(
                 redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed
             ),
             brief="Parent community, if any",
+            help=(
+                "The Community this board belongs to, if any -- a board inside a Community "
+                "can inherit its default read/write/age/name-requirement settings instead of "
+                "each needing its own. 'none' keeps this board outside every Community."
+            ),
         ),
         FieldSpec(
             key="category_id", hotkey="c", menu_text=menu_key("C", "ategory"), label="Category",
@@ -4946,18 +5095,24 @@ def _board_field_specs(
                 redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
             ),
             brief="Where it's grouped in listings",
+            help=(
+                "Where this board is grouped when browsing listings -- purely organizational, "
+                "has no effect on who can read or post."
+            ),
         ),
         FieldSpec(
             key="pinned", hotkey="p", menu_text=menu_key("P", "inned"), label="Pinned",
             render=lambda d: "yes" if d.get("pinned") else "no",
             prompt=bool_field("pinned", "Pinned?"),
             brief="Shown at the top of listings",
+            help="Shown at the top of board listings, above unpinned boards, regardless of sort order.",
         ),
         FieldSpec(
             key="moderated", hotkey="m", menu_text=menu_key("M", "oderated"), label="Moderated",
             render=lambda d: "yes" if d.get("moderated") else "no",
             prompt=bool_field("moderated", "Moderated (posts need approval)?"),
             brief="New posts need approval first",
+            help="New posts need a moderator or SysOp to approve them before anyone else can see them.",
         ),
         FieldSpec(
             key="max_post_age_days", hotkey="x", menu_text=menu_key("X", " post age", prefix="Ma"),
@@ -4965,12 +5120,18 @@ def _board_field_specs(
             render=lambda d: _optional_int_label(d.get("max_post_age_days"), none_word="unlimited"),
             prompt=_optional_int_field("max_post_age_days", "Max post age in days"),
             brief="Auto-purge posts after N days",
+            help="Posts older than this are automatically purged. 'unlimited' keeps every post indefinitely.",
         ),
         FieldSpec(
             key="min_age", hotkey="g", menu_text=menu_key("G", "e", prefix="Min a"), label="Min age",
             render=lambda d: _optional_int_label(d.get("min_age")),
             prompt=_min_age_field(),
             brief="Minimum caller age required",
+            help=(
+                "The minimum caller age required to read or post here, checked against a "
+                "caller's own birthdate (Your profile › Name & details) even if they've "
+                "chosen not to show it publicly. 'none' means no age gate."
+            ),
         ),
         FieldSpec(
             key="name_requirement", hotkey="q", menu_text=menu_key("q", "uirement", prefix="Name re"),
@@ -5787,24 +5948,36 @@ def _area_field_specs(
             render=lambda d: d.get("name") or "(blank)",
             prompt=text_field("name", required=True),
             brief="The area's display name",
+            help="The file area's display name, shown wherever it's listed. Must be non-blank.",
         ),
         FieldSpec(
             key="description", hotkey="d", menu_text=menu_key("D", "escription"), label="Description",
             render=lambda d: d.get("description") or "(none)",
             prompt=text_field("description"),
             brief="Shown when browsing the area",
+            help="A short explanation of what this file area is for, shown when browsing/selecting it.",
         ),
         FieldSpec(
             key="min_read_level", hotkey="r", menu_text=menu_key("R", "ead level"), label="Min read level",
             render=lambda d: _optional_int_label(d.get("min_read_level")),
             prompt=_optional_int_field("min_read_level", "Minimum read level"),
             brief="Level required to browse it",
+            help=(
+                "The permission level a caller needs to browse/download from this area. "
+                "'none' inherits the parent Community's own default read level if it has "
+                "one set, or falls back to no gate."
+            ),
         ),
         FieldSpec(
             key="min_write_level", hotkey="w", menu_text=menu_key("W", "rite level"), label="Min write level",
             render=lambda d: _optional_int_label(d.get("min_write_level")),
             prompt=_optional_int_field("min_write_level", "Minimum write level"),
             brief="Level required to upload",
+            help=(
+                "The permission level a caller needs to upload here. 'none' inherits the "
+                "parent Community's own default write level if it has one set, or falls "
+                "back to no gate."
+            ),
         ),
         FieldSpec(
             key="community_id", hotkey="u", menu_text=menu_key("U", "nity", prefix="Comm"), label="Community",
@@ -5813,6 +5986,11 @@ def _area_field_specs(
                 redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed
             ),
             brief="Parent community, if any",
+            help=(
+                "The Community this file area belongs to, if any -- an area inside a "
+                "Community can inherit its default read/write/age/name-requirement settings "
+                "instead of each needing its own. 'none' keeps it outside every Community."
+            ),
         ),
         FieldSpec(
             key="category_id", hotkey="c", menu_text=menu_key("C", "ategory"), label="Category",
@@ -5823,18 +6001,24 @@ def _area_field_specs(
                 redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
             ),
             brief="Where it's grouped in listings",
+            help=(
+                "Where this file area is grouped when browsing listings -- purely "
+                "organizational, has no effect on who can browse or upload."
+            ),
         ),
         FieldSpec(
             key="pinned", hotkey="p", menu_text=menu_key("P", "inned"), label="Pinned",
             render=lambda d: "yes" if d.get("pinned") else "no",
             prompt=bool_field("pinned", "Pinned?"),
             brief="Shown at the top of listings",
+            help="Shown at the top of file-area listings, above unpinned areas, regardless of sort order.",
         ),
         FieldSpec(
             key="moderated", hotkey="m", menu_text=menu_key("M", "oderated"), label="Moderated",
             render=lambda d: "yes" if d.get("moderated") else "no",
             prompt=bool_field("moderated", "Moderated (uploads need approval)?"),
             brief="New uploads need approval first",
+            help="New uploads need a moderator or SysOp to approve them before anyone else can download them.",
         ),
         FieldSpec(
             key="max_file_age_days", hotkey="x", menu_text=menu_key("X", " file age", prefix="Ma"),
@@ -5842,12 +6026,18 @@ def _area_field_specs(
             render=lambda d: _optional_int_label(d.get("max_file_age_days"), none_word="unlimited"),
             prompt=_optional_int_field("max_file_age_days", "Max file age in days"),
             brief="Auto-purge files after N days",
+            help="Files older than this are automatically purged. 'unlimited' keeps every file indefinitely.",
         ),
         FieldSpec(
             key="min_age", hotkey="g", menu_text=menu_key("G", "e", prefix="Min a"), label="Min age",
             render=lambda d: _optional_int_label(d.get("min_age")),
             prompt=_min_age_field(),
             brief="Minimum caller age required",
+            help=(
+                "The minimum caller age required to browse or upload here, checked against "
+                "a caller's own birthdate (Your profile › Name & details) even if they've "
+                "chosen not to show it publicly. 'none' means no age gate."
+            ),
         ),
         FieldSpec(
             key="name_requirement", hotkey="q", menu_text=menu_key("q", "uirement", prefix="Name re"),
@@ -6287,18 +6477,25 @@ def _channel_field_specs(
             render=lambda d: d.get("name") or "(blank)",
             prompt=text_field("name", required=True),
             brief="The channel's display name",
+            help="The channel's display name, shown wherever it's listed. Must be non-blank.",
         ),
         FieldSpec(
             key="description", hotkey="d", menu_text=menu_key("D", "escription"), label="Description",
             render=lambda d: d.get("description") or "(none)",
             prompt=text_field("description"),
             brief="Shown when browsing channels",
+            help="A short explanation of what this channel is for, shown when browsing/selecting it.",
         ),
         FieldSpec(
             key="min_level", hotkey="l", menu_text=menu_key("L", "evel"), label="Min level",
             render=lambda d: str(d.get("min_level")),
             prompt=_int_field("min_level", "Minimum level"),
             brief="Level required to join",
+            help=(
+                "The permission level a caller needs to join this channel. Unlike boards/"
+                "file areas, a channel's own level never inherits from its Community -- "
+                "always a plain number, 0 meaning no gate."
+            ),
         ),
         FieldSpec(
             key="community_id", hotkey="u", menu_text=menu_key("U", "nity", prefix="Comm"), label="Community",
@@ -6307,6 +6504,11 @@ def _channel_field_specs(
                 redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed
             ),
             brief="Parent community, if any",
+            help=(
+                "The Community this channel belongs to, if any -- a channel inside a "
+                "Community can inherit its default age/name-requirement settings instead of "
+                "each needing its own. 'none' keeps it outside every Community."
+            ),
         ),
         FieldSpec(
             key="category_id", hotkey="c", menu_text=menu_key("C", "ategory"), label="Category",
@@ -6317,24 +6519,35 @@ def _channel_field_specs(
                 redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
             ),
             brief="Where it's grouped in listings",
+            help=(
+                "Where this channel is grouped when browsing listings -- purely "
+                "organizational, has no effect on who can join."
+            ),
         ),
         FieldSpec(
             key="pinned", hotkey="p", menu_text=menu_key("P", "inned"), label="Pinned",
             render=lambda d: "yes" if d.get("pinned") else "no",
             prompt=bool_field("pinned", "Pinned?"),
             brief="Shown at the top of listings",
+            help="Shown at the top of channel listings, above unpinned channels, regardless of sort order.",
         ),
         FieldSpec(
             key="hidden", hotkey="h", menu_text=menu_key("H", "idden"), label="Hidden",
             render=lambda d: "yes" if d.get("hidden") else "no",
             prompt=bool_field("hidden", "Hidden (omitted from listings)?"),
             brief="Omitted from channel listings",
+            help=(
+                "Delists this channel from ordinary browsing without deleting it. Members "
+                "who already know about it (or are invited) can still join and use it "
+                "normally -- this only affects whether it shows up when browsing."
+            ),
         ),
         FieldSpec(
             key="members_only", hotkey="m", menu_text=menu_key("M", "embers-only"), label="Members-only",
             render=lambda d: "yes" if d.get("members_only") else "no",
             prompt=bool_field("members_only", "Members-only (invite-only access)?"),
             brief="Only invited members may join",
+            help="When on, a caller can only join via an invite from an existing member -- browsing to it isn't enough.",
         ),
         FieldSpec(
             key="allow_member_invites", hotkey="i", menu_text=menu_key("I", "nvites"),
@@ -6342,12 +6555,22 @@ def _channel_field_specs(
             render=lambda d: "yes" if d.get("allow_member_invites") else "no",
             prompt=bool_field("allow_member_invites", "Allow members to invite others?"),
             brief="Members can invite others too",
+            help=(
+                "When on, any regular member can invite someone else, not just a moderator/"
+                "SysOp. Most relevant when Members-only is also on, since that's the only "
+                "way new members can join at all."
+            ),
         ),
         FieldSpec(
             key="min_age", hotkey="g", menu_text=menu_key("G", "e", prefix="Min a"), label="Min age",
             render=lambda d: _optional_int_label(d.get("min_age")),
             prompt=_min_age_field(),
             brief="Minimum caller age required",
+            help=(
+                "The minimum caller age required to join this channel, checked against a "
+                "caller's own birthdate (Your profile › Name & details) even if they've "
+                "chosen not to show it publicly. 'none' means no age gate."
+            ),
         ),
         FieldSpec(
             key="name_requirement", hotkey="q", menu_text=menu_key("q", "uirement", prefix="Name re"),

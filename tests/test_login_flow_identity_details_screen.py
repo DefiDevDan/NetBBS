@@ -29,6 +29,7 @@ from netbbs.attestation import (
 from netbbs.attestation import get_attestation
 from netbbs.auth.users import create_user
 from netbbs.net import login_flow
+from netbbs.net.char_input import HELP_KEY
 from netbbs.net.session import Session
 from netbbs.storage.database import Database
 from netbbs.storage.execution import DatabaseLane
@@ -113,6 +114,19 @@ def test_shows_current_state_with_nothing_set(db, lane, alice):
     assert "Birthdate: (not set) (private)" in text
     assert "Verified: (none)" in text
     assert "Link attestation sharing: off" in text
+
+
+def test_ctrl_h_shows_real_help_text_for_every_field(db, lane, alice):
+    # Dogfood feature request: this screen's five fields previously had
+    # no help= authored at all, so Ctrl-H was a discoverable dead end
+    # ("No help is available for ... yet" for every one of them).
+    session = FakeSession([HELP_KEY, " ", "b"])
+    asyncio.run(login_flow._identity_details_screen(session, lane, alice))
+    text = _visible(session)
+    assert "No help is available" not in text
+    assert "self-reported and unverified" in text.lower()
+    assert "minimum age to post or join" in text
+    assert "trust/vouch policy" in text
 
 
 def test_display_name_edit_sets_value_and_visibility(db, lane, alice):

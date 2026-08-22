@@ -12,8 +12,9 @@ from __future__ import annotations
 from enum import Enum, auto
 from pathlib import Path
 
-from netbbs.net.char_input import CANCEL_KEY, EditorKey, EditorKeyKind, reject_unhandled_key
+from netbbs.net.char_input import CANCEL_KEY, HELP_KEY, EditorKey, EditorKeyKind, reject_unhandled_key
 from netbbs.net.draft_storage import delete_draft, load_draft, offer_draft_recovery, save_draft
+from netbbs.net.help_overlay import show_help
 from netbbs.net.session import Session
 from netbbs.rendering import (
     ACCENT_COLOR,
@@ -271,15 +272,59 @@ async def _read_review_key(session: Session) -> EditorKey:
     """`netbbs.net.resource_editor._read_navigable_key`'s own fallback
     shape, duplicated per this project's "duplicate rather than reach
     into another module's private helper" convention (see
-    `netbbs.link.files._file_area_from_row`'s own docstring)."""
+    `netbbs.link.files._file_area_from_row`'s own docstring).
+
+    `distinguish_ctrl_h=True` (dogfood feature request: this screen had
+    no on-demand help at all until now) -- without it, real byte 0x08
+    collapses into `BACKSPACE`, unreachable as help. This screen never
+    needs a real Backspace at its own top level either."""
     read_editor_key = getattr(session, "read_editor_key", None)
     if read_editor_key is not None:
         try:
-            return await read_editor_key(distinguish_ctrl_h=False)
+            return await read_editor_key(distinguish_ctrl_h=True)
         except NotImplementedError:
             pass
     raw = await session.read_key()
     return EditorKey(EditorKeyKind.CHAR, char=raw)
+
+
+# Ctrl-H's own content for the arrow-selectable fields -- dogfood
+# feature request, this screen had no on-demand help at all until now.
+# Keyed the same as `field_order`'s own hotkeys, not a `FieldSpec` list,
+# since this screen has no draft of its own (see `review_composition`'s
+# own docstring for why it isn't an `edit_resource_draft` caller).
+_REVIEW_HELP: dict[str, tuple[str, str]] = {
+    "t": ("To", "The recipient this will be sent to."),
+    "u": ("Subject", "A short one-line summary, shown wherever this ends up listed."),
+    "b": (
+        "Body",
+        "The message text itself. Reopens whichever editor you're currently using (the "
+        "simple line-by-line editor, or the fullscreen editor if you've turned it on in "
+        "Your profile) with your draft intact.",
+    ),
+}
+
+
+async def _show_review_help(session: Session, *, field_order: tuple[str, ...], selected: str | None) -> None:
+    """Same "narrow to the highlighted field if one is selected, else
+    list everything" shape `netbbs.net.resource_editor._show_field_help`
+    already establishes for `edit_resource_draft`'s own Ctrl-H.
+    `field_order` (the caller's own, already excluding "t" when there's
+    no recipient) decides what "everything" means here -- this function
+    has no independent opinion on which fields actually apply."""
+    if selected is not None:
+        label, help_text = _REVIEW_HELP[selected]
+        await show_help(
+            session, "Field help", [colored(label, fg_color=HEADER_COLOR, bold=True), f"  {help_text}"]
+        )
+        return
+    lines: list[str] = []
+    for key in field_order:
+        label, help_text = _REVIEW_HELP[key]
+        lines.append(colored(label, fg_color=HEADER_COLOR, bold=True))
+        lines.append(f"  {help_text}")
+        lines.append("")
+    await show_help(session, "Field help", lines[:-1])
 
 
 async def review_composition(
@@ -366,6 +411,7 @@ async def review_composition(
         await session.write_line(
             f"\r\n{_menu_row(options, width=session.terminal_width, height=session.terminal_height, description_level=description_level)}"
         )
+        await session.write_line(colored("(Ctrl-H for help on these fields)", fg_color=MUTED_COLOR))
         await session.write("Choice: ")
 
     await draw()
@@ -389,6 +435,10 @@ async def review_composition(
                 continue
             await session.write("\a")
             continue
+        if key.kind == EditorKeyKind.CTRL and key.char == "h":
+            await _show_review_help(session, field_order=field_order, selected=selected)
+            await draw()
+            continue
         if key.kind == EditorKeyKind.ENTER or (key.kind == EditorKeyKind.CHAR and key.char == " "):
             if selected is None:
                 await session.write("\a")
@@ -396,6 +446,14 @@ async def review_composition(
             choice = selected
         elif key.kind == EditorKeyKind.CHAR and key.char is not None:
             choice = key.char.lower()
+            if choice == HELP_KEY:
+                # A session with no real `read_editor_key` (falls back
+                # to plain `read_key()`) delivers Ctrl-H as an ordinary
+                # character, never as `EditorKeyKind.CTRL` -- same dual
+                # path `edit_resource_draft` itself handles.
+                await _show_review_help(session, field_order=field_order, selected=selected)
+                await draw()
+                continue
             if choice in field_order:
                 selected = choice
         else:

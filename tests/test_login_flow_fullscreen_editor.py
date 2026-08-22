@@ -134,6 +134,20 @@ def _type(text: str) -> list[str]:
 # -- Profile screen toggle ------------------------------------------------
 
 
+def test_profile_ctrl_h_shows_real_help_text_for_every_field(db, lane, alice):
+    # Dogfood feature request: "Your profile"'s 14 fields previously had
+    # no help= authored at all, so Ctrl-H was a discoverable dead end
+    # despite cursor-nav being wired in ("No help is available ... yet"
+    # for every one of them).
+    session = FakeSession(["CTRL+h", " ", "b"])
+    asyncio.run(login_flow._edit_profile(session, lane, alice))
+    text = _visible(session)
+    assert "No help is available" not in text
+    assert "supports multiple lines" in text.lower()
+    assert "ssh-ed25519" in text
+    assert "even when there's room to spare" in text
+
+
 def test_profile_toggle_switches_the_preference_on_and_off(db, lane, alice):
     session = FakeSession(["f", "f", "b"])
     asyncio.run(login_flow._edit_profile(session, lane, alice))

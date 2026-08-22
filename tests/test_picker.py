@@ -182,6 +182,44 @@ def test_ctrl_c_is_an_alias_for_back():
     assert result["value"] is None
 
 
+def test_ctrl_h_shows_real_navigation_help():
+    # Dogfood feature request: this shared picker (boards/channels/file
+    # areas/users) previously had no on-demand help at all -- only the
+    # terse inline `brief` shown when menu descriptions are on.
+    result = {}
+    items = ["alpha", "beta"]
+
+    async def handler(session: Session):
+        result["value"] = await pick_item(
+            session, items, name_of=lambda x: x, stable_id_of=lambda x: items.index(x) + 1, title="Items", empty_message="none"
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await skip_initial_negotiation(reader)
+            await _read_until_quiet(reader)
+            writer.write(b"\x08")
+            await writer.drain()
+            help_text = _visible(await _read_until_quiet(reader))
+            writer.write(b" ")
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.write(b"\x03")
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+        return help_text
+
+    help_text = asyncio.run(scenario())
+    assert b"permanent '(#N)' reference" in help_text
+    assert b"Order" not in help_text  # no on_sort given to this picker
+
+
 def test_select_by_two_digit_number():
     result = {}
     items = ["alpha", "beta", "gamma"]

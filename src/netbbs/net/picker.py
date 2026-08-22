@@ -42,11 +42,13 @@ from __future__ import annotations
 import math
 from typing import Awaitable, Callable, Sequence, TypeVar
 
-from netbbs.net.char_input import CANCEL_KEY, REDRAW_KEY, REFRESH_KEY, Completer, reject_unhandled_key
+from netbbs.net.char_input import CANCEL_KEY, HELP_KEY, REDRAW_KEY, REFRESH_KEY, Completer, reject_unhandled_key
+from netbbs.net.help_overlay import show_help
 from netbbs.net.session import Session
 from netbbs.rendering import (
     ACCENT_COLOR,
     ERROR_COLOR,
+    HEADER_COLOR,
     MENU_KEY_COLOR,
     MUTED_COLOR,
     MenuEntry,
@@ -289,6 +291,7 @@ async def pick_item(
         boilerplate = "or type a 2-digit number to select; Ctrl-L: redraw"
         if refresh is not None:
             boilerplate += ", Ctrl-R: refresh"
+        boilerplate += ", Ctrl-H: help"
         trailer = f"{trailer}; {boilerplate}" if trailer else boilerplate
         # Dogfood-reported regression: with sort mode (and/or refresh)
         # active, nav + separator + trailer could run past the real
@@ -332,6 +335,11 @@ async def pick_item(
         key_lower = key.lower()
 
         if key == REDRAW_KEY:
+            page_items = await _render()
+            continue
+
+        if key == HELP_KEY:
+            await _show_picker_help(session, on_sort=on_sort, has_refresh=refresh is not None)
             page_items = await _render()
             continue
 
@@ -479,6 +487,47 @@ async def pick_item(
             continue
 
         await session.write(reject_keystroke())
+
+
+async def _show_picker_help(session: Session, *, on_sort: Callable | None, has_refresh: bool) -> None:
+    """Ctrl-H's own content for this screen (dogfood feature request --
+    the shared picker had no on-demand help at all, only the terse
+    inline `brief` shown when menu descriptions are on). One shared
+    listing rather than per-field like `netbbs.net.resource_editor.
+    edit_resource_draft`'s own Ctrl-H, since this screen's nav commands
+    aren't a field list to arrow-highlight one of -- every command
+    explained at once, in the order it appears in the nav row, with
+    `[O]rder`/Ctrl-R included only when this caller actually offers
+    them (matching `_nav_entries`' own conditional inclusion)."""
+    lines = [
+        colored("Next / Prev", fg_color=HEADER_COLOR, bold=True),
+        "  Move one page forward/back through the list.",
+        "",
+        colored("A 2-digit number", fg_color=HEADER_COLOR, bold=True),
+        "  Selects that item on the current page directly (e.g. '05') -- always exactly "
+        "two digits, zero-padded.",
+        "",
+        colored("Search", fg_color=HEADER_COLOR, bold=True),
+        "  Filters the list to items whose name contains the text you type. A single "
+        "match jumps straight to it. Blank search clears back to the full list.",
+        "",
+        colored("Goto #", fg_color=HEADER_COLOR, bold=True),
+        "  Jumps straight to a specific item by its permanent '(#N)' reference shown next "
+        "to each entry -- works regardless of the current page, search filter, or sort "
+        "order, unlike the 2-digit page-position number above.",
+    ]
+    if on_sort is not None:
+        lines += ["", colored("Order", fg_color=HEADER_COLOR, bold=True), "  Changes how this list is sorted."]
+    lines += [
+        "", colored("Back", fg_color=HEADER_COLOR, bold=True), "  Returns without picking anything.",
+        "", colored("Ctrl-L", fg_color=HEADER_COLOR, bold=True), "  Redraws the current page in place.",
+    ]
+    if has_refresh:
+        lines += [
+            "", colored("Ctrl-R", fg_color=HEADER_COLOR, bold=True),
+            "  Re-fetches the list from scratch and clears any active search.",
+        ]
+    await show_help(session, "Navigation help", lines)
 
 
 def _search_completer(candidates: Sequence[str]) -> Completer:

@@ -3949,6 +3949,10 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
             render=lambda d: f"{len(d['bio'].splitlines())} line(s)" if d["bio"] else "(no bio set)",
             prompt=_bio_prompt,
             brief="Change your public bio text",
+            help=(
+                "Free-form text shown on your public profile (Directory, Who's online, etc.) "
+                "when Visibility below is public. Supports multiple lines. Blank clears it."
+            ),
         ),
         FieldSpec(
             key="bio_visible", hotkey="v", menu_text=menu_key("V", "isibility"), label="Visibility",
@@ -3957,12 +3961,20 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
                 "bio_visible", [False, True], persist=lambda lane, v: lane.run(set_bio_visible, user, v)
             ),
             brief="Toggle bio public/private",
+            help=(
+                "Whether your Bio is shown to other callers at all, independent of what the "
+                "bio text itself says. Private hides it everywhere except from a SysOp."
+            ),
         ),
         FieldSpec(
             key="signature", hotkey="g", menu_text=menu_key("g", "nature", prefix="Si"), label="Signature",
             render=lambda d: f"{len(d['signature'].splitlines())} line(s)" if d["signature"] else "(no signature set)",
             prompt=_signature_prompt,
             brief="Auto-appended to mail and posts you send",
+            help=(
+                "Text automatically appended to every message you send from this account -- "
+                "mail, board posts, and channel posts alike. Blank means no signature."
+            ),
         ),
         FieldSpec(
             key="fullscreen_editor", hotkey="f", menu_text=menu_key("F", "ullscreen editor"),
@@ -3973,6 +3985,12 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
                 persist=lambda lane, v: lane.run(set_fullscreen_editor_enabled, user, v),
             ),
             brief="Toggle the fullscreen editor",
+            help=(
+                "On: composing a post/bio opens the cursor-addressed fullscreen editor (arrow "
+                "keys, Ctrl-based commands, like a simple nano). Off: a plain line-by-line "
+                "editor instead -- the safer default for a client that can't reliably position "
+                "the cursor."
+            ),
         ),
         FieldSpec(
             key="accepts_dm", hotkey="m", menu_text=menu_key("M", "essages"),
@@ -3983,6 +4001,11 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
                 persist=lambda lane, v: lane.run(set_accepts_direct_messages, user, v),
             ),
             brief="Direct-message preferences",
+            help=(
+                "Whether other callers can send you a direct/private chat message from the "
+                "Who's online screen. Doesn't affect linked-channel chat -- only direct, "
+                "one-to-one messages."
+            ),
         ),
         FieldSpec(
             key="history_name_visible", hotkey="h", menu_text=menu_key("H", "istory visibility"),
@@ -3993,6 +4016,11 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
                 persist=lambda lane, v: lane.run(set_session_history_name_visible, user, v),
             ),
             brief="Show your name in Last sessions",
+            help=(
+                "Whether your username appears in the node's public 'Last sessions' history. "
+                "Hiding it only affects what ordinary callers see -- a SysOp can always see "
+                "the real name."
+            ),
         ),
         FieldSpec(
             key="color_depth", hotkey="c", menu_text=menu_key("C", "olor depth"), label="Color depth",
@@ -4002,6 +4030,11 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
                 persist=lambda lane, v: lane.run(set_color_depth_override, user, v),
             ),
             brief="Force a terminal color depth",
+            help=(
+                "Overrides NetBBS's automatic terminal-capability detection. 'auto' trusts "
+                "what your client reports; force 'truecolor' or '256' only if colors render "
+                "wrong -- garbled, or not showing at all -- under auto."
+            ),
         ),
         FieldSpec(
             key="description_level", hotkey="d", menu_text=menu_key("D", "escriptions"),
@@ -4012,6 +4045,11 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
                 persist=lambda lane, v: lane.run(set_menu_description_level, user, v),
             ),
             brief="Off/brief/detailed menu text",
+            help=(
+                "Whether menu screens show a short explanation under each option. 'off' is "
+                "most compact; 'brief' adds a one-line hint per option; 'detailed' shows the "
+                "fullest explanation where a field also defines one, like this Ctrl-H text."
+            ),
         ),
         FieldSpec(
             key="redraw_in_place", hotkey="r", menu_text=menu_key("R", "edraw style"), label="In-place redraw",
@@ -4021,6 +4059,12 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
                 persist=lambda lane, v: lane.run(set_redraw_in_place_enabled, user, v),
             ),
             brief="Clear screen instead of scrolling",
+            help=(
+                "On: moving between screens clears the terminal instead of printing below "
+                "what's already there -- less scrolling, but anything above the clear (like a "
+                "save confirmation) disappears immediately. Off is the safer default -- it "
+                "preserves scrollback."
+            ),
         ),
         FieldSpec(
             key="identity_details", hotkey="n", menu_text=menu_key("N", "ame & details"),
@@ -4028,6 +4072,11 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
             render=lambda d: "(edit)",
             prompt=_identity_details_prompt,
             brief="Display name, location, age",
+            help=(
+                "Opens a separate screen for your display name, location, and birthdate -- "
+                "each independently shown or hidden to other callers, plus your verified-"
+                "badge and Link-attestation-sharing settings."
+            ),
         ),
         FieldSpec(
             key="sort_preferences", hotkey="s", menu_text=menu_key("S", "ort preferences"),
@@ -4035,6 +4084,11 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
             render=lambda d: f"{d['sort_preference_count']} saved" if d["sort_preference_count"] else "none saved",
             prompt=_sort_preferences_prompt,
             brief="Manage saved sort orders",
+            help=(
+                "Lists the sort preferences you've saved so far (e.g. how boards or file "
+                "areas are ordered) and lets you clear them. These are set implicitly "
+                "wherever you actually pick a sort order, not edited directly here."
+            ),
         ),
         FieldSpec(
             key="unicode_style", hotkey="u", menu_text=menu_key("U", "nicode style"),
@@ -4045,6 +4099,11 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
                 persist=lambda lane, v: lane.run(set_unicode_style_enabled, user, v),
             ),
             brief="Unicode arrows/bullets vs. plain ASCII",
+            help=(
+                "Whether menus/breadcrumbs use Unicode characters (›, ●, etc.) for a "
+                "cleaner look, or fall back to plain ASCII ('/', '[X]', etc.) for a terminal "
+                "that renders Unicode incorrectly."
+            ),
         ),
         FieldSpec(
             key="breadcrumb_collapsed", hotkey="l", menu_text=menu_key("L", "ocation style"),
@@ -4055,6 +4114,12 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
                 persist=lambda lane, v: lane.run(set_breadcrumb_collapsed_enabled, user, v),
             ),
             brief="Always show only the current location, not the full path",
+            help=(
+                "On: every screen's heading shows only your current location (e.g. 'Trust "
+                "policy') instead of the full path ('NetBBS › System › Trust policy'). The "
+                "full path already collapses automatically when it doesn't fit your terminal "
+                "-- this forces the short form even when there's room to spare."
+            ),
         ),
         FieldSpec(
             key="ssh_public_key", hotkey="k", menu_text=menu_key("k", "ey", prefix="SSH public "),
@@ -4062,6 +4127,11 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
             render=lambda d: d["ssh_fingerprint"] or "(none set)",
             prompt=_ssh_public_key_prompt,
             brief="Add/replace your SSH login key",
+            help=(
+                "Attaches an SSH public key to this account so you can log in over SSH with "
+                "key-based authentication instead of (or alongside) your password. Paste it "
+                "as base64, or a full 'ssh-ed25519 ...' line."
+            ),
         ),
     ]
 
@@ -4319,6 +4389,12 @@ async def _identity_details_screen(session: Session, lane: DatabaseLane, user: U
             ),
             prompt=_display_name_prompt,
             brief="Set your shown display name",
+            help=(
+                "An alternate name shown alongside your username, only if you answer 'Show "
+                "it publicly?' yes when you set it. Self-reported and unverified -- distinct "
+                "from a SysOp-verified real name (see 'Verified' above, and the Verified "
+                "badge field below)."
+            ),
         ),
         FieldSpec(
             key="location", hotkey="l", menu_text=menu_key("L", "ocation"), label="Location",
@@ -4328,12 +4404,23 @@ async def _identity_details_screen(session: Session, lane: DatabaseLane, user: U
             ),
             prompt=_location_prompt,
             brief="Set your shown location",
+            help=(
+                "Free-text location (city, region, whatever you want), shown publicly only "
+                "if you answer 'Show it publicly?' yes when you set it. Not validated or "
+                "verified -- purely self-reported."
+            ),
         ),
         FieldSpec(
             key="birthdate", hotkey="a", menu_text=menu_key("A", "ge/birthdate"), label="Birthdate",
             render=_birthdate_render,
             prompt=_birthdate_prompt,
             brief="Set your birthdate",
+            help=(
+                "Used to compute your age, which some boards/areas/channels require a "
+                "minimum age to post or join. That age gate is checked against this value "
+                "even if you keep it private -- 'Show it publicly?' only controls whether "
+                "*other callers* can see your birthdate/age, not whether age gates apply."
+            ),
         ),
         FieldSpec(
             key="verified_badge_visible", hotkey="v", menu_text=menu_key("V", "erified badge visibility"),
@@ -4344,6 +4431,11 @@ async def _identity_details_screen(session: Session, lane: DatabaseLane, user: U
                 persist=lambda lane, v: lane.run(set_verified_badge_visible, user, v),
             ),
             brief="Show/hide your verified badge",
+            help=(
+                "Whether a badge marking your SysOp-verified real name/age is shown to other "
+                "callers, once a SysOp has actually verified something. Has no effect until "
+                "something is verified -- see 'Verified' at the top of this screen."
+            ),
         ),
         FieldSpec(
             key="link_sharing", hotkey="r", menu_text=menu_key("R", "emote Link sharing"),
@@ -4351,6 +4443,12 @@ async def _identity_details_screen(session: Session, lane: DatabaseLane, user: U
             render=_shared_render,
             prompt=_remote_attestation_prompt,
             brief="Share attestations over Link",
+            help=(
+                "Whether your SysOp-verified age/name attestations are shared with linked "
+                "nodes over NetBBS Link, so a remote node's trust/vouch policy can see them "
+                "too. Off by default -- this node's own verification of you isn't shared "
+                "elsewhere unless you opt in."
+            ),
         ),
     ]
 

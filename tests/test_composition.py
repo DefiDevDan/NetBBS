@@ -58,6 +58,8 @@ class NavigableFakeSession(FakeSession):
         raw = next(self._keys)
         if raw in _EDITOR_KEY_SENTINELS:
             return EditorKey(_EDITOR_KEY_SENTINELS[raw])
+        if raw.startswith("CTRL+"):
+            return EditorKey(EditorKeyKind.CTRL, char=raw[len("CTRL+") :].lower())
         if raw == " ":
             return EditorKey(EditorKeyKind.CHAR, char=" ")
         return EditorKey(EditorKeyKind.CHAR, char=raw)
@@ -198,6 +200,38 @@ def test_review_renders_all_fields_and_returns_explicit_actions():
     assert "Subject: " in text and "Hello" in text
     assert "first\nsecond" in text
     assert "\b" in text  # unsupported key was visibly rejected
+
+
+def test_review_ctrl_h_shows_real_help_text_for_every_field():
+    # Dogfood feature request: this bespoke cursor-nav screen (built
+    # this same session, alongside the SysOp user-detail screen) had no
+    # on-demand help wired in at all until now.
+    session = NavigableFakeSession(keys=("CTRL+H", " ", "p"))
+    action = asyncio.run(
+        review_composition(
+            session, recipient="bob", subject="Subject", body="Body", commit_key="p", commit_label="ost",
+        )
+    )
+    text = _text(session)
+    assert action == ReviewAction.COMMIT
+    assert "the recipient this will be sent to" in text.lower()
+    assert "reopens whichever editor you're currently using" in text.lower()
+
+
+def test_review_ctrl_h_narrows_to_the_highlighted_field():
+    session = NavigableFakeSession(keys=("DOWN", "CTRL+H", " ", "p"))
+    action = asyncio.run(
+        review_composition(
+            session, recipient="bob", subject="Subject", body="Body", commit_key="p", commit_label="ost",
+        )
+    )
+    text = _text(session)
+    # Down from nothing highlighted lands on "t" (To, the first
+    # arrow-selectable field when a recipient exists) -- only its own
+    # help should show, not Subject's or Body's.
+    assert action == ReviewAction.COMMIT
+    assert "the recipient this will be sent to" in text.lower()
+    assert "reopens whichever editor you're currently using" not in text.lower()
 
 
 def test_review_arrow_nav_activates_the_highlighted_field():

@@ -576,6 +576,29 @@ def test_list_users_and_select_shows_detail(db, lane, sysop):
     assert "Level: 255" in _visible(_written_text(session))
 
 
+def test_user_detail_ctrl_h_shows_real_help_text_for_every_field(db, lane, sysop):
+    # Dogfood feature request: this bespoke cursor-nav screen (built
+    # this same session, alongside review_composition) had no on-demand
+    # help wired in at all until now.
+    alice = create_user(db, "alice", password="hunter2", user_level=10)
+    session = FakeSession(["u", "l", "g", str(alice.id), "CTRL+H", " ", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _visible(_written_text(session))
+    assert "moderator/sysop capability" in text.lower()
+    assert "designed to extend to remote nodes/traffic later" in text
+
+
+def test_user_detail_ctrl_h_narrows_to_the_highlighted_field(db, lane, sysop):
+    alice = create_user(db, "alice", password="hunter2", user_level=10)
+    session = FakeSession(["u", "l", "g", str(alice.id), "DOWN", "CTRL+H", " ", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _visible(_written_text(session))
+    # Down lands on "l" (Level, the first of _USER_DETAIL_FIELD_ORDER) --
+    # only its own help should show, not every field's.
+    assert "the account's permission level" in text.lower()
+    assert "moderator scope tiers" not in text.lower()  # that's "i" (Can verify identity)'s own help
+
+
 def test_user_detail_arrow_nav_activates_the_highlighted_field(db, lane, sysop):
     # Dogfood feature request, issue #160's cursor-navigation follow-up
     # (item 1 of the prioritized list): Down twice from nothing
@@ -2058,6 +2081,19 @@ def test_create_board_name_requirement_label_reads_as_words_not_a_field_name(db,
     assert "verified_and_displayed" not in text
 
 
+def test_create_board_ctrl_h_shows_real_help_text_for_every_field(db, lane, sysop):
+    # Dogfood feature request: this screen's 10 fields (all but
+    # name_requirement, issue #150's own original example) previously
+    # had no help= authored at all.
+    inputs = ["m", "m", "c", "CTRL+H", " ", "b", "b", "b", "b"]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "No help is available" not in text
+    assert "posts older than this are automatically purged" in text.lower()
+    assert "inherit its default read/write/age/name-requirement" in text
+
+
 def test_create_board_can_be_cancelled_without_creating_anything(db, lane, sysop):
     """Dogfood item 6: no way to cancel mid-creation used to mean
     finishing the wizard and deleting the result afterward -- [B]ack on
@@ -2631,6 +2667,15 @@ def test_create_and_delete_area_flow(db, lane, sysop):
     assert list_file_areas(db) == []
 
 
+def test_create_area_ctrl_h_shows_real_help_text_for_every_field(db, lane, sysop):
+    inputs = ["m", "f", "c", "CTRL+H", " ", "b", "b", "b", "b"]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "No help is available" not in text
+    assert "files older than this are automatically purged" in text.lower()
+
+
 def test_create_area_can_be_cancelled_without_creating_anything(db, lane, sysop):
     """Dogfood item 6: [B]ack on the shared draft editor discards the
     whole draft, even after fields were already filled in. Confirms the
@@ -2854,6 +2899,16 @@ def test_grant_blanket_across_all_boards(db, lane, sysop):
 # -- channels -------------------------------------------------------------
 
 
+def test_create_channel_ctrl_h_shows_real_help_text_for_every_field(db, lane, sysop):
+    inputs = ["m", "n", "c", "CTRL+H", " ", "b", "b", "b", "b"]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "No help is available" not in text
+    assert "never inherits from its community" in text.lower()
+    assert "invite-only" in text.lower() or "invite from an existing member" in text.lower()
+
+
 def test_create_channel_flow(db, lane, sysop):
     # m,n -> channel menu; c -> the shared draft editor (design doc,
     # dogfood feature request) -- n(ame)/d(escription) select a field,
@@ -2972,6 +3027,15 @@ def test_grant_blanket_across_all_channels(db, lane, sysop):
 
 
 # -- Communities (design doc §16) -------------------------------------------
+
+
+def test_create_community_ctrl_h_shows_real_help_text_for_every_field(db, lane, sysop):
+    inputs = ["m", "o", "c", "CTRL+H", " ", "b", "b", "b", "b"]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "No help is available" not in text
+    assert "delists this community from ordinary browsing" in text.lower()
 
 
 def test_create_community_flow(db, lane, sysop):
