@@ -3963,12 +3963,20 @@ from issue #83's real-user dogfood feedback before foundation issue #127:
   picker feedback, and welcome-banner administration distinguish labels,
   values, metadata, success, and failure through shared theme roles; colored
   narrow output is truncated by visible width rather than raw ANSI length.
-  The default SSH and web login banner visibly exercises truecolor while the
+  The default web login banner visibly exercises truecolor while the
   256-color rendering remains equivalent and readable. Profile and banner-
   preview diagnostics state the transport's detected capability or limitation;
-  a custom SysOp banner explicitly bypasses the generated showcase. Telnet's
-  initial banner can precede completion of NEW-ENVIRON negotiation, so it uses
-  the safe fallback while the later profile diagnostic reports the result.
+  a custom SysOp banner explicitly bypasses the generated showcase. Both
+  Telnet's and SSH's initial banners are shown before capability negotiation
+  completes -- Telnet's can precede NEW-ENVIRON, and SSH's own pre-auth
+  banner (asyncssh's `send_auth_banner`, sent from `begin_auth` before any
+  session channel, and therefore any forwarded environment, exists at all)
+  has no client capability to read yet either -- so both always render the
+  same welcome-banner content at the safe 256-color depth; the later
+  profile diagnostic reports the real, negotiated result once available.
+  SSH shows this same pre-auth banner content regardless of authentication
+  outcome, since it is the only screen SSH ever gets before the protocol-
+  level handshake either succeeds into the authenticated session or fails.
 
 This interleave does not change Phase 4's security dependencies or public-
 readiness gate. It applies the standing cadence between meaningful foundation

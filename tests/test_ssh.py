@@ -413,6 +413,43 @@ def test_ssh_sends_a_netbbs_branded_pre_auth_banner(db):
     assert "'new'" in banner
 
 
+def test_ssh_pre_auth_banner_is_the_real_welcome_banner_not_a_bare_literal(db):
+    # Design-doc correction (issue #136 claimed SSH already showed the
+    # same truecolor-capable banner web does -- it never actually called
+    # load_welcome_banner at all, only a hand-typed "NetBBS" literal).
+    # Proves the real banner content -- the double-frame border and
+    # tagline that only `load_welcome_banner` produces -- reaches a real
+    # SSH client pre-auth, not just the word "NetBBS" on its own.
+    from netbbs.net.welcome_banner import DEFAULT_WELCOME_BANNER
+
+    create_user(db, "alice", password="hunter2", user_level=10)
+    client = _BannerCapturingClient()
+
+    async def handler(session: Session):
+        pass
+
+    async def scenario():
+        server = await _run_server(db, handler)
+        try:
+            async with asyncssh.connect(
+                "127.0.0.1",
+                server.port,
+                username="alice",
+                password="hunter2",
+                known_hosts=None,
+                client_factory=lambda: client,
+            ):
+                pass
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    banner = "\n".join(client.banners)
+    assert "conversations across independent nodes" in banner
+    assert "╔" in banner and "╝" in banner
+    assert DEFAULT_WELCOME_BANNER in banner
+
+
 def test_ssh_pre_auth_banner_omits_the_registration_hint_when_registration_is_closed(db):
     from netbbs.config import RegistrationMode, set_registration_mode
 

@@ -51,6 +51,7 @@ from netbbs.config import RegistrationMode, get_registration_mode
 from netbbs.net import char_input
 from netbbs.net.session import Session, SessionClosedError, clamp_terminal_size
 from netbbs.net.throttle import LoginThrottle
+from netbbs.net.welcome_banner import load_welcome_banner
 from netbbs.storage.database import Database
 
 _logger = logging.getLogger(__name__)
@@ -287,8 +288,23 @@ class _NetBBSSSHServer(asyncssh.SSHServer):
         # own userauth-request handling only calls this the first time a
         # given username is seen), so a client retrying the same failed
         # username doesn't see it again mid-connection.
+        #
+        # Design-doc correction (issue #136 claimed this already showed
+        # truecolor -- it never actually called `load_welcome_banner` at
+        # all, SSH/web parity was aspirational, not implemented): now
+        # sends the real welcome banner here, the same content Telnet/
+        # web show pre-login, rather than a hand-typed "NetBBS" literal.
+        # Always the non-truecolor rendering -- unlike `SSHSession.
+        # __init__`'s own `supports_truecolor` detection (reads the
+        # client's forwarded `COLORTERM`), that environment only arrives
+        # with a later pty-req/session-channel request *after* auth
+        # succeeds, so it's genuinely unavailable this early. The exact
+        # same "capability negotiation hasn't completed yet" problem
+        # Telnet's own pre-login banner has (design doc: "Telnet's
+        # initial banner can precede completion of NEW-ENVIRON
+        # negotiation, so it uses the safe fallback") -- same fix here.
         assert self._conn is not None  # connection_made always runs first
-        lines = ["NetBBS"]
+        lines = [load_welcome_banner(self._db, truecolor=False)]
         if get_registration_mode(self._db) != RegistrationMode.CLOSED:
             lines.append(f"New here? Connect as {NEW_ACCOUNT_SENTINEL!r} to register.")
         self._conn.send_auth_banner("\r\n".join(lines) + "\r\n")
