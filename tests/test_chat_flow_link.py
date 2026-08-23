@@ -189,7 +189,7 @@ def test_message_join_and_leave_in_a_linked_channel_are_pushed_live_to_a_real_su
     async def scenario():
         link_channel(db, channel, node_identity=node_identity)
         origin_registry = LinkRealtimeSessionRegistry(own_fingerprint=node_identity.fingerprint)
-        origin_bridge = LiveChannelBridge(hub=hub, lane=lane)
+        origin_bridge = LiveChannelBridge(hub=hub, lane=lane, presence=presence, registry=origin_registry)
         server = LinkRealtimeServer(
             host="127.0.0.1", port=0, identity=node_identity, registry=origin_registry,
             on_frame=origin_bridge.on_frame, lane=lane, enforce_trust_policy=True,
@@ -229,7 +229,7 @@ def test_message_join_and_leave_in_a_linked_channel_are_pushed_live_to_a_real_su
                 )
 
                 deadline = loop.time() + 2.0
-                while loop.time() < deadline and len(received) < 4:
+                while loop.time() < deadline and len(received) < 5:
                     await asyncio.sleep(0.02)
             finally:
                 await subscriber_session.close(reason="test_done")
@@ -244,9 +244,13 @@ def test_message_join_and_leave_in_a_linked_channel_are_pushed_live_to_a_real_su
     received = asyncio.run(scenario())
 
     assert [frame.type for frame in received] == [
-        "presence_snapshot", "presence_delta", "channel_message", "presence_delta",
+        # Issue #164: node_presence_snapshot is now sent proactively the
+        # instant the origin's bridge starts tracking the subscriber's
+        # inbound session (track_session), before the channel-scoped
+        # presence_snapshot that _handle_subscribe sends right after.
+        "node_presence_snapshot", "presence_snapshot", "presence_delta", "channel_message", "presence_delta",
     ]
-    _snapshot, join_delta, message_frame, leave_delta = received
+    _node_snapshot, _snapshot, join_delta, message_frame, leave_delta = received
     assert join_delta.payload == {
         "channel_id": channel.channel_id, "change": "join", "user_id": "alice", "display_label": "alice",
     }
@@ -294,7 +298,7 @@ def test_chat_loop_subscribes_to_a_linked_channels_origin_and_unsubscribes_on_qu
     )
 
     registry = LinkRealtimeSessionRegistry(own_fingerprint=node_identity.fingerprint)
-    bridge = LiveChannelBridge(hub=hub, lane=lane)
+    bridge = LiveChannelBridge(hub=hub, lane=lane, presence=presence, registry=registry)
     link_context = _link_context_for(node_identity, registry=registry, bridge=bridge)
 
     asyncio.run(_run(lane, hub, presence, channel, alice, ["/quit"], link_context=link_context))
@@ -349,7 +353,7 @@ def test_a_second_local_caller_still_watching_keeps_the_origin_subscription_aliv
     )
 
     registry = LinkRealtimeSessionRegistry(own_fingerprint=node_identity.fingerprint)
-    bridge = LiveChannelBridge(hub=hub, lane=lane)
+    bridge = LiveChannelBridge(hub=hub, lane=lane, presence=presence, registry=registry)
     link_context = _link_context_for(node_identity, registry=registry, bridge=bridge)
 
     async def scenario():
@@ -410,7 +414,7 @@ def test_chat_loop_announces_the_real_time_link_coming_up_and_going_down(
     )
 
     registry = LinkRealtimeSessionRegistry(own_fingerprint=node_identity.fingerprint)
-    bridge = LiveChannelBridge(hub=hub, lane=lane)
+    bridge = LiveChannelBridge(hub=hub, lane=lane, presence=presence, registry=registry)
     link_context = _link_context_for(node_identity, registry=registry, bridge=bridge)
 
     session, _action = asyncio.run(
@@ -444,7 +448,7 @@ def test_chat_loop_announces_a_lost_real_time_link_while_still_in_the_channel(
     )
 
     registry = LinkRealtimeSessionRegistry(own_fingerprint=node_identity.fingerprint)
-    bridge = LiveChannelBridge(hub=hub, lane=lane)
+    bridge = LiveChannelBridge(hub=hub, lane=lane, presence=presence, registry=registry)
     link_context = _link_context_for(node_identity, registry=registry, bridge=bridge)
 
     async def scenario():

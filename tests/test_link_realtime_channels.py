@@ -13,10 +13,11 @@ import asyncio
 from netbbs.auth.users import create_user
 from netbbs.chat.channels import create_channel
 from netbbs.chat.hub import ChatHub, ParticipantId
+from netbbs.chat.presence import PresenceRegistry
 from netbbs.chat.scrollback import record_message
 from netbbs.link.channels import link_channel, materialize_carried_channel
 from netbbs.link.node_identity import bootstrap_node_identity
-from netbbs.link.protocol import LinkNode, RealtimeFrame, build_subscribe_frame
+from netbbs.link.protocol import LinkNode, RealtimeFrame, build_error_frame, build_subscribe_frame
 from netbbs.link.realtime_channels import LiveChannelBridge, ensure_live_subscription
 from netbbs.link.trust import TrustDimension, TrustState, TrustSubject, set_trust_override
 from netbbs.link.enforcement import ensure_node_subject
@@ -42,8 +43,9 @@ class _Node:
         self.lane = DatabaseLane(self.db.path)
         self.identity = bootstrap_node_identity(name)
         self.hub = ChatHub()
+        self.presence = PresenceRegistry()
         self.registry = LinkRealtimeSessionRegistry(own_fingerprint=self.identity.fingerprint)
-        self.bridge = LiveChannelBridge(hub=self.hub, lane=self.lane)
+        self.bridge = LiveChannelBridge(hub=self.hub, lane=self.lane, presence=self.presence, registry=self.registry)
         self.link_node = LinkNode(identity=self.identity)
 
     async def teardown(self) -> None:
@@ -171,7 +173,7 @@ def test_live_channel_message_and_presence_reach_a_locally_connected_participant
                 "127.0.0.1", server.port, subscriber.identity, on_frame=subscriber.bridge.on_frame,
                 registry=subscriber.registry,
             )
-            subscriber.bridge.track_session(session)
+            await subscriber.bridge.track_session(session)
             await session.send(build_subscribe_frame(subscriber_channel.channel_id))
             assert await _wait_until(lambda: origin_channel.channel_id in origin.bridge._subscribers)
 
@@ -335,7 +337,10 @@ def test_local_interest_reference_counts_holders_per_channel():
     the *origin*-side "who subscribes to my channels"). Plain in-memory
     bookkeeping, no I/O -- covered directly rather than only through the
     full `_chat_loop` integration test in `test_chat_flow_link.py`."""
-    bridge = LiveChannelBridge(hub=ChatHub(), lane=None)
+    bridge = LiveChannelBridge(
+        hub=ChatHub(), lane=None, presence=PresenceRegistry(),
+        registry=LinkRealtimeSessionRegistry(own_fingerprint="test-node"),
+    )
     alice_holder, bob_holder = 1, 2
 
     # First registration for a channel is reported as such; a second,
@@ -364,3 +369,271 @@ def test_local_interest_reference_counts_holders_per_channel():
     # state never leaks across different channel_ids.
     assert bridge.register_local_interest("channel-a", alice_holder) is True
     assert bridge.register_local_interest("channel-b", alice_holder) is True
+
+
+# -- node-wide presence (issue #164) -----------------------------------------
+
+
+def _capturing_on_frame(bridge: LiveChannelBridge):
+    """Wraps `bridge.on_frame` to also capture the first (origin-side)
+    session object it's ever invoked with. That object only becomes
+    reachable once *some* frame flows through it -- a bare connection
+    with no channel activity at all has no other way to hand the
+    origin-side session back to test code, which needs it to call
+    `track_session` directly the way `_handle_subscribe` normally
+    would."""
+    captured: dict[str, LinkRealtimeSession] = {}
+
+    async def on_frame(session, frame):
+        captured.setdefault("session", session)
+        await bridge.on_frame(session, frame)
+
+    return on_frame, captured
+
+
+async def _connect_bare(origin: _Node, subscriber: _Node, server: LinkRealtimeServer, *, on_frame_subscriber):
+    """Dial `origin` from `subscriber` with no channel subscription at
+    all, then send one harmless `error` frame (silently ignored by
+    `LiveChannelBridge.on_frame`'s dispatch -- design doc: nothing
+    actionable locally from a peer-reported rejection) purely to trigger
+    capture of the origin-side session object. Returns `(subscriber_
+    session, origin_session)`."""
+    capturing_on_frame, captured = _capturing_on_frame(origin.bridge)
+    server._on_frame = capturing_on_frame  # reach into the private attribute _admit_inbound actually calls
+    session = await dial_realtime_session(
+        "127.0.0.1", server.port, subscriber.identity, on_frame=on_frame_subscriber, registry=subscriber.registry,
+    )
+    await session.send(build_error_frame("probe", "capture session"))
+    assert await _wait_until(lambda: "session" in captured)
+    return session, captured["session"]
+
+
+def test_connecting_sends_the_local_online_roster_as_a_node_presence_snapshot(tmp_path):
+    async def scenario():
+        origin = _Node(tmp_path, "origin-node-presence-snapshot")
+        subscriber = _Node(tmp_path, "subscriber-node-presence-snapshot")
+        origin.presence.enter("alice")
+        origin.presence.enter("bob")
+
+        received: list[RealtimeFrame] = []
+
+        async def on_frame_subscriber(session, frame):
+            received.append(frame)
+
+        server = LinkRealtimeServer(
+            host="127.0.0.1", port=0, identity=origin.identity, registry=origin.registry,
+            on_frame=origin.bridge.on_frame, lane=origin.lane, enforce_trust_policy=True,
+        )
+        await server.start()
+        try:
+            _establish_trust(origin.db, subscriber.identity.fingerprint)
+            _subscriber_session, origin_session = await _connect_bare(
+                origin, subscriber, server, on_frame_subscriber=on_frame_subscriber
+            )
+            received.clear()  # discard the probe's own "error" round trip, if anything came back for it
+
+            await origin.bridge.track_session(origin_session)  # mirrors what _handle_subscribe already does
+
+            assert await _wait_until(lambda: len(received) == 1)
+            assert received[0].type == "node_presence_snapshot"
+            entries = {entry["user_id"]: entry["display_label"] for entry in received[0].payload["entries"]}
+            assert entries == {"alice": "alice", "bob": "bob"}
+        finally:
+            await server.stop()
+            await origin.teardown()
+            await subscriber.teardown()
+
+    asyncio.run(scenario())
+
+
+def test_track_session_sends_the_initial_snapshot_only_once(tmp_path):
+    async def scenario():
+        origin = _Node(tmp_path, "origin-track-once")
+        subscriber = _Node(tmp_path, "subscriber-track-once")
+        origin.presence.enter("alice")
+
+        received: list[RealtimeFrame] = []
+
+        async def on_frame_subscriber(session, frame):
+            received.append(frame)
+
+        server = LinkRealtimeServer(
+            host="127.0.0.1", port=0, identity=origin.identity, registry=origin.registry,
+            on_frame=origin.bridge.on_frame, lane=origin.lane, enforce_trust_policy=True,
+        )
+        await server.start()
+        try:
+            _establish_trust(origin.db, subscriber.identity.fingerprint)
+            _subscriber_session, origin_session = await _connect_bare(
+                origin, subscriber, server, on_frame_subscriber=on_frame_subscriber
+            )
+            received.clear()
+
+            await origin.bridge.track_session(origin_session)
+            await origin.bridge.track_session(origin_session)  # same session again -- e.g. a second subscribe
+            await asyncio.sleep(0.05)  # give a wrongly-duplicated send a chance to arrive
+            assert len(received) == 1
+        finally:
+            await server.stop()
+            await origin.teardown()
+            await subscriber.teardown()
+
+    asyncio.run(scenario())
+
+
+def test_broadcast_node_presence_live_reaches_a_peer_with_no_channel_subscription_at_all(tmp_path):
+    async def scenario():
+        origin = _Node(tmp_path, "origin-node-broadcast")
+        subscriber = _Node(tmp_path, "subscriber-node-broadcast")
+
+        received: list[RealtimeFrame] = []
+
+        async def on_frame_subscriber(session, frame):
+            received.append(frame)
+
+        server = LinkRealtimeServer(
+            host="127.0.0.1", port=0, identity=origin.identity, registry=origin.registry,
+            on_frame=origin.bridge.on_frame, lane=origin.lane, enforce_trust_policy=True,
+        )
+        await server.start()
+        try:
+            _establish_trust(origin.db, subscriber.identity.fingerprint)
+            # registry.admit() happens at the handshake, before any
+            # application frame -- a bare dial with zero channel activity
+            # is already enough for broadcast_node_presence_live (which
+            # reads from `registry`, not `_subscribers`) to reach it.
+            await dial_realtime_session(
+                "127.0.0.1", server.port, subscriber.identity, on_frame=on_frame_subscriber,
+                registry=subscriber.registry,
+            )
+            # The server admits the origin-side session in its own
+            # background accept task -- give it a moment to actually land
+            # in origin.registry before broadcasting, or this races.
+            assert await _wait_until(lambda: len(origin.registry.all_sessions()) == 1)
+
+            await origin.bridge.broadcast_node_presence_live(change="join", username="carol")
+
+            assert await _wait_until(lambda: len(received) == 1)
+            assert received[0].type == "node_presence_delta"
+            assert received[0].payload == {"change": "join", "user_id": "carol", "display_label": "carol"}
+        finally:
+            await server.stop()
+            await origin.teardown()
+            await subscriber.teardown()
+
+    asyncio.run(scenario())
+
+
+def test_broadcast_node_presence_live_stops_reaching_a_peer_once_quarantined(tmp_path):
+    async def scenario():
+        origin = _Node(tmp_path, "origin-node-quarantine-broadcast")
+        subscriber = _Node(tmp_path, "subscriber-node-quarantine-broadcast")
+
+        received: list[RealtimeFrame] = []
+
+        async def on_frame_subscriber(session, frame):
+            received.append(frame)
+
+        server = LinkRealtimeServer(
+            host="127.0.0.1", port=0, identity=origin.identity, registry=origin.registry,
+            on_frame=origin.bridge.on_frame, lane=origin.lane, enforce_trust_policy=True,
+        )
+        await server.start()
+        try:
+            # Connects while ESTABLISHED (enforce_trust_policy=True on the
+            # server would otherwise refuse the handshake outright) --
+            # then degrades, proving broadcast re-checks fresh rather than
+            # trusting the still-open connection (design doc §8.10.2:
+            # "checked again at message delivery").
+            _establish_trust(origin.db, subscriber.identity.fingerprint)
+            await dial_realtime_session(
+                "127.0.0.1", server.port, subscriber.identity, on_frame=on_frame_subscriber,
+                registry=subscriber.registry,
+            )
+
+            set_trust_override(
+                origin.db, TrustSubject.node(subscriber.identity.fingerprint), TrustDimension.RESOURCE_BEHAVIOR,
+                TrustState.QUARANTINED, reason="test quarantine", now_iso="2026-08-14T12:00:01Z",
+            )
+
+            await origin.bridge.broadcast_node_presence_live(change="join", username="carol")
+            await asyncio.sleep(0.1)
+            assert received == []
+        finally:
+            await server.stop()
+            await origin.teardown()
+            await subscriber.teardown()
+
+    asyncio.run(scenario())
+
+
+def test_remote_node_presence_is_populated_from_the_origins_initial_snapshot(tmp_path):
+    """Full real round trip: the subscriber's own bridge (not a bare
+    frame-collecting stub) processes what the origin sends on
+    `_handle_subscribe`, populating `remote_node_presence()` -- the
+    receiving half `test_connecting_sends_the_local_online_roster_...`
+    above only proves the *sending* half of."""
+    async def scenario():
+        origin = _Node(tmp_path, "origin-remote-presence")
+        subscriber = _Node(tmp_path, "subscriber-remote-presence")
+        origin.presence.enter("dave")
+        origin_channel, subscriber_channel = _setup_linked_channel(origin, subscriber, name="presence-room")
+
+        server = LinkRealtimeServer(
+            host="127.0.0.1", port=0, identity=origin.identity, registry=origin.registry,
+            on_frame=origin.bridge.on_frame, lane=origin.lane, enforce_trust_policy=True,
+        )
+        await server.start()
+        try:
+            _establish_trust(origin.db, subscriber.identity.fingerprint)
+            _establish_trust(subscriber.db, origin.identity.fingerprint)
+            # In-memory hello giving the subscriber a verified peer record
+            # for origin advertising the real-time port just opened --
+            # ensure_live_subscription needs a dialable address on file,
+            # same setup test_ensure_live_subscription_dials_the_origin_
+            # and_registers_the_subscription above already establishes.
+            origin_hello = origin.link_node.build_hello(
+                addresses=[
+                    {"protocol": LINK_REALTIME_PROTOCOL_TAG, "address": "127.0.0.1", "port": server.port}
+                ],
+                outgoing_only=False, created_at=utc_now_iso(),
+            )
+            subscriber.link_node.handle_hello(origin_hello)
+
+            session = await ensure_live_subscription(
+                channel=subscriber_channel, node_identity=subscriber.identity, link_node=subscriber.link_node,
+                lane=subscriber.lane, registry=subscriber.registry, bridge=subscriber.bridge,
+            )
+            assert session is not None
+
+            assert await _wait_until(
+                lambda: origin.identity.fingerprint in subscriber.bridge.remote_node_presence()
+            )
+            assert subscriber.bridge.remote_node_presence()[origin.identity.fingerprint] == {"dave": "dave"}
+
+            # A subsequent login on the origin (a delta, not a fresh
+            # snapshot) updates the same entry incrementally.
+            await origin.bridge.broadcast_node_presence_live(change="join", username="erin")
+            assert await _wait_until(
+                lambda: subscriber.bridge.remote_node_presence().get(origin.identity.fingerprint) ==
+                {"dave": "dave", "erin": "erin"}
+            )
+
+            await origin.bridge.broadcast_node_presence_live(change="leave", username="dave")
+            assert await _wait_until(
+                lambda: subscriber.bridge.remote_node_presence().get(origin.identity.fingerprint) ==
+                {"erin": "erin"}
+            )
+
+            # Closing the session clears that peer's remote presence --
+            # stale data from a now-disconnected peer must not linger.
+            await session.close(reason="test_done")
+            assert await _wait_until(
+                lambda: origin.identity.fingerprint not in subscriber.bridge.remote_node_presence()
+            )
+        finally:
+            await server.stop()
+            await origin.teardown()
+            await subscriber.teardown()
+
+    asyncio.run(scenario())

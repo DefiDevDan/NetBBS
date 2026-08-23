@@ -26,6 +26,7 @@ from netbbs.link.channels import (
 )
 from netbbs.link.events import build_channel_genesis, build_channel_message
 from netbbs.link.node_identity import bootstrap_node_identity
+from netbbs.link.trust import TrustDimension, TrustState, TrustSubject, register_subject, set_trust_override
 from netbbs.storage.database import Database
 
 
@@ -264,6 +265,117 @@ def test_materialize_carried_channel_message_respects_the_bounded_scrollback_tri
     channel = get_channel_by_name(db, "Remote Lobby")
     scrollback = get_scrollback(db, channel)
     assert [m.body for m in scrollback] == ["msg 1", "msg 2"]
+
+
+# -- trust-gated scrollback visibility (issue #164) --------------------------
+#
+# get_scrollback filters a materialized message through link_content_visible
+# exactly the way netbbs.boards.posts.list_posts_page already filters board
+# posts -- these tests prove that channel messages actually get the same
+# policy, not a divergent one invented for chat.
+
+
+def test_materialized_message_from_a_probationary_author_is_visible(db, remote_node_identity):
+    # A never-vouched-for remote identity defaults to PROBATIONARY (see
+    # netbbs.link.enforcement._state) -- link_content_visible only
+    # suppresses BLOCKED/QUARANTINED, so this must still show up.
+    channel_id = _carried_channel(db, remote_node_identity)
+    message = _remote_channel_message(remote_node_identity, channel_id=channel_id)
+    materialize_carried_channel_message(db, message, sender_fingerprint=remote_node_identity.fingerprint)
+
+    channel = get_channel_by_name(db, "Remote Lobby")
+    assert [m.body for m in get_scrollback(db, channel)] == ["hello there"]
+
+
+def test_materialized_message_from_a_quarantined_author_home_is_suppressed(db, remote_node_identity):
+    channel_id = _carried_channel(db, remote_node_identity)
+    message = _remote_channel_message(remote_node_identity, channel_id=channel_id)
+    materialize_carried_channel_message(db, message, sender_fingerprint=remote_node_identity.fingerprint)
+
+    register_subject(
+        db, TrustSubject.node(remote_node_identity.fingerprint),
+        first_accepted_at="2026-01-01T00:00:00Z", now_iso="2026-01-01T00:00:00Z",
+    )
+    set_trust_override(
+        db, TrustSubject.node(remote_node_identity.fingerprint), TrustDimension.RESOURCE_BEHAVIOR,
+        TrustState.QUARANTINED, reason="test quarantine", now_iso="2026-01-01T00:00:02Z",
+    )
+
+    channel = get_channel_by_name(db, "Remote Lobby")
+    assert get_scrollback(db, channel) == []
+
+
+def test_materialized_message_from_a_blocked_author_home_is_suppressed(db, remote_node_identity):
+    channel_id = _carried_channel(db, remote_node_identity)
+    message = _remote_channel_message(remote_node_identity, channel_id=channel_id)
+    materialize_carried_channel_message(db, message, sender_fingerprint=remote_node_identity.fingerprint)
+
+    register_subject(
+        db, TrustSubject.node(remote_node_identity.fingerprint),
+        first_accepted_at="2026-01-01T00:00:00Z", now_iso="2026-01-01T00:00:00Z",
+    )
+    set_trust_override(
+        db, TrustSubject.node(remote_node_identity.fingerprint), TrustDimension.IDENTITY_INTEGRITY,
+        TrustState.BLOCKED, reason="test block", now_iso="2026-01-01T00:00:02Z",
+    )
+
+    channel = get_channel_by_name(db, "Remote Lobby")
+    assert get_scrollback(db, channel) == []
+
+
+def test_quarantine_suppresses_without_deleting_the_row(db, remote_node_identity):
+    # Same "suppress projection, never delete accepted source bytes"
+    # invariant link_content_visible's own docstring states -- the row
+    # must still exist in channel_messages even though get_scrollback no
+    # longer returns it.
+    channel_id = _carried_channel(db, remote_node_identity)
+    message = _remote_channel_message(remote_node_identity, channel_id=channel_id)
+    materialize_carried_channel_message(db, message, sender_fingerprint=remote_node_identity.fingerprint)
+    register_subject(
+        db, TrustSubject.node(remote_node_identity.fingerprint),
+        first_accepted_at="2026-01-01T00:00:00Z", now_iso="2026-01-01T00:00:00Z",
+    )
+    set_trust_override(
+        db, TrustSubject.node(remote_node_identity.fingerprint), TrustDimension.RESOURCE_BEHAVIOR,
+        TrustState.QUARANTINED, reason="test quarantine", now_iso="2026-01-01T00:00:02Z",
+    )
+
+    channel = get_channel_by_name(db, "Remote Lobby")
+    assert get_scrollback(db, channel) == []
+    row = db.connection.execute(
+        "SELECT 1 FROM channel_messages WHERE link_content_id = ?", (message.content_id,)
+    ).fetchone()
+    assert row is not None
+
+
+def test_a_quarantined_relay_does_not_taint_content_it_merely_carried(db, remote_node_identity):
+    # Mirrors netbbs.link.enforcement's own board-post precedent exactly:
+    # quarantine hits the signed author's home node, never the transport
+    # peer that happened to carry the bytes to us.
+    channel_id = _carried_channel(db, remote_node_identity)
+    message = _remote_channel_message(remote_node_identity, channel_id=channel_id)
+    materialize_carried_channel_message(db, message, sender_fingerprint="some-other-relay-fingerprint")
+
+    register_subject(
+        db, TrustSubject.node("some-other-relay-fingerprint"),
+        first_accepted_at="2026-01-01T00:00:00Z", now_iso="2026-01-01T00:00:00Z",
+    )
+    set_trust_override(
+        db, TrustSubject.node("some-other-relay-fingerprint"), TrustDimension.RESOURCE_BEHAVIOR,
+        TrustState.QUARANTINED, reason="relay is misbehaving", now_iso="2026-01-01T00:00:02Z",
+    )
+
+    channel = get_channel_by_name(db, "Remote Lobby")
+    assert [m.body for m in get_scrollback(db, channel)] == ["hello there"]
+
+
+def test_local_message_is_never_trust_filtered(db, alice, node_identity):
+    # A purely local message has no link_content_id at all -- get_scrollback
+    # must not try to trust-check it (there is nothing to look up).
+    channel = create_channel(db, "lobby", creator=alice)
+    record_message(db, channel, kind="message", author_label="alice", body="local message")
+
+    assert [m.body for m in get_scrollback(db, channel)] == ["local message"]
 
 
 # -- queue_channel_message_if_linked (design doc §9.6) -----------------------

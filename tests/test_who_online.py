@@ -103,10 +103,12 @@ def db(tmp_path):
     return Database(tmp_path / "node.db")
 
 
-async def _run_main_menu(session, database, user, node_controls, *, keys=None, lane=None, direct_invites=None):
+async def _run_main_menu(
+    session, database, user, node_controls, *, keys=None, lane=None, direct_invites=None, link_context=None
+):
     await _main_menu(
         session, database, ChatHub(), PresenceRegistry(), MessageMailbox(), InputHistory(), user,
-        node_controls=node_controls, lane=lane, direct_invites=direct_invites,
+        node_controls=node_controls, lane=lane, direct_invites=direct_invites, link_context=link_context,
     )
 
 
@@ -340,6 +342,96 @@ def test_who_screen_refuses_to_message_an_opted_out_user(tmp_path):
 
         assert "bob has opted out of receiving direct messages." in _written_text(session)
         assert other.written == []
+
+    asyncio.run(scenario())
+    database.close()
+
+
+class _FakeBridge:
+    """Just enough of `LiveChannelBridge` for `_caller_who_screen`'s own
+    narrow use -- `remote_node_presence()` only."""
+
+    def __init__(self, presence: dict) -> None:
+        self._presence = presence
+
+    def remote_node_presence(self) -> dict:
+        return self._presence
+
+
+class _FakeLinkContext:
+    def __init__(self, realtime_bridge) -> None:
+        self.realtime_bridge = realtime_bridge
+
+
+def test_who_screen_includes_users_online_on_a_linked_node(tmp_path):
+    """Issue #164: node-wide presence -- a user on a *linked* node shows
+    up in the same Who's Online list, not a separate section."""
+    database = db(tmp_path)
+    alice = create_user(database, "alice", password="hunter2", user_level=10)
+
+    async def scenario():
+        node_controls = _node_controls()
+        link_context = _FakeLinkContext(_FakeBridge({"remote-node-fingerprint-abc123": {"erin": "erin"}}))
+
+        session = FakeSession(["w", "b", "l", "y"])
+        node_controls.session_registry.enter(session)
+        node_controls.session_registry.mark_authenticated(session, "alice")
+        try:
+            await _run_main_menu(session, database, alice, node_controls, link_context=link_context)
+        finally:
+            node_controls.session_registry.leave(session)
+
+        text = _written_text(session)
+        who_screen = text.split("Who's online", 1)[1].split("Choice: ")[0]
+        assert "erin" in who_screen
+        assert "on linked node remote-node-" in who_screen
+
+    asyncio.run(scenario())
+    database.close()
+
+
+def test_who_screen_selecting_a_remote_entry_explains_cross_node_chat_is_not_available_yet(tmp_path):
+    database = db(tmp_path)
+    alice = create_user(database, "alice", password="hunter2", user_level=10)
+
+    async def scenario():
+        node_controls = _node_controls()
+        link_context = _FakeLinkContext(_FakeBridge({"remote-node-fingerprint-abc123": {"erin": "erin"}}))
+
+        session = FakeSession(["w", "0", "1", "l", "y"])
+        node_controls.session_registry.enter(session)
+        node_controls.session_registry.mark_authenticated(session, "alice")
+        try:
+            await _run_main_menu(session, database, alice, node_controls, link_context=link_context)
+        finally:
+            node_controls.session_registry.leave(session)
+
+        text = _written_text(session)
+        assert "erin is connected to a different linked node" in text
+        assert "direct messaging and chat invites across nodes aren't available yet" in text
+
+    asyncio.run(scenario())
+    database.close()
+
+
+def test_who_screen_with_no_link_context_shows_only_local_users(tmp_path):
+    # Every existing test in this file already covers this implicitly
+    # (none pass link_context), but this makes the degrade-gracefully
+    # default an explicit, named assertion of its own.
+    database = db(tmp_path)
+    alice = create_user(database, "alice", password="hunter2", user_level=10)
+
+    async def scenario():
+        node_controls = _node_controls()
+        session = FakeSession(["w", "b", "l", "y"])
+        node_controls.session_registry.enter(session)
+        node_controls.session_registry.mark_authenticated(session, "alice")
+        try:
+            await _run_main_menu(session, database, alice, node_controls, link_context=None)
+        finally:
+            node_controls.session_registry.leave(session)
+
+        assert "No one else is online right now." in _written_text(session)
 
     asyncio.run(scenario())
     database.close()

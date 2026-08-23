@@ -1706,7 +1706,9 @@ Every application object contains `version`, `type`, and a session-local
 per-session replay window. The first implementation supports:
 
 - `subscribe` and `unsubscribe`;
-- `presence_snapshot` and `presence_delta`;
+- `presence_snapshot` and `presence_delta` (channel-scoped);
+- `node_presence_snapshot` and `node_presence_delta` (issue #164, node-wide
+  -- see §8.10.2);
 - `channel_message`;
 - `ping`, `pong`, `error`, and `close`.
 
@@ -1749,6 +1751,22 @@ snapshot establishes current state after subscription; deltas update it.
 Disconnect or lease expiry removes that node's remote presence without
 persisting synthetic leave events.
 
+**Node-wide presence (issue #164)** is a second, independent presence
+concept, not a generalization of the channel-scoped one above: it answers
+"who's online on this node, right now" -- the same question the local Who's
+Online screen already answers -- across every node a live session currently
+exists with, not gated on shared channel membership. A node broadcasts a
+`node_presence_snapshot` (the local online roster) the moment it starts
+tracking a peer's session, then `node_presence_delta` on each subsequent
+local login/logout (the account's *first* concurrent session and *last*
+remaining one only -- multi-session accounts don't flap). No new trust check
+was needed: establishing a live session at all already requires `ESTABLISHED`
+transport trust (§12), so node-wide presence inherits that gate for free.
+Caller-facing: `[W]ho's online` mixes in every currently-known remote entry
+alongside local sessions: since Link-wide live private chat doesn't exist yet
+(§8.10 above), selecting a remote entry states that plainly rather than
+silently failing or offering an action that doesn't work.
+
 The first vertical does not offer shared recent scrollback, real-time private
 chat, multiple background channel subscriptions per caller, or real-time
 multi-hop relay. A disconnect does not queue or replay live frames. Callers see
@@ -1756,6 +1774,14 @@ multi-hop relay. A disconnect does not queue or replay live frames. Callers see
 that live traffic may have been missed; asynchronous signed linked-channel
 events remain the durable catch-up mechanism until a later decision changes
 that product model.
+
+That asynchronous catch-up path (issue #164) now enforces the identical
+author-trust-state visibility linked board posts already do: a linked
+channel's scrollback silently omits a message whose signed author's home
+node is currently `BLOCKED`/`QUARANTINED`, keyed on the event the message
+carries (`link_content_visible`), never on which node happened to relay it.
+`PROBATIONARY` and local messages are unaffected -- boards and channels now
+share one visibility policy instead of two independently-decided ones.
 
 ---
 

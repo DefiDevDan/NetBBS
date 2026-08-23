@@ -710,7 +710,9 @@ async def run(
                 pass
             else:
                 link_realtime_registry = LinkRealtimeSessionRegistry(own_fingerprint=node_identity.fingerprint)
-                link_realtime_bridge = LiveChannelBridge(hub=hub, lane=background_lane)
+                link_realtime_bridge = LiveChannelBridge(
+                    hub=hub, lane=background_lane, presence=presence, registry=link_realtime_registry
+                )
 
         # Design doc §13.11, issue #60: attached once, here, only when
         # Link is actually enabled -- a disabled node has no netbbs.link

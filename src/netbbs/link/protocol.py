@@ -165,6 +165,7 @@ REALTIME_MAX_PLAINTEXT_BYTES = 16 * 1024
 REALTIME_MAX_IDENTITY_PAYLOAD_BYTES = 48 * 1024
 REALTIME_FRAME_TYPES = frozenset(
     {"subscribe", "unsubscribe", "presence_snapshot", "presence_delta",
+     "node_presence_snapshot", "node_presence_delta",
      "channel_message", "ping", "pong", "error", "close"}
 )
 _REALTIME_MAX_MESSAGE_ID_BYTES = 64
@@ -505,6 +506,34 @@ def _validate_presence_delta_payload(payload: dict, *, path: str) -> None:
     )
 
 
+def _validate_node_presence_snapshot_payload(payload: dict, *, path: str) -> None:
+    """Issue #164: node-wide presence, deliberately not channel-scoped
+    -- unlike `presence_snapshot`, this payload has no `channel_id` at
+    all, since it answers "who's online on this node, period," the same
+    question the local Who's Online screen already answers, extended
+    across every linked node a live session exists with."""
+    if set(payload) != {"entries"}:
+        raise LinkProtocolError(f"{path} must contain exactly entries")
+    entries = payload["entries"]
+    if not isinstance(entries, list):
+        raise LinkProtocolError(f"{path}.entries must be a list")
+    if len(entries) > _REALTIME_MAX_PRESENCE_ENTRIES:
+        raise LinkProtocolError(f"{path}.entries exceeds {_REALTIME_MAX_PRESENCE_ENTRIES} entries")
+    for index, entry in enumerate(entries):
+        _validate_presence_entry(entry, path=f"{path}.entries[{index}]")
+
+
+def _validate_node_presence_delta_payload(payload: dict, *, path: str) -> None:
+    if set(payload) != {"change", "user_id", "display_label"}:
+        raise LinkProtocolError(f"{path} must contain exactly change, user_id, and display_label")
+    if payload["change"] not in _REALTIME_PRESENCE_CHANGES:
+        raise LinkProtocolError(f"{path}.change must be 'join' or 'leave'")
+    _validate_bounded_id(payload["user_id"], path=f"{path}.user_id")
+    _validate_bounded_text(
+        payload["display_label"], path=f"{path}.display_label", max_bytes=_REALTIME_MAX_DISPLAY_LABEL_BYTES
+    )
+
+
 def _validate_channel_message_payload(payload: dict, *, path: str) -> None:
     if set(payload) != {"channel_id", "user_id", "display_label", "body", "created_at"}:
         raise LinkProtocolError(
@@ -546,6 +575,8 @@ _REALTIME_PAYLOAD_VALIDATORS = {
     "unsubscribe": _validate_channel_id_only_payload,
     "presence_snapshot": _validate_presence_snapshot_payload,
     "presence_delta": _validate_presence_delta_payload,
+    "node_presence_snapshot": _validate_node_presence_snapshot_payload,
+    "node_presence_delta": _validate_node_presence_delta_payload,
     "channel_message": _validate_channel_message_payload,
     "ping": _validate_empty_payload,
     "pong": _validate_empty_payload,
@@ -603,6 +634,30 @@ def build_presence_delta_frame(
         type="presence_delta",
         message_id=message_id or new_realtime_message_id(),
         payload={"channel_id": channel_id, "change": change, "user_id": user_id, "display_label": display_label},
+    )
+    validate_realtime_frame_payload(frame)
+    return frame
+
+
+def build_node_presence_snapshot_frame(
+    entries: list[dict], *, message_id: str | None = None
+) -> RealtimeFrame:
+    frame = RealtimeFrame(
+        type="node_presence_snapshot",
+        message_id=message_id or new_realtime_message_id(),
+        payload={"entries": list(entries)},
+    )
+    validate_realtime_frame_payload(frame)
+    return frame
+
+
+def build_node_presence_delta_frame(
+    change: str, user_id: str, display_label: str, *, message_id: str | None = None
+) -> RealtimeFrame:
+    frame = RealtimeFrame(
+        type="node_presence_delta",
+        message_id=message_id or new_realtime_message_id(),
+        payload={"change": change, "user_id": user_id, "display_label": display_label},
     )
     validate_realtime_frame_payload(frame)
     return frame

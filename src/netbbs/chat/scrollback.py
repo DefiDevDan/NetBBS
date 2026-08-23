@@ -32,6 +32,7 @@ from typing import Literal
 
 from netbbs.chat.channels import Channel
 from netbbs.config import get_config, set_config
+from netbbs.link.enforcement import link_content_visible
 from netbbs.search import index_channel_message, prune_channel_message_search
 from netbbs.storage.database import Database
 from netbbs.timeutil import utc_now_iso
@@ -169,12 +170,30 @@ def get_scrollback(db: Database, channel: Channel) -> list[ChannelMessage]:
     pagination: `record_message` already trims retained scrollback down
     to `get_scrollback_limit(db)` on every insert, so
     what's fetched here is already small and bounded by construction,
-    not by a query-time LIMIT."""
+    not by a query-time LIMIT.
+
+    A carried (Link-materialized) message is filtered through
+    `link_content_visible` (issue #164) the same way
+    `netbbs.boards.posts.list_posts_page` already filters board posts —
+    keyed on `link_content_id`, the received event's own content ID
+    (`materialize_carried_channel_message` stores it precisely so this
+    lookup is possible; a purely local message has no `link_content_id`
+    and is never filtered). This suppresses only a `BLOCKED`/
+    `QUARANTINED` *author's* messages, not a merely-quarantined relay's —
+    see `link_content_visible`'s own docstring for why that distinction
+    matters. A row's `author_fingerprint` is deliberately not used for
+    this check: `materialize_carried_channel_message` always stores it as
+    `NULL` for a carried message (the real author identity lives in the
+    signed event `link_content_id` points at, not this column)."""
     rows = db.connection.execute(
         "SELECT * FROM channel_messages WHERE channel_id = ? ORDER BY id ASC",
         (channel.id,),
     ).fetchall()
-    return [_row_to_message(row) for row in rows]
+    return [
+        _row_to_message(row)
+        for row in rows
+        if row["link_content_id"] is None or link_content_visible(db, row["link_content_id"])
+    ]
 
 
 def _row_to_message(row: sqlite3.Row) -> ChannelMessage:

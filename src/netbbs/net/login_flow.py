@@ -18,6 +18,7 @@ editor that's the actual reason it's needed (design doc).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from dataclasses import dataclass
 from datetime import date
 from enum import Enum, auto
@@ -743,7 +744,21 @@ async def run_authenticated_session(
     # read_line() calls simply don't pass one and get no recall.
     history = InputHistory()
 
+    # Issue #164: node-wide presence -- broadcast a join/leave to every
+    # currently-connected Link peer only on this account's *first*
+    # concurrent session / *last* remaining one, checked against
+    # PresenceRegistry's own is_online before/after enter()/leave() --
+    # PresenceRegistry already supports multiple simultaneous sessions
+    # per account (design doc), and a second session logging in (or a
+    # non-final one logging out) must not tell peers the account's
+    # online status changed when it hasn't. Best-effort by construction
+    # (every send inside broadcast_node_presence_live already swallows a
+    # dead peer's LinkTransportError), so this never blocks or fails a
+    # login/logout either way.
+    already_online = presence.is_online(user.username)
     presence.enter(user.username)
+    if not already_online and link_context is not None and link_context.realtime_bridge is not None:
+        await link_context.realtime_bridge.broadcast_node_presence_live(change="join", username=user.username)
     history_id = record_session_start(db, user)
     watcher_task: asyncio.Task | None = None
     if node_controls is not None:
@@ -768,6 +783,12 @@ async def run_authenticated_session(
         )
     finally:
         presence.leave(user.username)
+        if (
+            not presence.is_online(user.username)
+            and link_context is not None
+            and link_context.realtime_bridge is not None
+        ):
+            await link_context.realtime_bridge.broadcast_node_presence_live(change="leave", username=user.username)
         record_session_end(db, history_id)
         if watcher_task is not None:
             # Same cancel-then-await-swallowing-CancelledError shape
@@ -1471,7 +1492,9 @@ async def _main_menu(
             await _draw_main_menu(session, db, mailbox, user, node_controls=node_controls)
         elif choice == "w" and node_controls is not None:
             await session.write_line("")
-            await _caller_who_screen(session, db, node_controls, user, hub, presence, direct_invites, lane)
+            await _caller_who_screen(
+                session, db, node_controls, user, hub, presence, direct_invites, lane, link_context=link_context
+            )
             await _draw_main_menu(session, db, mailbox, user, node_controls=node_controls)
         elif choice == "i" and list_pending_invitations_for_user(db, user):
             await session.write_line("")
@@ -3510,13 +3533,52 @@ async def _show_vcard(session: Session, db: Database, target: User, requesting_u
         )
 
 
-def _who_entry_name(entry: SessionSummary) -> str:
+@dataclass(frozen=True)
+class _RemoteWhoEntry:
+    """One user currently online on a *linked* node (issue #164) --
+    `_caller_who_screen`'s picker mixes these in alongside local
+    `SessionSummary` entries so "who's online" genuinely means the whole
+    reachable mesh, not just this node, the same "no wrong-node
+    friction" bar the rest of this initiative is held to."""
+
+    node_fingerprint: str
+    username: str
+
+    @property
+    def stable_id(self) -> int:
+        # A local SessionSummary.session_id is a small, node-lifetime
+        # sequential integer (that type's own docstring) -- this stays
+        # well outside that range without needing to coordinate with it,
+        # since collision would only ever affect picker's cosmetic
+        # "goto #" convenience, never selection correctness itself.
+        digest = hashlib.sha256(f"{self.node_fingerprint}:{self.username}".encode("utf-8")).hexdigest()
+        return int(digest[:8], 16)
+
+
+_WhoEntry = SessionSummary | _RemoteWhoEntry
+
+
+def _who_entry_name(entry: _WhoEntry) -> str:
+    if isinstance(entry, _RemoteWhoEntry):
+        return entry.username
     return entry.username or "(unauthenticated)"
 
 
-def _who_entry_description(db: Database, entry: SessionSummary) -> str:
+def _who_entry_description(db: Database, entry: _WhoEntry) -> str:
+    if isinstance(entry, _RemoteWhoEntry):
+        return f"on linked node {entry.node_fingerprint[:12]}…"
     when = format_for_display(entry.connected_at, db)
     return f"connected since {when}"
+
+
+def _remote_who_entries(link_context: LinkContext | None) -> list[_RemoteWhoEntry]:
+    if link_context is None or link_context.realtime_bridge is None:
+        return []
+    return [
+        _RemoteWhoEntry(node_fingerprint=fingerprint, username=username)
+        for fingerprint, online in link_context.realtime_bridge.remote_node_presence().items()
+        for username in online
+    ]
 
 
 async def _caller_who_screen(
@@ -3528,6 +3590,7 @@ async def _caller_who_screen(
     presence: PresenceRegistry,
     direct_invites: DirectChatInvites | None,
     lane: DatabaseLane | None,
+    link_context: LinkContext | None = None,
 ) -> None:
     """
     Issue #99: the caller-facing counterpart to the SysOp `[N]ode`
@@ -3542,6 +3605,15 @@ async def _caller_who_screen(
     entirely -- there's no account to message, and `_who_entry_name`'s
     `"(unauthenticated)"` fallback exists only so `SessionSummary`'s
     general shape doesn't need a second, caller-specific variant.
+
+    Issue #164: every user currently online on a *linked* node
+    (`link_context.realtime_bridge.remote_node_presence()`) is mixed
+    into the same list, not shown as a separate section -- "who's
+    online" should mean the whole reachable mesh, the "no wrong-node
+    friction" bar this initiative is held to. Messaging/inviting a
+    remote entry isn't offered, though: Link-wide live private chat
+    isn't built yet (issue #168) -- selecting one says so plainly
+    instead of silently doing nothing or pretending the action exists.
 
     A target who has opted out (`netbbs.messaging_preferences.
     accepts_direct_messages`, default `True`) still appears in the list
@@ -3558,17 +3630,18 @@ async def _caller_who_screen(
     this menu already has; the existing `[M]essage` action needs
     neither and is always available.
     """
-    async def _load_entries() -> list[SessionSummary]:
-        return [
+    async def _load_entries() -> list[_WhoEntry]:
+        local: list[_WhoEntry] = [
             entry
             for entry in node_controls.session_registry.list_entries()
             if entry.username is not None and entry.session is not session
         ]
+        return local + _remote_who_entries(link_context)
 
     selected = await pick_item(
         session, await _load_entries(),
         name_of=_who_entry_name,
-        stable_id_of=lambda e: e.session_id,
+        stable_id_of=lambda e: e.session_id if isinstance(e, SessionSummary) else e.stable_id,
         description_of=lambda e: _who_entry_description(db, e),
         title="Who's online",
         empty_message="No one else is online right now.",
@@ -3583,6 +3656,16 @@ async def _caller_who_screen(
         accent_color=effective_accent_color(session, db),
     )
     if selected is None:
+        return
+
+    if isinstance(selected, _RemoteWhoEntry):
+        await session.write_line(
+            colored(
+                f"{selected.username} is connected to a different linked node -- direct messaging and "
+                "chat invites across nodes aren't available yet.",
+                fg_color=MUTED_COLOR,
+            )
+        )
         return
 
     assert selected.username is not None  # filtered above

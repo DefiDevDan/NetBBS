@@ -1552,6 +1552,70 @@ confirmed to fail without the fix -- the pattern any future dial-timeout
 regression test in this codebase should follow, rather than trusting a
 `ClientError`-only mock to stand in for what a real elapsed timeout does.
 
+### Real-time relay does not exist, and the async relay model does not transfer to it (issue #168)
+
+`relay_mailbox.py`/`relay_selection.py` are pure store-and-forward: a relay
+accepts one opaque, already-encrypted envelope it structurally cannot
+decrypt, bounded per recipient, held until polled and deleted on pickup --
+zero ongoing cost once deposited. Real-time chat sits on
+`LinkRealtimeSession`, a mutually-authenticated Noise XX channel between
+exactly two directly-handshaked endpoints; the send/receive ciphers are
+known only to those two parties, so **a third node cannot transparently
+pass frames through an existing session -- it structurally lacks the key
+material.** Neither the async model's bounded-storage shape nor its
+reliability-ranked relay-selection shape transfers to live traffic, which
+must hold open bidirectional state and consume live bandwidth for an
+entire conversation's duration instead. Design doc §8.10 already names
+this as a deliberately deferred, separate future protocol, not a gap
+nobody noticed. Before building it: the central open decision is
+double-hop relay-as-participant (needs an *additional* application-layer
+encryption hop between the two actual chat participants to keep true
+end-to-end confidentiality once a relay can decrypt/re-encrypt) versus a
+raw-socket/below-Noise blind proxy (preserves the existing two-party
+mutual-auth property untouched, but the relay isn't a Link-protocol
+participant in this shape and doesn't fit the existing consent/
+reliability-selection model at all) -- a security-model decision, not an
+implementation detail, and not yet made.
+
+### Node-wide presence and scrollback trust visibility (issue #164)
+
+`LiveChannelBridge.track_session` only ever gets called for a session that
+became relevant to *some* channel (an inbound `subscribe`, or an outbound
+dial via `ensure_live_subscription`) -- a session can exist in `LinkRealtime
+SessionRegistry` (admitted at the Noise handshake, before any application
+frame) without the bridge ever learning about it if literally no channel
+activity ever occurs on it. Node-wide presence's push-on-connect snapshot
+therefore only actually fires for sessions channel activity already
+establishes -- an accepted v1 scope boundary, not a bug, since real-time
+sessions in this vertical are inherently tied to channel linking in the
+first place (nothing dials a peer "just for presence"). `broadcast_node_
+presence_live` itself does *not* have this limitation -- it reads from the
+registry directly, reaching every connected peer regardless of channel
+subscription.
+
+No new trust check was needed for node-wide presence specifically:
+establishing a live session at all already requires `ESTABLISHED` transport
+trust (`decide_node_action(..., LinkPolicyAction.REALTIME)`), so the gate
+is inherited for free at the transport layer. Presence frames still
+re-check fresh per design doc §8.10.2's "authorization is checked again at
+message delivery" principle, since a session can outlive the peer's trust
+degrading below `ESTABLISHED` -- it isn't force-closed the instant that
+happens.
+
+**`channel_messages.author_fingerprint` is not the author's identity for a
+Link-materialized message -- it is always `NULL` for one.**
+`materialize_carried_channel_message` hardcodes it `NULL` on insert; the
+real author identity lives in the signed event `channel_messages.
+link_content_id` points at (`link_events.content_id`), the same column
+`materialize_carried_channel_message`'s own docstring already documents as
+existing purely for idempotency dedup. A trust/visibility check for
+channel scrollback must key on `link_content_id` and reuse
+`netbbs.link.enforcement.link_content_visible` (exactly as board posts
+already do via `post_id`) -- not attempt to read `author_fingerprint`
+directly, which would silently pass every linked message as "untrusted
+author unknown" or worse, appear to work for local messages while doing
+nothing for the linked ones a filter is actually meant to catch.
+
 ### Current distribution limit
 
 Configured-seed sync currently sends the complete supported outbound event set

@@ -30,6 +30,7 @@ import asyncio
 
 from netbbs.chat.channels import Channel
 from netbbs.chat.hub import ChatHub
+from netbbs.chat.presence import PresenceRegistry
 from netbbs.chat.scrollback import ChannelMessage as LocalChannelMessage
 from netbbs.link.channels import channel_origin_fingerprint, get_channel_by_channel_id, is_channel_linked
 from netbbs.link.enforcement import LinkPolicyAction, decide_node_action, ensure_node_subject
@@ -39,6 +40,8 @@ from netbbs.link.protocol import (
     LinkProtocolError,
     RealtimeFrame,
     build_channel_message_frame,
+    build_node_presence_delta_frame,
+    build_node_presence_snapshot_frame,
     build_presence_delta_frame,
     build_presence_snapshot_frame,
     build_subscribe_frame,
@@ -82,14 +85,38 @@ def _decide_channel_subscribe_authorization(db: Database, *, channel_id: str, pe
 class LiveChannelBridge:
     """See module docstring. `hub`/`lane` are this node's own
     already-running singletons (one `ChatHub`, one `DatabaseLane`) --
-    this class adds no storage or broadcast mechanism of its own."""
+    this class adds no storage or broadcast mechanism of its own.
 
-    def __init__(self, *, hub: ChatHub, lane: DatabaseLane) -> None:
+    `presence`/`registry` (issue #164) are this node's own already-
+    running `PresenceRegistry`/`LinkRealtimeSessionRegistry` singletons,
+    needed for node-wide (not channel-scoped) presence: `presence`
+    answers "who's actually online on this node right now" the same way
+    the local Who's Online screen already does, and `registry` is what
+    lets a broadcast reach every currently-connected peer session, not
+    just channel subscribers."""
+
+    def __init__(
+        self, *, hub: ChatHub, lane: DatabaseLane, presence: PresenceRegistry, registry: LinkRealtimeSessionRegistry
+    ) -> None:
         self._hub = hub
         self._lane = lane
+        self._presence = presence
+        self._registry = registry
         # channel_id -> {peer_fingerprint: session}
         self._subscribers: dict[str, dict[str, LinkRealtimeSession]] = {}
         self._watchers: set[asyncio.Task] = set()
+        # peer_fingerprint -> {user_id: display_label} -- the last-known
+        # node-wide presence snapshot/delta stream received from that
+        # peer. Cleared for a peer the moment its session closes
+        # (_untrack_on_close) -- stale presence from a now-disconnected
+        # peer must not linger.
+        self._remote_node_presence: dict[str, dict[str, str]] = {}
+        # peer_fingerprint -> whether this node has already sent that
+        # peer its initial node_presence_snapshot for the *current*
+        # session -- track_session can be called more than once per
+        # session (existing convention), but the snapshot must only go
+        # out once per connection, not once per call.
+        self._node_presence_sent: set[str] = set()
         # channel_id -> opaque holder ids (issue #159): this node's own
         # *subscriber*-side interest in a linked channel it doesn't
         # originate -- the mirror image of `_subscribers` above, which is
@@ -137,22 +164,45 @@ class LiveChannelBridge:
             del self._local_interest[channel_id]
         return last
 
-    def track_session(self, session: LinkRealtimeSession) -> None:
+    async def track_session(self, session: LinkRealtimeSession) -> None:
         """Spawn the bounded (one per session) watcher that purges
         `session` from every channel's subscriber set once it closes --
         a peer that disconnects without unsubscribing must not linger
         as a phantom subscriber forever. Safe to call more than once for
         the same session (a no-op watcher only ever removes what it
-        finds)."""
+        finds).
+
+        Also sends that peer an initial `node_presence_snapshot` --
+        push-on-connect (issue #164), exactly once per session even if
+        this is called more than once for it. Best-effort: a session
+        that's already gone by the time this runs is handled the same
+        way every other outbound send in this class handles a dead
+        session, and `_untrack_on_close`'s own watcher (already spawned
+        above) will clean up `_node_presence_sent` once `session.closed`
+        actually fires."""
         watcher = asyncio.get_running_loop().create_task(self._untrack_on_close(session))
         self._watchers.add(watcher)
         watcher.add_done_callback(self._watchers.discard)
+
+        if session.remote_fingerprint in self._node_presence_sent:
+            return
+        self._node_presence_sent.add(session.remote_fingerprint)
+        entries = [
+            {"user_id": username, "display_label": username}
+            for username in sorted(self._presence.online_usernames())
+        ][:_MAX_PRESENCE_SNAPSHOT_ENTRIES]
+        try:
+            await session.send(build_node_presence_snapshot_frame(entries))
+        except LinkTransportError:
+            pass
 
     async def _untrack_on_close(self, session: LinkRealtimeSession) -> None:
         await session.closed.wait()
         for channel_id, subscribers in list(self._subscribers.items()):
             if subscribers.pop(session.remote_fingerprint, None) is not None and not subscribers:
                 del self._subscribers[channel_id]
+        self._remote_node_presence.pop(session.remote_fingerprint, None)
+        self._node_presence_sent.discard(session.remote_fingerprint)
 
     async def close(self) -> None:
         if self._watchers:
@@ -169,6 +219,10 @@ class LiveChannelBridge:
             await self._handle_presence_delta(session, frame)
         elif frame.type == "presence_snapshot":
             await self._handle_presence_snapshot(session, frame)
+        elif frame.type == "node_presence_snapshot":
+            await self._handle_node_presence_snapshot(session, frame)
+        elif frame.type == "node_presence_delta":
+            await self._handle_node_presence_delta(session, frame)
         # "error": nothing actionable locally yet from a peer-reported
         # rejection of a frame this node sent.
 
@@ -182,7 +236,7 @@ class LiveChannelBridge:
         if session.remote_fingerprint not in subscribers and len(subscribers) >= _MAX_SUBSCRIBERS_PER_CHANNEL:
             raise LinkProtocolError(f"channel {channel_id!r} is already at its live-subscriber limit")
         subscribers[session.remote_fingerprint] = session
-        self.track_session(session)
+        await self.track_session(session)
 
         seen_usernames: set[str] = set()
         entries = []
@@ -238,6 +292,45 @@ class LiveChannelBridge:
             _decide_channel_subscribe_authorization, channel_id=frame.payload["channel_id"],
             peer_fingerprint=session.remote_fingerprint,
         )
+
+    async def _node_realtime_allowed(self, fingerprint: str) -> bool:
+        """Design doc §8.10.2's "checked again at message delivery"
+        principle, extended to node-wide presence: a session can outlive
+        the peer's trust degrading below `ESTABLISHED` (it isn't force-
+        closed the instant that happens), so an incoming/outgoing
+        node-presence frame re-checks fresh rather than trusting that
+        the session's continued existence still implies continued
+        trust."""
+        return await self._lane.run(
+            lambda db: decide_node_action(db, fingerprint, LinkPolicyAction.REALTIME).allowed
+        )
+
+    async def _handle_node_presence_snapshot(self, session: LinkRealtimeSession, frame: RealtimeFrame) -> None:
+        if not await self._node_realtime_allowed(session.remote_fingerprint):
+            return
+        entries = frame.payload["entries"][:_MAX_PRESENCE_SNAPSHOT_ENTRIES]
+        self._remote_node_presence[session.remote_fingerprint] = {
+            entry["user_id"]: entry["display_label"] for entry in entries
+        }
+
+    async def _handle_node_presence_delta(self, session: LinkRealtimeSession, frame: RealtimeFrame) -> None:
+        if not await self._node_realtime_allowed(session.remote_fingerprint):
+            return
+        online = self._remote_node_presence.setdefault(session.remote_fingerprint, {})
+        user_id = frame.payload["user_id"]
+        if frame.payload["change"] == "join":
+            if user_id not in online and len(online) >= _MAX_PRESENCE_SNAPSHOT_ENTRIES:
+                return  # bounded -- silently dropped, not a protocol violation to strike over
+            online[user_id] = frame.payload["display_label"]
+        else:
+            online.pop(user_id, None)
+
+    def remote_node_presence(self) -> dict[str, dict[str, str]]:
+        """`{peer_fingerprint: {user_id: display_label}}` -- the
+        last-known node-wide presence for every peer this node currently
+        holds a live session with. A UI caller (Who's Online, issue
+        #164) reads this directly; nothing here renders it."""
+        return {fingerprint: dict(entries) for fingerprint, entries in self._remote_node_presence.items()}
 
     async def _live_subscribers(self, channel: Channel) -> list[LinkRealtimeSession]:
         """Currently-registered subscriber sessions for `channel`,
@@ -295,6 +388,45 @@ class LiveChannelBridge:
             except LinkTransportError:
                 pass
 
+    async def _live_node_wide_sessions(self) -> list[LinkRealtimeSession]:
+        """Every currently-connected session whose peer still passes a
+        fresh `REALTIME` trust check -- the node-wide counterpart to
+        `_live_subscribers`, which is inherently channel-scoped and so
+        has no `_subscribers` entry for node-wide traffic to re-validate
+        against. `registry` (not `_subscribers`) is the source of truth
+        for "every peer this node currently holds a live session with";
+        a peer that no longer passes is simply skipped for this
+        broadcast, not force-disconnected -- the same session may still
+        be legitimately open for other reasons the caller doesn't get
+        to unilaterally tear down from here."""
+        sessions = self._registry.all_sessions()
+        if not sessions:
+            return []
+        live: list[LinkRealtimeSession] = []
+        for session in sessions:
+            if await self._node_realtime_allowed(session.remote_fingerprint):
+                live.append(session)
+        return live
+
+    async def broadcast_node_presence_live(self, *, change: str, username: str) -> None:
+        """Push a local login/logout out to every currently-connected
+        peer, node-wide -- the outbound half of
+        `_handle_node_presence_delta`. Call this from the same place
+        `netbbs.chat.presence.PresenceRegistry.enter`/`leave` already
+        fires (issue #164), not from a channel join/leave -- node-wide
+        presence answers "who's online on this node, period," the same
+        question local Who's Online already answers, not "who's watching
+        this channel."""
+        sessions = await self._live_node_wide_sessions()
+        if not sessions:
+            return
+        frame = build_node_presence_delta_frame(change, username, username)
+        for session in sessions:
+            try:
+                await session.send(frame)
+            except LinkTransportError:
+                pass
+
 
 async def ensure_live_subscription(
     *,
@@ -343,7 +475,7 @@ async def ensure_live_subscription(
                 )
             except Exception:
                 continue
-            bridge.track_session(session)
+            await bridge.track_session(session)
             break
         else:
             return None
