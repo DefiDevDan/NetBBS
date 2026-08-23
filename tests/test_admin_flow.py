@@ -3571,6 +3571,124 @@ def test_masthead_gallery_declining_the_apply_prompt_leaves_the_masthead_disable
     assert is_main_menu_banner_enabled(db) is False
 
 
+# -- node colors (issue #162) ------------------------------------------------
+
+
+def test_colors_option_appears_in_the_system_submenu(db, lane, sysop):
+    session = FakeSession(["s", "b", "b"])
+    _run(session, lane, sysop)
+    assert "olors" in _written_text(session)
+
+
+def test_theme_colors_menu_shows_default_status_for_all_three_slots(db, lane, sysop):
+    session = FakeSession(["s", "c", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "Accent: " in text and "Header: " in text and "Clock " in text
+    assert text.count("default") >= 3
+
+
+def test_setting_a_color_previews_both_depths_before_asking_to_apply(db, lane, sysop):
+    from netbbs.net.node_theme import accent_color_override
+
+    session = FakeSession(["s", "c", "a", "255,0,0", "y", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "Truecolor: " in text
+    assert "256-color: " in text
+    assert "Accent color updated." in text
+    assert accent_color_override(db) == (255, 0, 0)
+
+    rows = db.connection.execute(
+        "SELECT actor_user_id, detail FROM moderation_log WHERE action = 'set_accent_color_override'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["actor_user_id"] == sysop.id
+    assert rows[0]["detail"] == "255,0,0"
+
+
+def test_declining_the_apply_prompt_leaves_the_override_unset(db, lane, sysop):
+    from netbbs.net.node_theme import header_color_override
+
+    session = FakeSession(["s", "c", "h", "0,255,0", "n", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Not applied." in _written_text(session)
+    assert header_color_override(db) is None
+
+
+def test_a_non_triple_rgb_input_is_rejected_with_no_change(db, lane, sysop):
+    from netbbs.net.node_theme import header_color_override
+
+    session = FakeSession(["s", "c", "h", "not-a-color", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Not a valid R,G,B triple" in _written_text(session)
+    assert header_color_override(db) is None
+
+
+def test_an_out_of_range_rgb_component_is_rejected_with_no_change(db, lane, sysop):
+    from netbbs.net.node_theme import header_color_override
+
+    session = FakeSession(["s", "c", "h", "300,0,0", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Not a valid R,G,B triple" in _written_text(session)
+    assert header_color_override(db) is None
+
+
+def test_blank_input_makes_no_change(db, lane, sysop):
+    session = FakeSession(["s", "c", "a", "", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "No change." in _written_text(session)
+
+
+def test_clearing_an_existing_override_reverts_to_the_default(db, lane, sysop):
+    from netbbs.net.node_theme import clock_color_override, set_clock_color_override
+
+    set_clock_color_override(db, (10, 20, 30))
+    session = FakeSession(["s", "c", "c", "default", "y", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "reverted to the default" in _written_text(session)
+    assert clock_color_override(db) is None
+
+    rows = db.connection.execute(
+        "SELECT detail FROM moderation_log WHERE action = 'clear_clock_color_override'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["detail"] == "10,20,30"
+
+
+def test_declining_to_clear_leaves_the_override_in_place(db, lane, sysop):
+    from netbbs.net.node_theme import clock_color_override, set_clock_color_override
+
+    set_clock_color_override(db, (10, 20, 30))
+    session = FakeSession(["s", "c", "c", "default", "n", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Cancelled." in _written_text(session)
+    assert clock_color_override(db) == (10, 20, 30)
+
+
+def test_clearing_when_already_default_makes_no_change(db, lane, sysop):
+    session = FakeSession(["s", "c", "a", "default", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Already using the default" in _written_text(session)
+
+
+def test_preview_screen_shows_overridden_and_default_slots_side_by_side(db, lane, sysop):
+    from netbbs.net.node_theme import set_accent_color_override
+
+    set_accent_color_override(db, (200, 100, 50))
+    # Trailing "x" dismisses the preview's own "Press any key to
+    # continue..." wait, matching the welcome-banner preview's own
+    # dismissal precedent.
+    session = FakeSession(["s", "c", "p", "x", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "Accent color:" in text
+    assert "Truecolor: " in text
+    assert "256-color: " in text
+    assert "Header color:" in text
+    assert "Default:" in text
+
+
 # -- self-service registration -----------------------------------------------
 
 

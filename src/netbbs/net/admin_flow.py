@@ -241,7 +241,16 @@ from netbbs.net.redraw_preference import (
 )
 from netbbs.net.breadcrumb_preference import breadcrumb_collapsed_enabled
 from netbbs.net.color_depth_preference import effective_truecolor
-from netbbs.net.node_theme import effective_accent_color_256, effective_header_color_256
+from netbbs.net.node_theme import (
+    accent_color_override,
+    clock_color_override,
+    effective_accent_color_256,
+    effective_header_color_256,
+    header_color_override,
+    set_accent_color_override,
+    set_clock_color_override,
+    set_header_color_override,
+)
 from netbbs.net.unicode_style_preference import unicode_style_enabled
 from netbbs.operational_history import list_operational_run_history
 from netbbs.selfupdate import (
@@ -281,7 +290,9 @@ from netbbs.net.main_menu_banner import (
     set_main_menu_banner_enabled,
 )
 from netbbs.rendering import (
+    ACCENT_COLOR,
     ALERT_COLOR,
+    CLOCK_COLOR,
     ERROR_COLOR,
     HEADER_COLOR,
     LABEL_COLOR,
@@ -305,6 +316,7 @@ from netbbs.rendering import (
     field_row,
     menu_grid,
     menu_key,
+    nearest_256,
     reflow,
     reject_keystroke,
     sanitize_text,
@@ -831,6 +843,10 @@ async def _system_menu(
             await session.write_line("")
             await _main_menu_banner_menu(session, lane, actor)
             await _draw_system_menu(session, node_controls, link_context, description_level, redraw_in_place, unicode_style, header_color=header_color)
+        elif choice == "c":
+            await session.write_line("")
+            await _theme_colors_menu(session, lane, actor)
+            await _draw_system_menu(session, node_controls, link_context, description_level, redraw_in_place, unicode_style, header_color=header_color)
         elif choice == "u":
             await session.write_line("")
             await _update_settings_screen(session, lane, actor)
@@ -890,6 +906,7 @@ async def _draw_system_menu(
     option_list = [
         MenuEntry(label=menu_key("W", "elcome banner"), brief="First-login greeting text"),
         MenuEntry(label=menu_key("M", "asthead"), brief="Custom art above the main menu"),
+        MenuEntry(label=menu_key("C", "olors"), brief="Node-wide accent/header/clock branding"),
         MenuEntry(label=menu_key("U", "pdate"), brief="Software update settings"),
         MenuEntry(label=menu_key("T", "imestamp format"), brief="Node-wide date/time display"),
         MenuEntry(label=menu_key("P", "olicy trust"), brief="Federation trust policy"),
@@ -4592,6 +4609,201 @@ async def _main_menu_banner_gallery_screen(
         path = await lane.run(_apply)
         await session.write_line(f"Applied and enabled. Saved to {path}. Use [P]review to verify it looks right.")
         return
+
+
+# -- node colors (issue #162) ------------------------------------------
+
+
+_THEME_SLOT_LABELS = {"accent": "Accent color", "header": "Header color", "clock": "Clock color"}
+_THEME_SLOT_GETTERS = {
+    "accent": accent_color_override, "header": header_color_override, "clock": clock_color_override,
+}
+_THEME_SLOT_SETTERS = {
+    "accent": set_accent_color_override, "header": set_header_color_override, "clock": set_clock_color_override,
+}
+_THEME_SLOT_DEFAULTS = {"accent": ACCENT_COLOR, "header": HEADER_COLOR, "clock": CLOCK_COLOR}
+
+
+def _theme_sample_text(slot: str) -> str:
+    """One real rendered fragment per slot -- board name for accent,
+    a section-header banner for header, a main-menu clock for clock --
+    rather than an abstract swatch, so a SysOp judges the color against
+    the same shape of text it will actually appear on."""
+    if slot == "accent":
+        return "  MetroBBS Underground"
+    if slot == "header":
+        return "== Node management =="
+    return "14:32:07"
+
+
+def _theme_sample_line(slot: str, color: int | tuple[int, int, int]) -> str:
+    return colored(_theme_sample_text(slot), fg_color=color, bold=True)
+
+
+def _theme_color_status_line(label: str, rgb: tuple[int, int, int] | None) -> str:
+    if rgb is None:
+        return colored(f"{label}: ", fg_color=LABEL_COLOR) + colored("default", fg_color=MUTED_COLOR)
+    value = f"{rgb[0]},{rgb[1]},{rgb[2]}"
+    swatch = colored("****", fg_color=rgb, bold=True)
+    return colored(f"{label}: ", fg_color=LABEL_COLOR) + swatch + colored(f"  {value}", fg_color=METADATA_COLOR)
+
+
+async def _draw_theme_colors_menu(
+    session: Session, lane: DatabaseLane, description_level: str, redraw_in_place: bool,
+    unicode_style: bool, collapsed: bool,
+) -> None:
+    def _load(db: Database):
+        return accent_color_override(db), header_color_override(db), clock_color_override(db), effective_header_color_256(db)
+
+    accent_rgb, header_rgb, clock_rgb, header_color = await lane.run(_load)
+    await session.write_line("\r\n" + screen_title("Node colors",
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
+            header_color=header_color))
+    await session.write_line(
+        colored(
+            "Branding only -- status colors (error/success/warning/etc.) always stay standard, "
+            "so a caller can trust what they mean on any node.",
+            fg_color=MUTED_COLOR,
+        )
+    )
+    await session.write_line(_theme_color_status_line("Accent", accent_rgb))
+    await session.write_line(_theme_color_status_line("Header", header_rgb))
+    await session.write_line(_theme_color_status_line("Clock ", clock_rgb))
+    await session.write_line(
+        "\r\n" + _menu_row(
+            [
+                MenuEntry(label=menu_key("A", "ccent"), brief="Board/channel/user-name color"),
+                MenuEntry(label=menu_key("H", "eader"), brief="Section-header color"),
+                MenuEntry(label=menu_key("C", "lock"), brief="Main-menu clock color"),
+                MenuEntry(label=menu_key("P", "review"), brief="Sample text, truecolor vs. 256-color"),
+                MenuEntry(label=menu_key("B", "ack"), brief="Return to Settings"),
+            ],
+            description_level,
+            width=session.terminal_width,
+            height=session.terminal_height,
+        )
+    )
+    await session.write("Choice: ")
+
+
+async def _set_theme_color_screen(session: Session, lane: DatabaseLane, actor: User, *, slot: str) -> None:
+    """Set or clear one of the three overridable branding colors.
+
+    Previews the candidate RGB against real sample text at both
+    truecolor and 256-color depth *before* asking for confirmation --
+    issue #162's own explicit requirement -- rather than applying first
+    and letting a SysOp discover a bad choice only on the next real
+    screen that happens to use it."""
+    label = _THEME_SLOT_LABELS[slot]
+    getter = _THEME_SLOT_GETTERS[slot]
+    setter = _THEME_SLOT_SETTERS[slot]
+    current = await lane.run(getter)
+    current_text = f"{current[0]},{current[1]},{current[2]}" if current is not None else "default"
+
+    await session.write_line(colored(f"\r\n{label}:", fg_color=await lane.run(effective_header_color_256), bold=True))
+    await session.write_line(f"Currently: {current_text}")
+    await session.write_line(
+        colored(
+            "Enter a color as R,G,B (each 0-255), 'default' to clear the override, "
+            "or leave blank to make no change.",
+            fg_color=MUTED_COLOR,
+        )
+    )
+    await session.write(f"{label} [{current_text}]: ")
+    raw = (await session.read_line()).strip()
+    if not raw:
+        await session.write_line("No change.")
+        return
+
+    if raw.lower() == "default":
+        if current is None:
+            await session.write_line("Already using the default -- no change.")
+            return
+        if not await prompt_yes_no(session, f"Clear the {label.lower()} override and revert to the default?", default=False):
+            await session.write_line("Cancelled.")
+            return
+        await lane.run(setter, None)
+        await lane.run(record_action, actor=actor, action=f"clear_{slot}_color_override", detail=current_text)
+        await session.write_line(f"{label} reverted to the default.")
+        return
+
+    parts = raw.split(",")
+    rgb: tuple[int, int, int] | None = None
+    if len(parts) == 3:
+        try:
+            candidate = tuple(int(part.strip()) for part in parts)
+        except ValueError:
+            candidate = None
+        if candidate is not None and all(0 <= value <= 255 for value in candidate):
+            rgb = candidate  # type: ignore[assignment]
+    if rgb is None:
+        await session.write_line(colored("Not a valid R,G,B triple (each 0-255) -- no change.", fg_color=ERROR_COLOR))
+        return
+
+    await session.write_line(colored("\r\nPreview:", fg_color=MUTED_COLOR))
+    await session.write_line(colored("  Truecolor: ", fg_color=LABEL_COLOR) + _theme_sample_line(slot, rgb))
+    await session.write_line(colored("  256-color: ", fg_color=LABEL_COLOR) + _theme_sample_line(slot, nearest_256(rgb)))
+
+    if not await prompt_yes_no(session, f"Apply this {label.lower()}?", default=False):
+        await session.write_line("Not applied.")
+        return
+
+    await lane.run(setter, rgb)
+    await lane.run(record_action, actor=actor, action=f"set_{slot}_color_override", detail=f"{rgb[0]},{rgb[1]},{rgb[2]}")
+    await session.write_line(f"{label} updated.")
+
+
+async def _preview_theme_colors_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    def _load(db: Database):
+        return accent_color_override(db), header_color_override(db), clock_color_override(db)
+
+    overrides = await lane.run(_load)
+    await session.write_line(colored("\r\nNode color preview:", fg_color=MUTED_COLOR))
+    for slot, rgb in zip(("accent", "header", "clock"), overrides):
+        label = _THEME_SLOT_LABELS[slot]
+        await session.write_line(colored(f"\r\n{label}:", fg_color=LABEL_COLOR, bold=True))
+        if rgb is None:
+            await session.write_line(
+                colored("  Default:   ", fg_color=MUTED_COLOR) + _theme_sample_line(slot, _THEME_SLOT_DEFAULTS[slot])
+            )
+        else:
+            await session.write_line(colored("  Truecolor: ", fg_color=MUTED_COLOR) + _theme_sample_line(slot, rgb))
+            await session.write_line(
+                colored("  256-color: ", fg_color=MUTED_COLOR) + _theme_sample_line(slot, nearest_256(rgb))
+            )
+    await session.write_line(colored("\r\nPress any key to continue...", fg_color=MUTED_COLOR))
+    await session.read_key()
+
+
+async def _theme_colors_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
+    description_level = await lane.run(menu_description_level, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
+    await _draw_theme_colors_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
+    while True:
+        choice = (await session.read_key()).lower()
+        if choice == "b":
+            await session.write_line("")
+            return
+        elif choice == "a":
+            await session.write_line("")
+            await _set_theme_color_screen(session, lane, actor, slot="accent")
+            await _draw_theme_colors_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
+        elif choice == "h":
+            await session.write_line("")
+            await _set_theme_color_screen(session, lane, actor, slot="header")
+            await _draw_theme_colors_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
+        elif choice == "c":
+            await session.write_line("")
+            await _set_theme_color_screen(session, lane, actor, slot="clock")
+            await _draw_theme_colors_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
+        elif choice == "p":
+            await session.write_line("")
+            await _preview_theme_colors_screen(session, lane, actor)
+            await _draw_theme_colors_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
+        else:
+            await session.write(reject_unhandled_key(choice))
 
 
 # -- boards & areas (design doc) ---------------------------------------
