@@ -120,8 +120,7 @@ def effective_accent_color_256(db: Database) -> int:
     return ACCENT_COLOR if override is None else nearest_256(override)
 
 
-# -- header (not yet wired into any render call site -- issue #162's own
-# "land as a phased sweep" plan; accent is phase 1) --------------------
+# -- header -------------------------------------------------------------
 
 
 def header_color_override(db: Database) -> tuple[int, int, int] | None:
@@ -136,7 +135,20 @@ def effective_header_color(session: Session, db: Database) -> int | tuple[int, i
     return _effective_color(session, db, _HEADER_CONFIG_KEY, HEADER_COLOR)
 
 
-# -- clock (not yet wired into any render call site -- see above) ------
+def effective_header_color_256(db: Database) -> int:
+    """Same reasoning as `effective_accent_color_256`: the `db`-only,
+    always-256 variant real `screen_title`/`double_frame`/`empty_state`
+    call sites actually thread through -- these are resolved inside
+    synchronous `lane.run` closures alongside `accent_color`'s own
+    identical call, which have `db` but not a `Session` in scope, and a
+    screen composed once for a single session has no real reason to
+    special-case truecolor for its own header rule beyond what the rest
+    of that same screen already renders at."""
+    override = header_color_override(db)
+    return HEADER_COLOR if override is None else nearest_256(override)
+
+
+# -- clock ----------------------------------------------------------------
 
 
 def clock_color_override(db: Database) -> tuple[int, int, int] | None:
@@ -149,3 +161,11 @@ def set_clock_color_override(db: Database, rgb: tuple[int, int, int] | None) -> 
 
 def effective_clock_color(session: Session, db: Database) -> int | tuple[int, int, int]:
     return _effective_color(session, db, _CLOCK_CONFIG_KEY, CLOCK_COLOR)
+
+
+def effective_clock_color_256(db: Database) -> int:
+    """Same `db`-only convenience as `effective_header_color_256` --
+    `login_flow._main_menu_prompt`'s own single real call site resolves
+    it via `lane.run`, matching the accent/header wiring's own shape."""
+    override = clock_color_override(db)
+    return CLOCK_COLOR if override is None else nearest_256(override)

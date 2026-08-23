@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from netbbs.config import get_config, set_config
-from netbbs.net.node_theme import accent_color_override
+from netbbs.net.node_theme import accent_color_override, header_color_override
 from netbbs.rendering import ACCENT_COLOR, HEADER_COLOR, RESET, colored, decode_ansi_bytes, gradient_text, nearest_256
 from netbbs.rendering.layout import double_frame
 from netbbs.storage.database import Database
@@ -61,30 +61,35 @@ _logger = logging.getLogger(__name__)
 # fast path for the overwhelming majority of nodes with nothing
 # configured, and the exact value many existing tests still compare
 # against.
-def _build_default_banner_256(accent: int | tuple[int, int, int]) -> str:
+def _build_default_banner_256(
+    accent: int | tuple[int, int, int], header: int | tuple[int, int, int] = HEADER_COLOR
+) -> str:
     return (
         double_frame(
             [
                 "",
                 " " * 21 + gradient_text("N E T B B S", "rainbow", bold=True, truecolor=False),
-                colored(" " * 7 + "conversations across independent nodes", fg_color=HEADER_COLOR, bold=True),
+                colored(" " * 7 + "conversations across independent nodes", fg_color=header, bold=True),
                 "",
             ],
             width=58,
+            header_color=header,
         )
         + "\r\n"
         + colored("  NetBBS Link", fg_color=accent, bold=True)
-        + colored("  ›  private experimental federation", fg_color=HEADER_COLOR, bold=True)
+        + colored("  ›  private experimental federation", fg_color=header, bold=True)
     )
 
 
 DEFAULT_WELCOME_BANNER = _build_default_banner_256(ACCENT_COLOR)
 
-# The truecolor variant's own subtitle used a hand-picked RGB
-# approximation of ACCENT_COLOR (xterm 220, gold) rather than the
-# 256-index itself, since truecolor spans need a real RGB triple --
-# kept as the unoverridden default an accent override replaces below.
+# The truecolor variant's own subtitle/header used hand-picked RGB
+# approximations of ACCENT_COLOR/HEADER_COLOR (xterm 220 gold, xterm 51
+# cyan) rather than the 256-indices themselves, since truecolor spans
+# need a real RGB triple -- kept as the unoverridden defaults an
+# accent/header override replaces below.
 _DEFAULT_ACCENT_RGB = (255, 215, 0)
+_DEFAULT_HEADER_RGB = (0, 255, 255)
 
 
 def _default_welcome_banner(db: Database, *, truecolor: bool) -> str:
@@ -107,31 +112,35 @@ def _default_welcome_banner(db: Database, *, truecolor: bool) -> str:
     concatenated" shape `netbbs.rendering.reflow.colored_truncate`
     already uses, just assembled by hand here since this banner isn't a
     segment list."""
-    override = accent_color_override(db)
+    accent_override = accent_color_override(db)
+    header_override = header_color_override(db)
     if not truecolor:
-        if override is None:
+        if accent_override is None and header_override is None:
             return DEFAULT_WELCOME_BANNER
-        return _build_default_banner_256(nearest_256(override))
+        accent = nearest_256(accent_override) if accent_override is not None else ACCENT_COLOR
+        header = nearest_256(header_override) if header_override is not None else HEADER_COLOR
+        return _build_default_banner_256(accent, header)
     # The full-width border makes negotiated truecolor unmistakable at a
     # glance instead of confining the showcase to six subtly shaded letters.
+    header = header_override or _DEFAULT_HEADER_RGB
     border_text = "╔══════════════════════════════════════════════════════╗"
     border = gradient_text(border_text, "rainbow", bold=True, truecolor=True)
     bottom_border = gradient_text(
         border_text.replace("╔", "╚").replace("╗", "╝"), "rainbow", bold=True, truecolor=True
     )
     wordmark = gradient_text("N E T B B S", "rainbow", bold=True, truecolor=True)
-    welcome_line = colored("║                      ", fg_color=HEADER_COLOR, bold=True) + wordmark + colored(
-        "                     ║", fg_color=HEADER_COLOR, bold=True
+    welcome_line = colored("║                      ", fg_color=header, bold=True) + wordmark + colored(
+        "                     ║", fg_color=header, bold=True
     )
-    blank = colored("║                                                      ║", fg_color=HEADER_COLOR, bold=True)
+    blank = colored("║                                                      ║", fg_color=header, bold=True)
     tagline = colored(
         "║        conversations across independent nodes        ║",
-        fg_color=HEADER_COLOR,
+        fg_color=header,
         bold=True,
     )
     subtitle = (
-        colored("  NetBBS Link", fg_color=override or _DEFAULT_ACCENT_RGB, bold=True)
-        + colored("  ›  private experimental federation", fg_color=HEADER_COLOR, bold=True)
+        colored("  NetBBS Link", fg_color=accent_override or _DEFAULT_ACCENT_RGB, bold=True)
+        + colored("  ›  private experimental federation", fg_color=header, bold=True)
     )
     return "\r\n".join([border, blank, welcome_line, tagline, blank, bottom_border, subtitle])
 

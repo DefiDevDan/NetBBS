@@ -143,6 +143,7 @@ async def edit_resource_draft(
     unicode_style: bool = False,
     collapsed: bool = False,
     accent_color: int = ACCENT_COLOR,
+    header_color: int | tuple[int, int, int] = HEADER_COLOR,
 ) -> Any | None:
     """
     Drives one draft-based create/edit screen: renders `title` plus
@@ -260,7 +261,7 @@ async def edit_resource_draft(
             "\r\n" + screen_title(
                 title,
             breadcrumb=(session.node_display_name,), subtitle=subtitle, width=session.terminal_width, clear=redraw_in_place,
-                unicode_style=unicode_style, collapsed=collapsed)
+                unicode_style=unicode_style, collapsed=collapsed, header_color=header_color)
         )
         preamble_text = preamble(draft) if callable(preamble) else preamble
         if preamble_text:
@@ -362,7 +363,7 @@ async def edit_resource_draft(
             await session.write("\a")
             continue
         if key.kind == EditorKeyKind.CTRL and key.char == "h":
-            await _show_field_help(session, fields, selected=selected)
+            await _show_field_help(session, fields, selected=selected, header_color=header_color)
             continue
         if key.kind == EditorKeyKind.CTRL and key.char == "c":
             # Issue #157: Ctrl-C as an incremental alias for [B]ack --
@@ -401,7 +402,7 @@ async def edit_resource_draft(
         # still handled here too, matching pre-#160 behavior exactly
         # for a session that can't decode arrows at all.
         if choice == HELP_KEY:
-            await _show_field_help(session, fields, selected=selected)
+            await _show_field_help(session, fields, selected=selected, header_color=header_color)
             continue
         if choice == back_hotkey or choice == CANCEL_KEY:
             await session.write_line("")
@@ -455,7 +456,10 @@ async def _read_navigable_key(session: Session) -> EditorKey:
     return EditorKey(EditorKeyKind.CHAR, char=raw)
 
 
-async def _show_field_help(session: Session, fields: list[FieldSpec], *, selected: int | None = None) -> None:
+async def _show_field_help(
+    session: Session, fields: list[FieldSpec], *, selected: int | None = None,
+    header_color: int | tuple[int, int, int] = HEADER_COLOR,
+) -> None:
     """Ctrl-H's own content (issue #150): every field with a `help`
     string authored, one after another.
 
@@ -471,23 +475,29 @@ async def _show_field_help(session: Session, fields: list[FieldSpec], *, selecte
     if selected is not None:
         field = fields[selected]
         if not field.help:
-            await show_help(session, "Field help", [f"No help is available for {field.label!r} yet."])
+            await show_help(
+                session, "Field help", [f"No help is available for {field.label!r} yet."],
+                header_color=header_color,
+            )
             return
         await show_help(
-            session, "Field help", [colored(field.label, fg_color=HEADER_COLOR, bold=True), f"  {field.help}"]
+            session, "Field help", [colored(field.label, fg_color=header_color, bold=True), f"  {field.help}"],
+            header_color=header_color,
         )
         return
 
     documented = [f for f in fields if f.help]
     if not documented:
-        await show_help(session, "Field help", ["No help is available for this screen yet."])
+        await show_help(
+            session, "Field help", ["No help is available for this screen yet."], header_color=header_color
+        )
         return
     lines: list[str] = []
     for f in documented:
-        lines.append(colored(f.label, fg_color=HEADER_COLOR, bold=True))
+        lines.append(colored(f.label, fg_color=header_color, bold=True))
         lines.append(f"  {f.help}")
         lines.append("")
-    await show_help(session, "Field help", lines[:-1])
+    await show_help(session, "Field help", lines[:-1], header_color=header_color)
 
 
 def text_field(key: str, *, required: bool = False) -> FieldPrompt:

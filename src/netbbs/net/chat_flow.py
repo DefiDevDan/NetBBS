@@ -143,7 +143,7 @@ from netbbs.messaging_preferences import accepts_direct_messages
 from netbbs.moderation import ChannelPermission, has_permission
 from netbbs.net.char_input import Completer, InputHistory, LiveInputBuffer, reject_unhandled_key
 from netbbs.net.char_input import move_cursor as relative_move_cursor
-from netbbs.net.node_theme import effective_accent_color_256
+from netbbs.net.node_theme import effective_accent_color_256, effective_header_color_256
 from netbbs.net.picker import pick_item
 from netbbs.net.redraw_preference import redraw_in_place_enabled
 from netbbs.net.breadcrumb_preference import breadcrumb_collapsed_enabled
@@ -2595,6 +2595,7 @@ def _render_chat_status_line(
     channel = get_channel_by_name(db, channel.name)
     channel_type = "INVITE" if channel.members_only else ("HIDDEN" if channel.hidden else "PUBLIC")
     accent = effective_accent_color_256(db)
+    header = effective_header_color_256(db)
 
     roster = _roster_usernames(hub, channel)
     online_count = hub.participant_count(channel.name)
@@ -2606,9 +2607,9 @@ def _render_chat_status_line(
             _StatusSpan(f"[{channel_type}]", fg_color=CHANNEL_TYPE_COLOR, bold=True),
         ],
         [
-            _StatusSpan(str(online_count), fg_color=HEADER_COLOR, bold=True),
+            _StatusSpan(str(online_count), fg_color=header, bold=True),
             _StatusSpan(" online (", fg_color=MUTED_COLOR),
-            _StatusSpan(str(away_count), fg_color=HEADER_COLOR, bold=True),
+            _StatusSpan(str(away_count), fg_color=header, bold=True),
             _StatusSpan(" away)", fg_color=MUTED_COLOR),
         ],
     ]
@@ -3227,6 +3228,7 @@ async def _chat_loop(
             width=session.terminal_width,
             clear=await lane.run(redraw_in_place_enabled, user),
             unicode_style=unicode_style, collapsed=collapsed,
+            header_color=await lane.run(effective_header_color_256),
         )
         await session.write_line(f"\r\n{heading}")
 
@@ -3991,6 +3993,7 @@ async def run_direct_chat_loop(
     unicode_style: bool = False,
     collapsed: bool = False,
     accent_color: int = ACCENT_COLOR,
+    header_color: int | tuple[int, int, int] = HEADER_COLOR,
 ) -> None:
     """
     Real-time 1:1 direct chat, until either side types `/close`, the
@@ -4060,6 +4063,7 @@ async def run_direct_chat_loop(
             width=session.terminal_width,
             clear=redraw_in_place,
             unicode_style=unicode_style, collapsed=collapsed,
+            header_color=header_color,
         )
         await session.write_line(f"\r\n{heading}")
         await session.write_line(f"Type {close_hint}.")
@@ -4260,6 +4264,7 @@ async def run_direct_chat_invite_flow(
         clear=await lane.run(redraw_in_place_enabled, user),
         unicode_style=await lane.run(unicode_style_enabled, user),
         collapsed=await lane.run(breadcrumb_collapsed_enabled, user),
+        header_color=await lane.run(effective_header_color_256),
     )
     await session.write_line(f"\r\n{heading}")
     await session.write(f"{menu_key('C', 'ancel')}: ")
@@ -4338,6 +4343,7 @@ async def run_direct_chat_invite_flow(
             unicode_style=await lane.run(unicode_style_enabled, user),
             collapsed=await lane.run(breadcrumb_collapsed_enabled, user),
             accent_color=await lane.run(effective_accent_color_256),
+            header_color=await lane.run(effective_header_color_256),
         )
     elif outcome == "declined":
         await session.write_line(colored(f"\r\n{sanitize_text(target.username)} declined.", fg_color=MUTED_COLOR))

@@ -23,12 +23,19 @@ from netbbs.net.session import Session
 from netbbs.rendering import HEADER_COLOR, MUTED_COLOR, colored
 
 
-async def show_help(session: Session, title: str, lines: list[str]) -> None:
+async def show_help(
+    session: Session, title: str, lines: list[str], *, header_color: int | tuple[int, int, int] = HEADER_COLOR
+) -> None:
     """Print a titled help block, then wait for any keystroke before
     returning. `lines` are written as-is (already-composed strings) --
     this function has no opinion on their content, only on presenting
-    and waiting."""
-    await session.write_line(colored(title, fg_color=HEADER_COLOR, bold=True))
+    and waiting.
+
+    `header_color` defaults to the bare `theme.HEADER_COLOR` constant,
+    same opt-in shape as `netbbs.rendering.layout.screen_title`'s own
+    (issue #162) -- a caller with `db` in scope threads through a
+    resolved `node_theme.effective_header_color_256(db)`."""
+    await session.write_line(colored(title, fg_color=header_color, bold=True))
     for line in lines:
         await session.write_line(line)
     await session.write_line(colored("Press any key to continue...", fg_color=MUTED_COLOR))

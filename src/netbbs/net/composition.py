@@ -307,7 +307,10 @@ _REVIEW_HELP: dict[str, tuple[str, str]] = {
 }
 
 
-async def _show_review_help(session: Session, *, field_order: tuple[str, ...], selected: str | None) -> None:
+async def _show_review_help(
+    session: Session, *, field_order: tuple[str, ...], selected: str | None,
+    header_color: int | tuple[int, int, int] = HEADER_COLOR,
+) -> None:
     """Same "narrow to the highlighted field if one is selected, else
     list everything" shape `netbbs.net.resource_editor._show_field_help`
     already establishes for `edit_resource_draft`'s own Ctrl-H.
@@ -317,16 +320,17 @@ async def _show_review_help(session: Session, *, field_order: tuple[str, ...], s
     if selected is not None:
         label, help_text = _REVIEW_HELP[selected]
         await show_help(
-            session, "Field help", [colored(label, fg_color=HEADER_COLOR, bold=True), f"  {help_text}"]
+            session, "Field help", [colored(label, fg_color=header_color, bold=True), f"  {help_text}"],
+            header_color=header_color,
         )
         return
     lines: list[str] = []
     for key in field_order:
         label, help_text = _REVIEW_HELP[key]
-        lines.append(colored(label, fg_color=HEADER_COLOR, bold=True))
+        lines.append(colored(label, fg_color=header_color, bold=True))
         lines.append(f"  {help_text}")
         lines.append("")
-    await show_help(session, "Field help", lines[:-1])
+    await show_help(session, "Field help", lines[:-1], header_color=header_color)
 
 
 async def review_composition(
@@ -343,6 +347,7 @@ async def review_composition(
     unicode_style: bool = False,
     collapsed: bool = False,
     accent_color: int = ACCENT_COLOR,
+    header_color: int | tuple[int, int, int] = HEADER_COLOR,
 ) -> ReviewAction:
     """Render a complete draft and return one explicit review action.
 
@@ -386,6 +391,7 @@ async def review_composition(
             width=session.terminal_width,
             clear=redraw_in_place,
             unicode_style=unicode_style, collapsed=collapsed,
+            header_color=header_color,
         )
         await session.write_line(f"\r\n{heading}")
         if recipient is not None:
@@ -443,7 +449,7 @@ async def review_composition(
             await session.write("\a")
             continue
         if key.kind == EditorKeyKind.CTRL and key.char == "h":
-            await _show_review_help(session, field_order=field_order, selected=selected)
+            await _show_review_help(session, field_order=field_order, selected=selected, header_color=header_color)
             await draw()
             continue
         if key.kind == EditorKeyKind.ENTER or (key.kind == EditorKeyKind.CHAR and key.char == " "):
@@ -458,7 +464,7 @@ async def review_composition(
                 # to plain `read_key()`) delivers Ctrl-H as an ordinary
                 # character, never as `EditorKeyKind.CTRL` -- same dual
                 # path `edit_resource_draft` itself handles.
-                await _show_review_help(session, field_order=field_order, selected=selected)
+                await _show_review_help(session, field_order=field_order, selected=selected, header_color=header_color)
                 await draw()
                 continue
             if choice in field_order:

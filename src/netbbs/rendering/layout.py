@@ -95,7 +95,9 @@ def status_badge(text: str, *, tone: str = "neutral", unicode_style: bool = Fals
     return colored(f"● {text}", fg_color=color, bold=True)
 
 
-def double_frame(lines: Sequence[str], *, width: int) -> str:
+def double_frame(
+    lines: Sequence[str], *, width: int, header_color: int | tuple[int, int, int] = HEADER_COLOR
+) -> str:
     """Frame already-styled `lines` in a double-line Unicode box (style
     spec: the double-line frame is NetBBS's one standard panel frame,
     not reserved to a single screen -- Thiesi's own call after the
@@ -105,20 +107,27 @@ def double_frame(lines: Sequence[str], *, width: int) -> str:
     truncating/wrapping their own content to fit first (this function
     doesn't call `cut_to_width` itself since a caller mixing plain and
     `colored()` text needs `visible_width`, not `len`, to measure it,
-    and only the caller knows which its lines are)."""
+    and only the caller knows which its lines are).
+
+    `header_color` (issue #162's own header-color sweep) defaults to
+    the bare `theme.HEADER_COLOR` constant -- every existing caller
+    renders byte-for-byte as before until it explicitly threads through
+    a resolved `node_theme.effective_header_color_256(db)`, the same
+    "safe local default, caller opts in" shape `screen_title`'s own
+    `unicode_style`/`collapsed` parameters already established."""
     if width < 4:
         raise ValueError("width must be >= 4 to fit a frame")
     inner_width = width - 4
-    top = colored("╔" + "═" * (width - 2) + "╗", fg_color=HEADER_COLOR, bold=True)
-    bottom = colored("╚" + "═" * (width - 2) + "╝", fg_color=HEADER_COLOR, bold=True)
+    top = colored("╔" + "═" * (width - 2) + "╗", fg_color=header_color, bold=True)
+    bottom = colored("╚" + "═" * (width - 2) + "╝", fg_color=header_color, bold=True)
     body = []
     for line in lines:
         pad = max(0, inner_width - visible_width(line))
         body.append(
-            colored("║ ", fg_color=HEADER_COLOR, bold=True)
+            colored("║ ", fg_color=header_color, bold=True)
             + line
             + " " * pad
-            + colored(" ║", fg_color=HEADER_COLOR, bold=True)
+            + colored(" ║", fg_color=header_color, bold=True)
         )
     return "\r\n".join([top, *body, bottom])
 
@@ -162,11 +171,15 @@ def empty_state(
     *,
     detail: str | None = None,
     width: int = 80,
+    header_color: int | tuple[int, int, int] = HEADER_COLOR,
 ) -> str:
-    """Render an intentional, compact state for a screen with no content."""
+    """Render an intentional, compact state for a screen with no content.
+
+    `header_color` defaults to the bare `theme.HEADER_COLOR` constant,
+    same opt-in shape as `screen_title`/`double_frame` (issue #162)."""
     if width < 1:
         raise ValueError("width must be >= 1")
-    lines = [colored(cut_to_width(title, width), fg_color=HEADER_COLOR, bold=True)]
+    lines = [colored(cut_to_width(title, width), fg_color=header_color, bold=True)]
     if detail:
         lines.append(colored(cut_to_width(detail, width), fg_color=METADATA_COLOR))
     return "\r\n".join(lines)
@@ -203,6 +216,7 @@ def screen_title(
     clear: bool = False,
     unicode_style: bool = False,
     collapsed: bool = False,
+    header_color: int | tuple[int, int, int] = HEADER_COLOR,
 ) -> str:
     """Render a compact location/title block with a divider.
 
@@ -272,18 +286,18 @@ def screen_title(
     show_collapsed = len(segments) > 1 and (collapsed or display_width(plain_location) > width)
     if show_collapsed:
         divider_basis = segments[-1]
-        location_line = colored(cut_to_width(segments[-1], width), fg_color=HEADER_COLOR, bold=True)
+        location_line = colored(cut_to_width(segments[-1], width), fg_color=header_color, bold=True)
     elif unicode_style and len(segments) > 1:
         divider_basis = plain_location
-        colored_segments: list[tuple[str, int | None]] = []
+        colored_segments: list[tuple[str, int | tuple[int, int, int] | None]] = []
         for segment in segments[:-1]:
             colored_segments.append((segment, METADATA_COLOR))
             colored_segments.append((" › ", METADATA_COLOR))
-        colored_segments.append((segments[-1], HEADER_COLOR))
+        colored_segments.append((segments[-1], header_color))
         location_line = colored_truncate(colored_segments, width, ellipsis="")
     else:
         divider_basis = plain_location
-        location_line = colored(cut_to_width(plain_location, width), fg_color=HEADER_COLOR, bold=True)
+        location_line = colored(cut_to_width(plain_location, width), fg_color=header_color, bold=True)
     lines = [location_line]
     divider_basis_width = display_width(divider_basis)
     if subtitle:

@@ -100,6 +100,7 @@ async def pick_item(
     unicode_style: bool = False,
     collapsed: bool = False,
     accent_color: int = ACCENT_COLOR,
+    header_color: int | tuple[int, int, int] = HEADER_COLOR,
 ) -> T | None:
     """
     Let the user browse/search/jump through `items` and pick one, or
@@ -264,7 +265,8 @@ async def pick_item(
                 subtitle=f"page {page_index + 1}/{total_pages}, {len(working_set)} total",
                 width=session.terminal_width,
                 clear=redraw_in_place,
-                unicode_style=unicode_style, collapsed=collapsed)
+                unicode_style=unicode_style, collapsed=collapsed,
+                header_color=header_color)
         )
         # Dogfood report: stable_id_of is an arbitrary, permanent
         # identifier (typically a DB id, see the module docstring) with
@@ -381,7 +383,9 @@ async def pick_item(
             continue
 
         if key.kind == EditorKeyKind.CTRL and key.char == "h":
-            await _show_picker_help(session, on_sort=on_sort, has_refresh=refresh is not None)
+            await _show_picker_help(
+                session, on_sort=on_sort, has_refresh=refresh is not None, header_color=header_color
+            )
             page_items = await _render()
             continue
 
@@ -660,7 +664,10 @@ async def _read_navigable_key(session: Session, *, distinguish_ctrl_h: bool = Fa
     return EditorKey(EditorKeyKind.CHAR, char=raw)
 
 
-async def _show_picker_help(session: Session, *, on_sort: Callable | None, has_refresh: bool) -> None:
+async def _show_picker_help(
+    session: Session, *, on_sort: Callable | None, has_refresh: bool,
+    header_color: int | tuple[int, int, int] = HEADER_COLOR,
+) -> None:
     """Ctrl-H's own content for this screen (dogfood feature request --
     the shared picker had no on-demand help at all, only the terse
     inline `brief` shown when menu descriptions are on). One shared
@@ -672,39 +679,39 @@ async def _show_picker_help(session: Session, *, on_sort: Callable | None, has_r
     row, with `[O]rder`/Ctrl-R included only when this caller actually
     offers them (matching `_nav_entries`' own conditional inclusion)."""
     lines = [
-        colored("Next / Prev", fg_color=HEADER_COLOR, bold=True),
+        colored("Next / Prev", fg_color=header_color, bold=True),
         "  Move one page forward/back through the list.",
         "",
-        colored("Up / Down / Enter", fg_color=HEADER_COLOR, bold=True),
+        colored("Up / Down / Enter", fg_color=header_color, bold=True),
         "  Move a highlight up or down one row, then Enter selects it -- a lighter-weight "
         "alternative to typing the 2-digit number below. Purely optional: nothing is "
         "highlighted until the first press.",
         "",
-        colored("A 2-digit number", fg_color=HEADER_COLOR, bold=True),
+        colored("A 2-digit number", fg_color=header_color, bold=True),
         "  Selects that item on the current page directly (e.g. '05') -- always exactly "
         "two digits, zero-padded.",
         "",
-        colored("Search", fg_color=HEADER_COLOR, bold=True),
+        colored("Search", fg_color=header_color, bold=True),
         "  Filters the list to items whose name contains the text you type. A single "
         "match jumps straight to it. Blank search clears back to the full list.",
         "",
-        colored("Goto #", fg_color=HEADER_COLOR, bold=True),
+        colored("Goto #", fg_color=header_color, bold=True),
         "  Jumps straight to a specific item by its permanent '(#N)' reference shown next "
         "to each entry -- works regardless of the current page, search filter, or sort "
         "order, unlike the 2-digit page-position number above.",
     ]
     if on_sort is not None:
-        lines += ["", colored("Order", fg_color=HEADER_COLOR, bold=True), "  Changes how this list is sorted."]
+        lines += ["", colored("Order", fg_color=header_color, bold=True), "  Changes how this list is sorted."]
     lines += [
-        "", colored("Back", fg_color=HEADER_COLOR, bold=True), "  Returns without picking anything.",
-        "", colored("Ctrl-L", fg_color=HEADER_COLOR, bold=True), "  Redraws the current page in place.",
+        "", colored("Back", fg_color=header_color, bold=True), "  Returns without picking anything.",
+        "", colored("Ctrl-L", fg_color=header_color, bold=True), "  Redraws the current page in place.",
     ]
     if has_refresh:
         lines += [
-            "", colored("Ctrl-R", fg_color=HEADER_COLOR, bold=True),
+            "", colored("Ctrl-R", fg_color=header_color, bold=True),
             "  Re-fetches the list from scratch and clears any active search.",
         ]
-    await show_help(session, "Navigation help", lines)
+    await show_help(session, "Navigation help", lines, header_color=header_color)
 
 
 def _search_completer(candidates: Sequence[str]) -> Completer:

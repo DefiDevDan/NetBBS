@@ -155,7 +155,13 @@ from netbbs.net.chat_flow import (
 )
 from netbbs.net.breadcrumb_preference import breadcrumb_collapsed_enabled, set_breadcrumb_collapsed_enabled
 from netbbs.net.color_depth_preference import color_depth_override, set_color_depth_override
-from netbbs.net.node_theme import effective_accent_color, effective_accent_color_256
+from netbbs.net.node_theme import (
+    effective_accent_color,
+    effective_accent_color_256,
+    effective_clock_color_256,
+    effective_header_color,
+    effective_header_color_256,
+)
 from netbbs.net.menu_description_preference import menu_description_level, set_menu_description_level
 from netbbs.net.redraw_preference import redraw_in_place_enabled, set_redraw_in_place_enabled
 from netbbs.net.unicode_style_preference import (
@@ -269,6 +275,7 @@ class LoginOutcome(Enum):
 
 async def _write_connection_notice(
     session: Session,
+    db: Database | None,
     title: str,
     detail: str,
     *,
@@ -281,8 +288,22 @@ async def _write_connection_notice(
     no account/preference to look up yet, and NetBBS's Telnet transport
     already sends every screen as UTF-8 regardless of any preference
     (see `unicode_style_preference`'s own docstring) -- the same
-    reasoning `welcome_banner`'s default banner already uses."""
+    reasoning `welcome_banner`'s default banner already uses. `db` is
+    read directly and synchronously here rather than via `lane.run`
+    (issue #162's header-color sweep) -- every call site is a
+    connection-lifecycle notice that fires before or around login, the
+    same pre-auth timing `welcome_banner._default_welcome_banner`
+    already reads `db` synchronously for.
+
+    `db` is `Database | None`, not required, specifically for
+    `handle_session`'s own maintenance-mode rejection: that check fires
+    before anything else in the function and is deliberately tested
+    (`test_shutdown.py`) to never dereference `db` at all, so a
+    maintenance rejection still works cleanly even if the db connection
+    itself is the thing in a bad state. `None` falls back to the bare
+    `theme.HEADER_COLOR` constant instead of resolving an override."""
     width = getattr(session, "terminal_width", 80)
+    header_color = effective_header_color_256(db) if db is not None else HEADER_COLOR
     await session.write_line(
         "\r\n"
         + screen_title(
@@ -290,6 +311,7 @@ async def _write_connection_notice(
             breadcrumb=(),
             width=width,
             unicode_style=True,
+            header_color=header_color,
         )
     )
     await session.write_line(status_badge(title.upper(), tone=tone, unicode_style=True))
@@ -396,7 +418,12 @@ async def handle_session(
         if shutdown_scheduler is not None and shutdown_scheduler.is_scheduled():
             remaining = shutdown_scheduler.remaining_seconds()
             detail = f"{detail} (going down in {format_remaining_seconds(remaining)})"
-        await _write_connection_notice(session, "Maintenance", detail)
+        # `db=None`, not the real `db` -- this is the very first thing
+        # this function does, deliberately never dereferencing `db` so
+        # a maintenance rejection still works even if the db connection
+        # itself is the thing in a bad state (test_shutdown.py exercises
+        # this with a non-`Database` sentinel in `db`'s place).
+        await _write_connection_notice(session, None, "Maintenance", detail)
         return
 
     node_controls = NodeControls(
@@ -485,7 +512,7 @@ async def _run_authenticated_session(
                 timeout=throttle_config.login_deadline_seconds,
             )
         except asyncio.TimeoutError:
-            await _write_connection_notice(session, "Session ended", "Login timed out. Goodbye.")
+            await _write_connection_notice(session, db, "Session ended", "Login timed out. Goodbye.")
             return
     finally:
         throttle.leave_unauthenticated()
@@ -493,17 +520,19 @@ async def _run_authenticated_session(
     if login_result is LoginOutcome.ATTEMPTS_EXHAUSTED:
         await _write_connection_notice(
             session,
+            db,
             "Sign-in failed",
             "Too many failed attempts. Goodbye.",
             tone="error",
         )
         return
     if login_result is LoginOutcome.IDLE_TIMEOUT:
-        await _write_connection_notice(session, "Session ended", "Timed out waiting for input. Goodbye.")
+        await _write_connection_notice(session, db, "Session ended", "Timed out waiting for input. Goodbye.")
         return
     if login_result is LoginOutcome.THROTTLED:
         await _write_connection_notice(
             session,
+            db,
             "Please wait",
             "Too many login attempts. Please try again later.",
             tone="error",
@@ -602,7 +631,8 @@ async def _confirm_unicode_style(session: Session, db: Database, user: User) -> 
     )
     await session.write_line(
         screen_title(
-            "Example", breadcrumb=(session.node_display_name, "System"), width=session.terminal_width, unicode_style=True
+            "Example", breadcrumb=(session.node_display_name, "System"), width=session.terminal_width,
+            unicode_style=True, header_color=effective_header_color_256(db),
         ).split("\r\n")[0]
     )
     switch_off = await prompt_yes_no(
@@ -804,7 +834,7 @@ async def run_authenticated_session(
             except asyncio.CancelledError:
                 pass
 
-    await _write_connection_notice(session, "Signed out", "Goodbye!", tone="success")
+    await _write_connection_notice(session, db, "Signed out", "Goodbye!", tone="success")
 
 
 async def _authorize_ssh_authenticated_user(
@@ -834,6 +864,7 @@ async def _authorize_ssh_authenticated_user(
     except AuthError:
         await _write_connection_notice(
             session,
+            db,
             "Access unavailable",
             "Your account is no longer available. Goodbye.",
             tone="error",
@@ -842,6 +873,7 @@ async def _authorize_ssh_authenticated_user(
     if user.disabled_at is not None:
         await _write_connection_notice(
             session,
+            db,
             "Access unavailable",
             "Your account is no longer available. Goodbye.",
             tone="error",
@@ -850,6 +882,7 @@ async def _authorize_ssh_authenticated_user(
     if is_blocked(db, user):
         await _write_connection_notice(
             session,
+            db,
             "Access revoked",
             "Your access to this system has been revoked.",
             tone="error",
@@ -911,7 +944,12 @@ async def handle_ssh_session(
         if shutdown_scheduler is not None and shutdown_scheduler.is_scheduled():
             remaining = shutdown_scheduler.remaining_seconds()
             detail = f"{detail} (going down in {format_remaining_seconds(remaining)})"
-        await _write_connection_notice(session, "Maintenance", detail)
+        # `db=None`, not the real `db` -- this is the very first thing
+        # this function does, deliberately never dereferencing `db` so
+        # a maintenance rejection still works even if the db connection
+        # itself is the thing in a bad state (test_shutdown.py exercises
+        # this with a non-`Database` sentinel in `db`'s place).
+        await _write_connection_notice(session, None, "Maintenance", detail)
         return
 
     node_controls = NodeControls(
@@ -934,6 +972,7 @@ async def handle_ssh_session(
             # blindly.
             await _write_connection_notice(
                 session,
+                db,
                 "SSH sign-in failed",
                 "SSH authentication did not complete. Goodbye.",
                 tone="error",
@@ -994,7 +1033,7 @@ async def _show_pending_invitations(session: Session, db: Database, user: User) 
     unchanged by this issue), so this is purely informational, telling
     the invitee what to type and where."""
     pending = list_pending_invitations_for_user(db, user)
-    header = colored("Pending invitations:", fg_color=HEADER_COLOR, bold=True)
+    header = colored("Pending invitations:", fg_color=effective_header_color(session, db), bold=True)
     await session.write_line(f"\r\n{header}")
     if not pending:
         await session.write_line("You have no pending chat channel invitations.")
@@ -1207,7 +1246,8 @@ async def _draw_main_menu(
         # clear_screen() to its own returned text, so the redraw-in-place
         # clear is issued by hand below instead in that case (issue #161).
         clear=False if masthead else redraw,
-        unicode_style=unicode_style, collapsed=collapsed)
+        unicode_style=unicode_style, collapsed=collapsed,
+        header_color=effective_header_color(session, db))
     options = menu_grid(
         [("Explore", explore_options), ("You", personal_options), ("System", system_options)],
         width=session.terminal_width,
@@ -1257,8 +1297,9 @@ def _main_menu_prompt(db: Database, user: User, node_controls: NodeControls | No
     time_only = format_for_display(utc_now_iso(), db, override_format="%H:%M:%S")
     hours, minutes, seconds = time_only.split(":")
     separator = colored(":", fg_color=MUTED_COLOR)
+    clock_color = effective_clock_color_256(db)
     time_str = separator.join(
-        colored(part, fg_color=CLOCK_COLOR) for part in (hours, minutes, seconds)
+        colored(part, fg_color=clock_color) for part in (hours, minutes, seconds)
     )
     tags: list[str] = []
     if node_controls.shutdown_scheduler.is_scheduled():
@@ -1571,6 +1612,7 @@ async def _handle_incoming_invite(
             unicode_style=unicode_style_enabled(db, user),
             collapsed=breadcrumb_collapsed_enabled(db, user),
             accent_color=effective_accent_color_256(db),
+            header_color=effective_header_color_256(db),
         )
     else:
         await session.write_line(colored("Declined.", fg_color=MUTED_COLOR))
@@ -1675,7 +1717,7 @@ async def _new_scan_screen(
 
     items, replies, boards_by_id = await lane.run(_load)
 
-    await session.write_line(colored("\r\nNew scan:", fg_color=HEADER_COLOR, bold=True))
+    await session.write_line(colored("\r\nNew scan:", fg_color=effective_header_color(session, db), bold=True))
     if replies:
         await session.write_line(f"Replies to you: {len(replies)}")
         for reply in replies[:10]:
@@ -1708,6 +1750,7 @@ async def _new_scan_screen(
         unicode_style=unicode_style_enabled(db, user),
         collapsed=breadcrumb_collapsed_enabled(db, user),
         accent_color=effective_accent_color(session, db),
+        header_color=effective_header_color(session, db),
     )
     if selected is None:
         return
@@ -1847,7 +1890,8 @@ async def _find_screen(
             subtitle="Find posts, files, and retained chat on this node.",
             width=session.terminal_width,
             clear=redraw_in_place_enabled(db, user),
-            unicode_style=unicode_style_enabled(db, user), collapsed=breadcrumb_collapsed_enabled(db, user))
+            unicode_style=unicode_style_enabled(db, user), collapsed=breadcrumb_collapsed_enabled(db, user),
+            header_color=effective_header_color_256(db))
     )
     await session.write("Search terms (Enter cancels): ")
     query = (await session.read_line()).strip()
@@ -1947,6 +1991,7 @@ async def _find_screen(
             unicode_style=unicode_style_enabled(db, user),
             collapsed=breadcrumb_collapsed_enabled(db, user),
             accent_color=effective_accent_color(session, db),
+            header_color=effective_header_color(session, db),
         )
         if selected is None:
             return
@@ -2035,6 +2080,7 @@ async def _login(
             # `unicode_style_preference`'s own docstring), same reasoning
             # `_write_connection_notice` and the welcome banner both use.
             unicode_style=True,
+            header_color=effective_header_color_256(db),
         )
     )
     prompt = colored("Username: ", fg_color=LABEL_COLOR, bold=True)
@@ -2208,6 +2254,7 @@ async def _register_new_account(
                 ),
                 width=session.terminal_width,
                 unicode_style=True,  # pre-authentication -- see _write_connection_notice
+                header_color=effective_header_color_256(db),
             )
         )
         try:
@@ -2417,6 +2464,7 @@ async def _resource_type_menu(
             width=session.terminal_width,
             clear=redraw_in_place,
             unicode_style=unicode_style, collapsed=collapsed,
+            header_color=effective_header_color_256(db),
         )
         await session.write_line(f"\r\n{heading}")
         await session.write_line(
@@ -2500,6 +2548,7 @@ async def _enter_communities(
         unicode_style=unicode_style_enabled(db, user),
         collapsed=breadcrumb_collapsed_enabled(db, user),
         accent_color=effective_accent_color(session, db),
+        header_color=effective_header_color(session, db),
     )
     if selected is None:
         return
@@ -2724,6 +2773,7 @@ async def _browse_boards_in_category(
     collapsed = breadcrumb_collapsed_enabled(db, user)
     redraw_in_place = redraw_in_place_enabled(db, user)
     accent_color = effective_accent_color(session, db)
+    header_color = effective_header_color(session, db)
     title = "Message boards" if title_prefix is not None else "Available message boards"
     picker_breadcrumb = (title_prefix,) if title_prefix is not None else ()
 
@@ -2751,6 +2801,7 @@ async def _browse_boards_in_category(
             unicode_style=unicode_style,
             collapsed=collapsed,
             accent_color=accent_color,
+            header_color=header_color,
         )
         if board is not None:
             await _show_board(session, db, board, user, link_context=link_context)
@@ -2792,6 +2843,7 @@ async def _browse_boards_in_category(
         unicode_style=unicode_style,
         collapsed=collapsed,
         accent_color=accent_color,
+        header_color=header_color,
     )
     if selected is None:
         return
@@ -2918,6 +2970,7 @@ async def _show_board(
     unicode_style = unicode_style_enabled(db, user)
     collapsed = breadcrumb_collapsed_enabled(db, user)
     accent_color = effective_accent_color(session, db)
+    header_color = effective_header_color(session, db)
 
     def _refetch_current_page() -> PostPage:
         """Re-fetches whichever page is currently on screen, using the
@@ -2994,6 +3047,7 @@ async def _show_board(
                 unicode_style=unicode_style,
                 collapsed=collapsed,
                 accent_color=accent_color,
+                header_color=header_color,
             )
             if action is ReviewAction.CANCEL:
                 await session.write_line(colored("Post cancelled.", fg_color=MUTED_COLOR))
@@ -3099,11 +3153,12 @@ async def _show_board(
         # extended to this one. Still skips the full Older/Newer/Edit
         # navigation loop (nothing to browse either way), but offers the
         # same explicit choice before composing anything.
+        header_color = effective_header_color_256(db)
         await session.write_line(
-            f"\r\n{screen_title(board_name, breadcrumb=(session.node_display_name, 'Message boards'), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)}"
+            f"\r\n{screen_title(board_name, breadcrumb=(session.node_display_name, 'Message boards'), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color)}"
         )
         await session.write_line(
-            f"\r\n{empty_state('This message board has no posts yet', detail='It is ready for its first conversation.', width=session.terminal_width)}"
+            f"\r\n{empty_state('This message board has no posts yet', detail='It is ready for its first conversation.', width=session.terminal_width, header_color=header_color)}"
         )
         if not can_post:
             return
@@ -3396,6 +3451,7 @@ async def _render_post_page(
         width=session.terminal_width,
         clear=redraw_in_place,
         unicode_style=unicode_style, collapsed=collapsed,
+        header_color=effective_header_color(session, db),
     )
     await session.write_line(f"\r\n{header}")
     accent = effective_accent_color(session, db)
@@ -3471,6 +3527,7 @@ async def _browse_directory(session: Session, db: Database, user: User) -> None:
             unicode_style=unicode_style_enabled(db, user),
             collapsed=breadcrumb_collapsed_enabled(db, user),
             accent_color=effective_accent_color(session, db),
+            header_color=effective_header_color(session, db),
         )
         if selected is None:
             return
@@ -3511,13 +3568,14 @@ async def _show_vcard(session: Session, db: Database, target: User, requesting_u
             clear=redraw_in_place_enabled(db, requesting_user),
             unicode_style=unicode_style_enabled(db, requesting_user),
             collapsed=breadcrumb_collapsed_enabled(db, requesting_user),
+            header_color=effective_header_color(session, db),
         )
     )
     await session.write_line(
         colored("Member since: ", fg_color=LABEL_COLOR)
         + colored(when, fg_color=METADATA_COLOR)
     )
-    await session.write_line(colored("Bio", fg_color=HEADER_COLOR, bold=True))
+    await session.write_line(colored("Bio", fg_color=effective_header_color(session, db), bold=True))
     if vcard.bio is not None:
         bio = reflow(sanitize_text(vcard.bio, allow_newlines=True), width=session.terminal_width)
         await session.write_line(
@@ -3654,6 +3712,7 @@ async def _caller_who_screen(
         unicode_style=unicode_style_enabled(db, user),
         collapsed=breadcrumb_collapsed_enabled(db, user),
         accent_color=effective_accent_color(session, db),
+        header_color=effective_header_color(session, db),
     )
     if selected is None:
         return
@@ -3691,6 +3750,7 @@ async def _caller_who_screen(
             clear=redraw_in_place_enabled(db, user),
             unicode_style=unicode_style_enabled(db, user),
             collapsed=breadcrumb_collapsed_enabled(db, user),
+            header_color=effective_header_color(session, db),
         )
     )
     options = [MenuEntry(label=menu_key("M", "essage"), brief="Send a one-off message")]
@@ -3817,6 +3877,7 @@ async def _last_sessions_screen(session: Session, db: Database, user: User) -> N
             clear=redraw_in_place_enabled(db, user),
             unicode_style=unicode_style_enabled(db, user),
             collapsed=breadcrumb_collapsed_enabled(db, user),
+            header_color=effective_header_color(session, db),
         )
     )
     if not entries:
@@ -3926,6 +3987,7 @@ async def _sort_preferences_screen(session: Session, lane: DatabaseLane, user: U
             unicode_style=await lane.run(unicode_style_enabled, user),
             collapsed=await lane.run(breadcrumb_collapsed_enabled, user),
             accent_color=await lane.run(effective_accent_color_256),
+            header_color=await lane.run(effective_header_color_256),
         )
         if selected is None:
             return
@@ -3978,6 +4040,7 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
     unicode_style = await lane.run(unicode_style_enabled, user)
     collapsed = await lane.run(breadcrumb_collapsed_enabled, user)
     accent_color = await lane.run(effective_accent_color_256)
+    header_color = await lane.run(effective_header_color_256)
 
     draft: Draft = {
         "bio": await lane.run(get_bio, user) or "",
@@ -4268,6 +4331,7 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
         unicode_style=unicode_style,
         collapsed=collapsed,
         accent_color=accent_color,
+        header_color=header_color,
     )
 
 
@@ -4406,6 +4470,7 @@ async def _identity_details_screen(session: Session, lane: DatabaseLane, user: U
     unicode_style = await lane.run(unicode_style_enabled, user)
     collapsed = await lane.run(breadcrumb_collapsed_enabled, user)
     accent = await lane.run(effective_accent_color_256)
+    header = await lane.run(effective_header_color_256)
 
     draft: Draft = {
         "display_name": await lane.run(get_display_name, user),
@@ -4586,6 +4651,7 @@ async def _identity_details_screen(session: Session, lane: DatabaseLane, user: U
         unicode_style=unicode_style,
         collapsed=collapsed,
         accent_color=accent,
+        header_color=header,
     )
 
 
@@ -4642,6 +4708,7 @@ async def _verify_identity_menu(session: Session, db: Database, verifier: User) 
         unicode_style=unicode_style_enabled(db, verifier),
         collapsed=breadcrumb_collapsed_enabled(db, verifier),
         accent_color=effective_accent_color(session, db),
+        header_color=effective_header_color(session, db),
     )
     if selected is not None:
         await _verify_user(session, db, verifier, selected)
@@ -4658,7 +4725,7 @@ def _verification_status_description(db: Database, user: User) -> str:
 
 async def _verify_user(session: Session, db: Database, verifier: User, subject: User) -> None:
     await session.write_line(
-        colored(f"\r\nVerifying {sanitize_text(subject.username)!r}:", fg_color=HEADER_COLOR, bold=True)
+        colored(f"\r\nVerifying {sanitize_text(subject.username)!r}:", fg_color=effective_header_color(session, db), bold=True)
     )
 
     self_birthdate = get_birthdate(db, subject)
