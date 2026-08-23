@@ -118,8 +118,8 @@ def test_single_key_confirmation_rejects_invalid_input_and_ends_its_row():
     output = asyncio.run(scenario())
     assert results == [True, False]
     assert output == (
-        b"Confirm? [y/\x1b[1m\x1b[38;5;46mN\x1b[0m]: \x07Y\r\n"
-        b"Again? [\x1b[1m\x1b[38;5;46mY\x1b[0m/n]: N\r\nNEXT\r\n"
+        b"Confirm? \x1b[1m\x1b[38;5;46m[\x1b[0my/\x1b[1m\x1b[38;5;46mN\x1b[0m\x1b[1m\x1b[38;5;46m]\x1b[0m: \x07Y\r\n"
+        b"Again? \x1b[1m\x1b[38;5;46m[\x1b[0m\x1b[1m\x1b[38;5;46mY\x1b[0m/n\x1b[1m\x1b[38;5;46m]\x1b[0m: N\r\nNEXT\r\n"
     )
 
 

@@ -24,6 +24,14 @@ def _highlighted(letter: str) -> str:
     return colored(letter, fg_color=MENU_KEY_COLOR, bold=True)
 
 
+# Dogfood request: the surrounding "[" "]" are colored the same as the
+# highlighted letter they hold -- the bracket pair itself is what marks
+# "a keystroke is expected here" at a glance, not just the one letter
+# inside it, matching the "stand out more" ask directly.
+_BRACKET_OPEN = colored("[", fg_color=MENU_KEY_COLOR, bold=True)
+_BRACKET_CLOSE = colored("]", fg_color=MENU_KEY_COLOR, bold=True)
+
+
 async def read_confirmation_choice(session: Session) -> bool | None:
     """Read one valid confirmation choice.
 
@@ -82,7 +90,7 @@ async def prompt_yes_no(session: Session, prompt: str, *, default: bool) -> bool
     they can never silently choose the default.
     """
     hint = f"{_highlighted('Y')}/n" if default else f"y/{_highlighted('N')}"
-    await session.write(f"{prompt} [{hint}]: ")
+    await session.write(f"{prompt} {_BRACKET_OPEN}{hint}{_BRACKET_CLOSE}: ")
     answer = await read_confirmation_choice(session)
     return default if answer is None else answer
 
@@ -98,6 +106,6 @@ async def prompt_yes_no_or_keep(session: Session, prompt: str, *, current: bool)
     keypress; Enter keeps the current value.
     """
     hint = _highlighted("y" if current else "N")
-    await session.write(f"{prompt} [{hint}]: ")
+    await session.write(f"{prompt} {_BRACKET_OPEN}{hint}{_BRACKET_CLOSE}: ")
     answer = await read_confirmation_choice(session)
     return current if answer is None else answer
