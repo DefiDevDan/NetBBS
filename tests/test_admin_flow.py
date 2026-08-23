@@ -3346,7 +3346,9 @@ def test_gallery_selecting_a_preset_previews_its_decoded_content_before_applying
     from netbbs.net.welcome_banner import is_welcome_banner_enabled
 
     # item 01 on the picker's first page -- Synthwave / Magenta-Cyan Neon Grid.
-    session = FakeSession(["s", "w", "g", "0", "1", "n", "b", "b", "b"])
+    # Declining loops back into the gallery's own picker (dogfood fix),
+    # so exiting cleanly needs one extra "b" beyond the usual 3.
+    session = FakeSession(["s", "w", "g", "0", "1", "n", "b", "b", "b", "b"])
     _run(session, lane, sysop)
     text = _written_text(session)
     assert "Previewing 'Synthwave / Magenta-Cyan Neon Grid':" in text
@@ -3379,6 +3381,26 @@ def test_gallery_back_without_selecting_leaves_the_banner_untouched(db, lane, sy
     session = FakeSession(["s", "w", "g", "b", "b", "b", "b"])
     _run(session, lane, sysop)
     assert is_welcome_banner_enabled(db) is False
+
+
+def test_gallery_declining_a_preset_returns_to_the_same_gallery_to_try_another(db, lane, sysop):
+    """Dogfood follow-up: declining used to exit all the way back to the
+    welcome-banner menu, forcing a SysOp to press [G]allery again just
+    to look at the next sample. Confirms browsing several presets in
+    one visit -- decline #01, then apply #03 -- works without
+    re-entering the gallery in between."""
+    from netbbs.net.banner_presets import WELCOME_BANNER_PRESETS, load_welcome_banner_preset
+    from netbbs.net.welcome_banner import banner_path, is_welcome_banner_enabled
+
+    session = FakeSession(["s", "w", "g", "0", "1", "n", "0", "3", "y", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "Previewing 'Synthwave / Magenta-Cyan Neon Grid':" in text
+    assert "Not applied." in text
+    assert "Previewing 'Cyberpunk Megacity / Sunset Amber-Gold':" in text
+    assert "Applied and enabled." in text
+    assert is_welcome_banner_enabled(db) is True
+    assert banner_path(db).read_bytes() == load_welcome_banner_preset(WELCOME_BANNER_PRESETS[2])
 
 
 # -- main-menu masthead (issue #161) ---------------------------------------
@@ -3541,7 +3563,9 @@ def test_masthead_gallery_applying_a_preset_writes_its_bytes_and_enables_the_mas
 def test_masthead_gallery_declining_the_apply_prompt_leaves_the_masthead_disabled(db, lane, sysop):
     from netbbs.net.main_menu_banner import is_main_menu_banner_enabled
 
-    session = FakeSession(["s", "m", "g", "0", "1", "n", "b", "b", "b"])
+    # Declining loops back into the gallery's own picker (dogfood fix),
+    # so exiting cleanly needs one extra "b" beyond the usual 3.
+    session = FakeSession(["s", "m", "g", "0", "1", "n", "b", "b", "b", "b"])
     _run(session, lane, sysop)
     assert "Not applied." in _written_text(session)
     assert is_main_menu_banner_enabled(db) is False
