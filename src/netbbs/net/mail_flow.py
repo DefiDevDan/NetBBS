@@ -65,12 +65,12 @@ from netbbs.net.menu_description_preference import menu_description_level
 from netbbs.net.redraw_preference import redraw_in_place_enabled
 from netbbs.net.breadcrumb_preference import breadcrumb_collapsed_enabled
 from netbbs.net.unicode_style_preference import unicode_style_enabled
+from netbbs.net.node_theme import effective_accent_color_256
 from netbbs.net.picker import pick_item
 from netbbs.net.prose_editor import edit_prose
 from netbbs.net.session import Session
 from netbbs.signature import append_signature, get_signature
 from netbbs.rendering import (
-    ACCENT_COLOR,
     ERROR_COLOR,
     LABEL_COLOR,
     METADATA_COLOR,
@@ -204,6 +204,7 @@ async def _show_inbox(session: Session, lane: DatabaseLane, user: User) -> None:
             redraw_in_place=redraw_in_place,
             unicode_style=unicode_style,
             collapsed=collapsed,
+            accent_color=await lane.run(effective_accent_color_256),
         )
         if message is None:
             return
@@ -248,6 +249,7 @@ async def _show_sent(session: Session, lane: DatabaseLane, user: User) -> None:
             redraw_in_place=redraw_in_place,
             unicode_style=unicode_style,
             collapsed=collapsed,
+            accent_color=await lane.run(effective_accent_color_256),
         )
         if message is None:
             return
@@ -273,15 +275,16 @@ async def _render_message(
         unicode_style=unicode_style, collapsed=collapsed,
     )
     await session.write_line(f"\r\n{header}")
+    accent = await lane.run(effective_accent_color_256)
     if to_label is not None:
         await session.write_line(
             colored("To: ", fg_color=LABEL_COLOR)
-            + colored(sanitize_text(to_label), fg_color=ACCENT_COLOR)
+            + colored(sanitize_text(to_label), fg_color=accent)
         )
     else:
         await session.write_line(
             colored("From: ", fg_color=LABEL_COLOR)
-            + colored(sanitize_text(message.sender_label), fg_color=ACCENT_COLOR)
+            + colored(sanitize_text(message.sender_label), fg_color=accent)
         )
     display_format, display_timezone = await lane.run(resolve_display_preferences)
     displayed_date = format_for_display(
@@ -468,6 +471,7 @@ async def _compose_mail(
     review_redraw_in_place = await lane.run(redraw_in_place_enabled, user)
     review_unicode_style = await lane.run(unicode_style_enabled, user)
     review_collapsed = await lane.run(breadcrumb_collapsed_enabled, user)
+    review_accent_color = await lane.run(effective_accent_color_256)
     while True:
         action = await review_composition(
             session,
@@ -481,6 +485,7 @@ async def _compose_mail(
             redraw_in_place=review_redraw_in_place,
             unicode_style=review_unicode_style,
             collapsed=review_collapsed,
+            accent_color=review_accent_color,
         )
         if action is ReviewAction.CANCEL:
             await session.write_line(colored("Message cancelled.", fg_color=MUTED_COLOR))

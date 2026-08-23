@@ -142,6 +142,7 @@ async def edit_resource_draft(
     preamble: str | Callable[[Draft], str] | None = None,
     unicode_style: bool = False,
     collapsed: bool = False,
+    accent_color: int = ACCENT_COLOR,
 ) -> Any | None:
     """
     Drives one draft-based create/edit screen: renders `title` plus
@@ -271,7 +272,7 @@ async def edit_resource_draft(
             # label text, splitting what should read as one contiguous
             # highlighted run.
             prefix = (
-                colored(f"> {f.label}", fg_color=ACCENT_COLOR, bold=True)
+                colored(f"> {f.label}", fg_color=accent_color, bold=True)
                 if i == selected
                 else colored(f"  {f.label}", fg_color=LABEL_COLOR)
             )

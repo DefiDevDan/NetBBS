@@ -123,7 +123,7 @@ def double_frame(lines: Sequence[str], *, width: int) -> str:
     return "\r\n".join([top, *body, bottom])
 
 
-def field_row(fields: Sequence[tuple[str, int | None]], *, unicode_style: bool) -> str:
+def field_row(fields: Sequence[tuple[str, int | tuple[int, int, int] | None]], *, unicode_style: bool) -> str:
     """Join a row of independent facts (style spec: "use color to
     separate different fields on the same row" -- Thiesi's own
     follow-up request after the pre-5.0.0 "beautify" audit) with the
@@ -132,7 +132,10 @@ def field_row(fields: Sequence[tuple[str, int | None]], *, unicode_style: bool) 
     it's off -- so a multi-field status line (a session subtitle, a
     console summary row) reads as separate colored facts instead of one
     flat-gray sentence. Each field is `(text, color)`; `color=None`
-    keeps the existing muted-gray convention for that one field."""
+    keeps the existing muted-gray convention for that one field. `color`
+    also accepts a truecolor `(r, g, b)` triple (issue #162's node-wide
+    accent-color override, e.g. the main menu's own username field), the
+    same `colored()` already does -- passed straight through."""
     separator = colored(" › ", fg_color=METADATA_COLOR) if unicode_style else "  /  "
     return separator.join(
         colored(text, fg_color=color if color is not None else METADATA_COLOR) for text, color in fields

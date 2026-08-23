@@ -48,6 +48,7 @@ from netbbs.moderation.log import record_action
 from netbbs.net.admin_flow import admin_menu
 from netbbs.net.local_cli import LocalCLISession
 from netbbs.net.local_terminal import raw_terminal
+from netbbs.net.node_theme import effective_accent_color_256
 from netbbs.net.picker import pick_item
 from netbbs.net.session import Session
 from netbbs.storage.database import Database
@@ -96,6 +97,7 @@ async def _resolve_actor(session: Session, lane: DatabaseLane, as_username: str 
         stable_id_of=lambda u: u.id,
         title="Attribute this session to which SysOp?",
         empty_message="No SysOp accounts.",
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if selected is None:
         raise SystemExit("no SysOp selected -- exiting")

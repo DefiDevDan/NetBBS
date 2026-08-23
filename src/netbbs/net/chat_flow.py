@@ -143,6 +143,7 @@ from netbbs.messaging_preferences import accepts_direct_messages
 from netbbs.moderation import ChannelPermission, has_permission
 from netbbs.net.char_input import Completer, InputHistory, LiveInputBuffer, reject_unhandled_key
 from netbbs.net.char_input import move_cursor as relative_move_cursor
+from netbbs.net.node_theme import effective_accent_color_256
 from netbbs.net.picker import pick_item
 from netbbs.net.redraw_preference import redraw_in_place_enabled
 from netbbs.net.breadcrumb_preference import breadcrumb_collapsed_enabled
@@ -538,6 +539,7 @@ async def _pick_channel(
             redraw_in_place=redraw_in_place,
             unicode_style=unicode_style,
             collapsed=collapsed,
+            accent_color=await lane.run(effective_accent_color_256),
         )
 
     mixed: list[Category | Channel] = [*categories_here, *channels_here]
@@ -575,6 +577,7 @@ async def _pick_channel(
         redraw_in_place=redraw_in_place,
         unicode_style=unicode_style,
         collapsed=collapsed,
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if selected is None:
         return None
@@ -842,7 +845,7 @@ def _render_channel_message(
             bullet, author_label, f" {sanitize_text(message.body)}", fg_color=MUTED_COLOR
         )
     else:  # "message"
-        color = SELF_COLOR if self_message else ACCENT_COLOR
+        color = SELF_COLOR if self_message else effective_accent_color_256(db)
         label = _colored_around("<", author_label, ">", fg_color=color, bold=self_message)
         line = f"{label} {sanitize_text(message.body)}"
     return format_with_preference(db, viewer, line, message.created_at)
@@ -1651,8 +1654,9 @@ async def _write_vcard_detail(session: Session, lane: DatabaseLane, vcard: VCard
     `await session.write_line(...)` call, same split as
     `_resolve_target`."""
     display_format, display_timezone = await lane.run(resolve_display_preferences)
+    accent = await lane.run(effective_accent_color_256)
     when = format_for_display(vcard.created_at, override_format=display_format, override_timezone=display_timezone)
-    await session.write_line(colored(f"\r\n{sanitize_text(vcard.username)}", fg_color=ACCENT_COLOR, bold=True))
+    await session.write_line(colored(f"\r\n{sanitize_text(vcard.username)}", fg_color=accent, bold=True))
     await session.write_line(f"Member since: {when}")
     if vcard.bio is not None:
         # Dogfood follow-up: this used to write the sanitized bio
@@ -2518,7 +2522,7 @@ _STATUS_SEPARATOR = " | "
 _CHANNEL_NAME_DISPLAY_LIMIT = 24
 
 
-def _channel_name_spans(name: str) -> list[_StatusSpan]:
+def _channel_name_spans(name: str, *, accent: int) -> list[_StatusSpan]:
     """The channel-name portion of the status line's channel group,
     truncating a name over `_CHANNEL_NAME_DISPLAY_LIMIT` and marking the
     cut with a separately `MUTED_COLOR`-ed "..." -- the same "this is
@@ -2529,9 +2533,9 @@ def _channel_name_spans(name: str) -> list[_StatusSpan]:
     dots someone typed into the channel's actual name."""
     sanitized = sanitize_text(name)
     if len(sanitized) <= _CHANNEL_NAME_DISPLAY_LIMIT:
-        return [_StatusSpan(f"#{sanitized}", fg_color=ACCENT_COLOR, bold=True)]
+        return [_StatusSpan(f"#{sanitized}", fg_color=accent, bold=True)]
     return [
-        _StatusSpan(f"#{sanitized[:_CHANNEL_NAME_DISPLAY_LIMIT]}", fg_color=ACCENT_COLOR, bold=True),
+        _StatusSpan(f"#{sanitized[:_CHANNEL_NAME_DISPLAY_LIMIT]}", fg_color=accent, bold=True),
         _StatusSpan("...", fg_color=MUTED_COLOR),
     ]
 
@@ -2590,6 +2594,7 @@ def _render_chat_status_line(
     """
     channel = get_channel_by_name(db, channel.name)
     channel_type = "INVITE" if channel.members_only else ("HIDDEN" if channel.hidden else "PUBLIC")
+    accent = effective_accent_color_256(db)
 
     roster = _roster_usernames(hub, channel)
     online_count = hub.participant_count(channel.name)
@@ -2597,7 +2602,7 @@ def _render_chat_status_line(
 
     groups: list[_StatusGroup] = [
         [
-            *_channel_name_spans(channel.name),
+            *_channel_name_spans(channel.name, accent=accent),
             _StatusSpan(f"[{channel_type}]", fg_color=CHANNEL_TYPE_COLOR, bold=True),
         ],
         [
@@ -3210,7 +3215,7 @@ async def _chat_loop(
             await session.write(clear_screen() + set_scroll_region(1, session.terminal_height - 2))
 
         safe_channel_name = sanitize_text(channel.name)
-        channel_label = colored(f"#{safe_channel_name}", fg_color=ACCENT_COLOR, bold=True)
+        channel_label = colored(f"#{safe_channel_name}", fg_color=await lane.run(effective_accent_color_256), bold=True)
         quit_hint = menu_key("/quit", " to leave")
 
         unicode_style = await lane.run(unicode_style_enabled, user)
@@ -3863,7 +3868,9 @@ class _DirectChatClosedNotice:
     broadcast) -- `ChatHub.broadcast` to an empty channel is a no-op."""
 
 
-def _render_direct_chat_status_line(other_user: User, presence: PresenceRegistry) -> list[_StatusGroup]:
+def _render_direct_chat_status_line(
+    other_user: User, presence: PresenceRegistry, *, accent: int = ACCENT_COLOR
+) -> list[_StatusGroup]:
     """The direct-chat pinned status row's content -- deliberately far
     smaller than `_render_chat_status_line`: no topic, no roster, no
     moderator privileges/mute state, none of which mean anything for
@@ -3882,7 +3889,7 @@ def _render_direct_chat_status_line(other_user: User, presence: PresenceRegistry
         ],
         [
             _StatusSpan("DM with ", fg_color=MUTED_COLOR),
-            _StatusSpan(sanitize_text(other_user.username), fg_color=ACCENT_COLOR, bold=True),
+            _StatusSpan(sanitize_text(other_user.username), fg_color=accent, bold=True),
         ],
     ]
     if presence.is_away(other_user.username):
@@ -3890,7 +3897,7 @@ def _render_direct_chat_status_line(other_user: User, presence: PresenceRegistry
     return groups
 
 
-def _render_direct_chat_message(label: str, body: str, *, self_message: bool) -> str:
+def _render_direct_chat_message(label: str, body: str, *, self_message: bool, accent: int = ACCENT_COLOR) -> str:
     """Render a direct-chat line as independently sanitized/styled
     identity and body spans.
 
@@ -3901,7 +3908,7 @@ def _render_direct_chat_message(label: str, body: str, *, self_message: bool) ->
     neither a username nor message text can inject terminal controls,
     and one span's SGR reset cannot erase the other's intended color.
     """
-    label_color = SELF_COLOR if self_message else ACCENT_COLOR
+    label_color = SELF_COLOR if self_message else accent
     safe_label = sanitize_text(label)
     safe_body = sanitize_text(body)
     return (
@@ -3912,18 +3919,22 @@ def _render_direct_chat_message(label: str, body: str, *, self_message: bool) ->
 
 
 async def _repaint_direct_chat_status_line(
-    session: Session, user: User, other_user: User, presence: PresenceRegistry
+    session: Session, user: User, other_user: User, presence: PresenceRegistry, *, accent: int = ACCENT_COLOR
 ) -> None:
     """Direct-chat sibling of `_repaint_status_line` -- no `lane.run`
     round trip at all, since nothing here needs a database read (see
-    `_render_direct_chat_status_line`'s own docstring). `user` is the
-    viewer (controls the row's own active/away background look, same as
+    `_render_direct_chat_status_line`'s own docstring). `accent` is
+    resolved once by `run_direct_chat_loop`'s own caller and threaded
+    down as a plain value the same way -- issue #162's node-wide accent
+    override still applies without this frequently-repainted row ever
+    needing its own database access. `user` is the viewer (controls the
+    row's own active/away background look, same as
     `_repaint_status_line`'s identical parameter); `other_user` is who
     this room is with."""
     height = session.terminal_height
     if height < _PINNED_UI_MIN_HEIGHT:
         return
-    groups = _render_direct_chat_status_line(other_user, presence)
+    groups = _render_direct_chat_status_line(other_user, presence, accent=accent)
     line = _compose_status_line(groups, session.terminal_width, active=not presence.is_away(user.username))
     await session.write(
         save_cursor()
@@ -3948,6 +3959,7 @@ class _DirectChatPinnedUIState:
 
     active: bool
     last_height: int | None = None
+    accent_color: int = ACCENT_COLOR
 
     async def sync(
         self, session: Session, user: User, other_user: User, presence: PresenceRegistry, live_buffer: LiveInputBuffer
@@ -3958,7 +3970,7 @@ class _DirectChatPinnedUIState:
         if now_active != self.active or resized_in_place:
             if now_active:
                 await session.write(clear_screen() + set_scroll_region(1, height - 2))
-                await _repaint_direct_chat_status_line(session, user, other_user, presence)
+                await _repaint_direct_chat_status_line(session, user, other_user, presence, accent=self.accent_color)
                 await _repaint_input_row(session, live_buffer, height)
             else:
                 await session.write(reset_scroll_region() + clear_screen())
@@ -3978,6 +3990,7 @@ async def run_direct_chat_loop(
     redraw_in_place: bool = False,
     unicode_style: bool = False,
     collapsed: bool = False,
+    accent_color: int = ACCENT_COLOR,
 ) -> None:
     """
     Real-time 1:1 direct chat, until either side types `/close`, the
@@ -4033,7 +4046,9 @@ async def run_direct_chat_loop(
         pinned_ui_enabled = session.terminal_height >= _PINNED_UI_MIN_HEIGHT
         live_buffer = LiveInputBuffer()
         lock = asyncio.Lock()
-        pinned_ui = _DirectChatPinnedUIState(active=pinned_ui_enabled, last_height=session.terminal_height)
+        pinned_ui = _DirectChatPinnedUIState(
+            active=pinned_ui_enabled, last_height=session.terminal_height, accent_color=accent_color
+        )
         if pinned_ui_enabled:
             await session.write(clear_screen() + set_scroll_region(1, session.terminal_height - 2))
 
@@ -4049,7 +4064,7 @@ async def run_direct_chat_loop(
         await session.write_line(f"\r\n{heading}")
         await session.write_line(f"Type {close_hint}.")
         if pinned_ui_enabled:
-            await _repaint_direct_chat_status_line(session, user, other_user, presence)
+            await _repaint_direct_chat_status_line(session, user, other_user, presence, accent=accent_color)
             # Neither task is running yet (both are created below) -- no
             # concurrent writer exists at this exact point, so this first
             # paint needs no lock, matching _chat_loop's own entry.
@@ -4118,8 +4133,12 @@ async def run_direct_chat_loop(
                     if line.lower() == "/close":
                         return
 
-                    await session.write_line(_render_direct_chat_message("you", line, self_message=True))
-                    rendered_for_other = _render_direct_chat_message(user.username, line, self_message=False)
+                    await session.write_line(
+                        _render_direct_chat_message("you", line, self_message=True, accent=accent_color)
+                    )
+                    rendered_for_other = _render_direct_chat_message(
+                        user.username, line, self_message=False, accent=accent_color
+                    )
                     await hub.broadcast(room, rendered_for_other, exclude={participant_id})
 
         receive_task = asyncio.create_task(receive_loop())
@@ -4318,6 +4337,7 @@ async def run_direct_chat_invite_flow(
             redraw_in_place=await lane.run(redraw_in_place_enabled, user),
             unicode_style=await lane.run(unicode_style_enabled, user),
             collapsed=await lane.run(breadcrumb_collapsed_enabled, user),
+            accent_color=await lane.run(effective_accent_color_256),
         )
     elif outcome == "declined":
         await session.write_line(colored(f"\r\n{sanitize_text(target.username)} declined.", fg_color=MUTED_COLOR))

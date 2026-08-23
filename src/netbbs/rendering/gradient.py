@@ -96,7 +96,7 @@ def gradient_text(
     for i in range(len(text)):
         t = i / (len(text) - 1) if len(text) > 1 else 0.0
         rgb = _interpolate(stops, t)
-        colors.append(rgb if truecolor else _nearest_256(rgb))
+        colors.append(rgb if truecolor else nearest_256(rgb))
 
     spans: list[str] = []
     run_start = 0
@@ -135,7 +135,7 @@ def _interpolate(
 _CUBE_LEVELS = (0, 95, 135, 175, 215, 255)
 
 
-def _nearest_256(rgb: tuple[int, int, int]) -> int:
+def nearest_256(rgb: tuple[int, int, int]) -> int:
     """
     Nearest xterm-256 palette index to `rgb`, by squared Euclidean
     distance -- the standard truecolor-to-256 downgrade algorithm
@@ -144,6 +144,11 @@ def _nearest_256(rgb: tuple[int, int, int]) -> int:
     rather than the 16-color basic palette since every other 256-color
     call site in this codebase already assumes the richer cube/ramp
     range (`netbbs.rendering.ansi`'s module docstring).
+
+    Public (not `gradient_text`-internal only) since `netbbs.rendering.
+    node_theme` reuses this exact downgrade for a SysOp's own RGB
+    color-override choices (issue #162) -- one algorithm, not a second
+    hand-rolled copy.
     """
     r, g, b = rgb
 

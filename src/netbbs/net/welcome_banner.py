@@ -37,7 +37,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from netbbs.config import get_config, set_config
-from netbbs.rendering import ACCENT_COLOR, HEADER_COLOR, RESET, colored, decode_ansi_bytes, gradient_text
+from netbbs.net.node_theme import accent_color_override
+from netbbs.rendering import ACCENT_COLOR, HEADER_COLOR, RESET, colored, decode_ansi_bytes, gradient_text, nearest_256
 from netbbs.rendering.layout import double_frame
 from netbbs.storage.database import Database
 
@@ -51,38 +52,66 @@ _logger = logging.getLogger(__name__)
 # NetBBS's Telnet transport already sends every screen as UTF-8
 # unconditionally regardless of any preference, so there's no separate
 # "safe ASCII" pre-login mode to fall back to here in the first place.
-DEFAULT_WELCOME_BANNER = (
-    double_frame(
-        [
-            "",
-            " " * 21 + gradient_text("N E T B B S", "rainbow", bold=True, truecolor=False),
-            colored(" " * 7 + "conversations across independent nodes", fg_color=HEADER_COLOR, bold=True),
-            "",
-        ],
-        width=58,
+# issue #162's node-wide accent-color override applies here too (this
+# reads `db`, not a `User`, so it works fine pre-auth) -- factored into
+# a builder, `_build_default_banner_256`, rather than kept as a single
+# hardcoded literal, so `_default_welcome_banner` can rebuild it with a
+# SysOp's own override substituted in. `DEFAULT_WELCOME_BANNER` itself
+# stays a precomputed constant at the *unoverridden* ACCENT_COLOR -- the
+# fast path for the overwhelming majority of nodes with nothing
+# configured, and the exact value many existing tests still compare
+# against.
+def _build_default_banner_256(accent: int | tuple[int, int, int]) -> str:
+    return (
+        double_frame(
+            [
+                "",
+                " " * 21 + gradient_text("N E T B B S", "rainbow", bold=True, truecolor=False),
+                colored(" " * 7 + "conversations across independent nodes", fg_color=HEADER_COLOR, bold=True),
+                "",
+            ],
+            width=58,
+        )
+        + "\r\n"
+        + colored("  NetBBS Link", fg_color=accent, bold=True)
+        + colored("  ›  private experimental federation", fg_color=HEADER_COLOR, bold=True)
     )
-    + "\r\n"
-    + colored("  NetBBS Link", fg_color=ACCENT_COLOR, bold=True)
-    + colored("  ›  private experimental federation", fg_color=HEADER_COLOR, bold=True)
-)
 
 
-def _default_welcome_banner(*, truecolor: bool) -> str:
-    """`DEFAULT_WELCOME_BANNER` stays a static, precomputed constant --
-    correct for every client -- since it can't itself depend on a
-    per-session flag that doesn't exist at import time; it already
-    gradients its own wordmark/subtitle at the safe 256-color depth
-    every client is assumed to support (`gradient_text(...,
-    truecolor=False)`), same as this function's own truecolor variant,
-    just quantized. This builds the *truecolor* variant per-call
-    instead: the same "rainbow" wordmark plus a full-width gradiented
-    border, composed alongside the surrounding flat-`HEADER_COLOR`
-    blank/tagline lines via concatenated `colored()`/`gradient_text()`
-    spans -- the same "one colored() call per span, concatenated" shape
-    `netbbs.rendering.reflow.colored_truncate` already uses, just
-    assembled by hand here since this banner isn't a segment list."""
+DEFAULT_WELCOME_BANNER = _build_default_banner_256(ACCENT_COLOR)
+
+# The truecolor variant's own subtitle used a hand-picked RGB
+# approximation of ACCENT_COLOR (xterm 220, gold) rather than the
+# 256-index itself, since truecolor spans need a real RGB triple --
+# kept as the unoverridden default an accent override replaces below.
+_DEFAULT_ACCENT_RGB = (255, 215, 0)
+
+
+def _default_welcome_banner(db: Database, *, truecolor: bool) -> str:
+    """`DEFAULT_WELCOME_BANNER` stays a static, precomputed constant for
+    the common unoverridden case -- correct for every client, and cheap
+    to return directly -- since most of what varies here (the wordmark/
+    border gradient) can't depend on a per-session flag that doesn't
+    exist at import time anyway; it already gradients its own wordmark/
+    subtitle at the safe 256-color depth every client is assumed to
+    support (`gradient_text(..., truecolor=False)`), same as this
+    function's own truecolor variant, just quantized. A SysOp's own
+    accent-color override (issue #162), if set, is substituted into
+    either depth's "NetBBS Link" span -- rebuilt via
+    `_build_default_banner_256` for the 256 case, resolved to a real RGB
+    triple directly for the truecolor case. This builds the *truecolor*
+    variant per-call: the same "rainbow" wordmark plus a full-width
+    gradiented border, composed alongside the surrounding flat-
+    `HEADER_COLOR` blank/tagline lines via concatenated `colored()`/
+    `gradient_text()` spans -- the same "one colored() call per span,
+    concatenated" shape `netbbs.rendering.reflow.colored_truncate`
+    already uses, just assembled by hand here since this banner isn't a
+    segment list."""
+    override = accent_color_override(db)
     if not truecolor:
-        return DEFAULT_WELCOME_BANNER
+        if override is None:
+            return DEFAULT_WELCOME_BANNER
+        return _build_default_banner_256(nearest_256(override))
     # The full-width border makes negotiated truecolor unmistakable at a
     # glance instead of confining the showcase to six subtly shaded letters.
     border_text = "╔══════════════════════════════════════════════════════╗"
@@ -101,7 +130,7 @@ def _default_welcome_banner(*, truecolor: bool) -> str:
         bold=True,
     )
     subtitle = (
-        colored("  NetBBS Link", fg_color=(255, 215, 0), bold=True)
+        colored("  NetBBS Link", fg_color=override or _DEFAULT_ACCENT_RGB, bold=True)
         + colored("  ›  private experimental federation", fg_color=HEADER_COLOR, bold=True)
     )
     return "\r\n".join([border, blank, welcome_line, tagline, blank, bottom_border, subtitle])
@@ -180,12 +209,12 @@ def load_welcome_banner(db: Database, *, truecolor: bool = False) -> str:
     every login regardless of how the flag got set.
     """
     if not is_welcome_banner_enabled(db):
-        return _default_welcome_banner(truecolor=truecolor)
+        return _default_welcome_banner(db, truecolor=truecolor)
 
     path = banner_path(db)
     if not path.exists():
         _logger.warning("welcome banner enabled but missing at %s -- using default", path)
-        return _default_welcome_banner(truecolor=truecolor)
+        return _default_welcome_banner(db, truecolor=truecolor)
 
     try:
         size = path.stat().st_size
@@ -194,11 +223,11 @@ def load_welcome_banner(db: Database, *, truecolor: bool = False) -> str:
                 "welcome banner at %s is %d bytes, over the %d byte limit -- using default",
                 path, size, MAX_BANNER_SIZE_BYTES,
             )
-            return _default_welcome_banner(truecolor=truecolor)
+            return _default_welcome_banner(db, truecolor=truecolor)
         data = path.read_bytes()
     except OSError:
         _logger.warning("could not read welcome banner at %s -- using default", path, exc_info=True)
-        return _default_welcome_banner(truecolor=truecolor)
+        return _default_welcome_banner(db, truecolor=truecolor)
 
     # decode_ansi_bytes cannot raise (see its own docstring) -- no
     # decode-failure fallback is needed here, by construction.

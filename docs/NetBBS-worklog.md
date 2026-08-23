@@ -747,6 +747,30 @@ therefore must remain safe at 256 colors; later screens can use and report the
 negotiated result. A custom SysOp welcome file intentionally bypasses the
 generated truecolor showcase and its preview must say so.
 
+`netbbs.net.node_theme.effective_accent_color`/`effective_accent_color_256`
+(issue #162) resolve the SysOp's node-wide accent-color override in place
+of the bare `theme.ACCENT_COLOR` constant. Every affected shared rendering
+helper (`picker.pick_item`, `resource_editor.edit_resource_draft`,
+`composition.review_composition`, `chat_flow.run_direct_chat_loop`, and the
+bespoke cursor-nav field-line renderers in `admin_flow`) gained an
+`accent_color: int = ACCENT_COLOR` parameter rather than reaching into
+`node_theme` internally -- these are DB-agnostic presentation functions by
+design, so the caller resolves the value once (the same "resolve once in
+the caller, pass down" shape `unicode_style`/`redraw_in_place`/`collapsed`
+already established) and threads it down. A screen sharing one rendered
+string across many simultaneous recipients (chat broadcast, the direct-chat
+status line) always uses `effective_accent_color_256` -- the 256-only
+variant -- since no single per-viewer truecolor decision is meaningful for
+content composed once and sent to several sessions with potentially
+different capabilities; a single-recipient screen with real `session`/`db`
+access in scope uses the full `effective_accent_color` instead. One
+deliberate exception: `ansi_editor.py`'s own internal glyph/color-picker
+chrome (`edit_ansi_art` and everything it calls) stays on the unresolved
+default -- that module is intentionally database-free (it edits raw bytes
+for a caller-supplied path, used by both the welcome banner and main-menu
+masthead editors), and threading a node-wide color through its own meta-UI
+for editing colors is disproportionate to the value.
+
 `rendering.layout.screen_title(clear=True)` prepends its own `clear_screen()`
 *inside the string it returns* — the clear-and-home sequence is not a separate
 step a caller can order independently. A screen that needs to show something

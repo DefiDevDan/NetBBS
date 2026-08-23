@@ -98,6 +98,7 @@ async def pick_item(
     redraw_in_place: bool = False,
     unicode_style: bool = False,
     collapsed: bool = False,
+    accent_color: int = ACCENT_COLOR,
 ) -> T | None:
     """
     Let the user browse/search/jump through `items` and pick one, or
@@ -266,7 +267,7 @@ async def pick_item(
             segments: list[tuple[str, int | None]] = [
                 (f"  {position:02d}. ", MENU_KEY_COLOR),
                 (f"(#{stable_id_of(item)}) ", MUTED_COLOR),
-                (sanitize_text(name_of(item)), ACCENT_COLOR),
+                (sanitize_text(name_of(item)), accent_color),
             ]
             if description:
                 segments.append((f" - {sanitize_text(description)}", MUTED_COLOR))

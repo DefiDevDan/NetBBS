@@ -81,6 +81,7 @@ from netbbs.link.files import RemoteFile, is_area_linked, list_remote_files
 from netbbs.link.protocol import LinkProtocolError
 from netbbs.net import zmodem
 from netbbs.net.confirm import prompt_yes_no
+from netbbs.net.node_theme import effective_accent_color_256
 from netbbs.net.picker import pick_item
 from netbbs.net.session import Session
 from netbbs.net.sort_ui import SORT_MODE_LABELS, prompt_sort_change
@@ -90,7 +91,6 @@ from netbbs.net.redraw_preference import redraw_in_place_enabled
 from netbbs.net.breadcrumb_preference import breadcrumb_collapsed_enabled
 from netbbs.net.unicode_style_preference import unicode_style_enabled
 from netbbs.rendering import (
-    ACCENT_COLOR,
     ERROR_COLOR,
     METADATA_COLOR,
     MUTED_COLOR,
@@ -302,6 +302,7 @@ async def _browse_areas_in_category(
             redraw_in_place=redraw_in_place,
             unicode_style=unicode_style,
             collapsed=collapsed,
+            accent_color=await lane.run(effective_accent_color_256),
         )
         if area is not None:
             await _show_area(session, lane, area, user, link_context=link_context)
@@ -343,6 +344,7 @@ async def _browse_areas_in_category(
         redraw_in_place=redraw_in_place,
         unicode_style=unicode_style,
         collapsed=collapsed,
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if selected is None:
         return
@@ -648,6 +650,7 @@ async def _browse_remote_files(
         redraw_in_place=redraw_in_place,
         unicode_style=unicode_style,
         collapsed=collapsed,
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if selected is None:
         return
@@ -798,10 +801,11 @@ async def _render_file_page(
     )
     await session.write_line(f"\r\n{header}")
     display_format, display_timezone = await lane.run(resolve_display_preferences)
+    accent = await lane.run(effective_accent_color_256)
     for entry in page.entries:
         when = format_for_display(entry.created_at, override_format=display_format, override_timezone=display_timezone)
         size = _format_size(entry.size_bytes)
-        name_line = colored(f"{sanitize_text(entry.filename)} ", fg_color=ACCENT_COLOR, bold=True) + badge(size)
+        name_line = colored(f"{sanitize_text(entry.filename)} ", fg_color=accent, bold=True) + badge(size)
         await session.write_line(f"\r\n{name_line}")
         uploader_display = await lane.run(_uploader_display_name, entry, name_requirement=name_requirement)
         await session.write_line(

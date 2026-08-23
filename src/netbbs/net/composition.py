@@ -247,7 +247,9 @@ def _preview_body(body: str, width: int) -> str:
     return "\n".join(reflow(line, width=max(1, width)) if line else "" for line in safe.split("\n"))
 
 
-def _review_field_line(hotkey: str, label: str, value: str, *, selected: str | None, bold_value: bool) -> str:
+def _review_field_line(
+    hotkey: str, label: str, value: str, *, selected: str | None, bold_value: bool, accent: int
+) -> str:
     """Dogfood feature request, issue #160's cursor-navigation follow-up
     (item 2 of the prioritized list): the same `>`-cursor/highlight
     convention `netbbs.net.resource_editor.edit_resource_draft` and
@@ -261,11 +263,11 @@ def _review_field_line(hotkey: str, label: str, value: str, *, selected: str | N
     `label` already carries its own trailing punctuation (e.g. `"To: "`),
     matching this function's pre-existing labels exactly."""
     prefix = (
-        colored(f"> {label}", fg_color=ACCENT_COLOR, bold=True)
+        colored(f"> {label}", fg_color=accent, bold=True)
         if selected == hotkey
         else colored(f"  {label}", fg_color=LABEL_COLOR)
     )
-    return prefix + colored(value, fg_color=ACCENT_COLOR, bold=bold_value)
+    return prefix + colored(value, fg_color=accent, bold=bold_value)
 
 
 async def _read_review_key(session: Session) -> EditorKey:
@@ -340,6 +342,7 @@ async def review_composition(
     redraw_in_place: bool = False,
     unicode_style: bool = False,
     collapsed: bool = False,
+    accent_color: int = ACCENT_COLOR,
 ) -> ReviewAction:
     """Render a complete draft and return one explicit review action.
 
@@ -387,13 +390,17 @@ async def review_composition(
         await session.write_line(f"\r\n{heading}")
         if recipient is not None:
             await session.write_line(
-                _review_field_line("t", "To: ", sanitize_text(recipient), selected=selected, bold_value=False)
+                _review_field_line(
+                    "t", "To: ", sanitize_text(recipient), selected=selected, bold_value=False, accent=accent_color
+                )
             )
         await session.write_line(
-            _review_field_line("u", "Subject: ", sanitize_text(subject), selected=selected, bold_value=True)
+            _review_field_line(
+                "u", "Subject: ", sanitize_text(subject), selected=selected, bold_value=True, accent=accent_color
+            )
         )
         body_prefix = (
-            colored("> Body", fg_color=ACCENT_COLOR, bold=True)
+            colored("> Body", fg_color=accent_color, bold=True)
             if selected == "b"
             else colored("  Body", fg_color=MUTED_COLOR, bold=True)
         )

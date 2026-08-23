@@ -31,7 +31,7 @@ from netbbs.rendering.ansi import (
 )
 from netbbs.rendering.ansi_art import decode_ansi_bytes, encode_ansi_bytes
 from netbbs.rendering.ansi_parse import parse_ansi_into_buffer
-from netbbs.rendering.gradient import GRADIENTS, gradient_text
+from netbbs.rendering.gradient import GRADIENTS, gradient_text, nearest_256
 from netbbs.rendering.layout import (
     MenuEntry,
     action_bar,
@@ -89,6 +89,7 @@ __all__ = [
     "fg_rgb",
     "GRADIENTS",
     "gradient_text",
+    "nearest_256",
     "MenuEntry",
     "action_bar",
     "badge",

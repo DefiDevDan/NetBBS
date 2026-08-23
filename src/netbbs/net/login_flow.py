@@ -154,6 +154,7 @@ from netbbs.net.chat_flow import (
 )
 from netbbs.net.breadcrumb_preference import breadcrumb_collapsed_enabled, set_breadcrumb_collapsed_enabled
 from netbbs.net.color_depth_preference import color_depth_override, set_color_depth_override
+from netbbs.net.node_theme import effective_accent_color, effective_accent_color_256
 from netbbs.net.menu_description_preference import menu_description_level, set_menu_description_level
 from netbbs.net.redraw_preference import redraw_in_place_enabled, set_redraw_in_place_enabled
 from netbbs.net.unicode_style_preference import (
@@ -180,7 +181,6 @@ from netbbs.net.throttle import LoginThrottle
 from netbbs.net.welcome_banner import load_welcome_banner
 from netbbs.permissions import meets_level
 from netbbs.rendering import (
-    ACCENT_COLOR,
     ALERT_COLOR,
     CLOCK_COLOR,
     ERROR_COLOR,
@@ -696,7 +696,7 @@ async def run_authenticated_session(
         "\r\n"
         + colored(
             f"Welcome, {sanitize_text(user.username)}",
-            fg_color=ACCENT_COLOR,
+            fg_color=effective_accent_color(session, db),
             bold=True,
         )
         + welcome_separator
@@ -1173,7 +1173,7 @@ async def _draw_main_menu(
         breadcrumb=(session.node_display_name,),
         subtitle=field_row(
             [
-                (sanitize_text(user.username), ACCENT_COLOR),
+                (sanitize_text(user.username), effective_accent_color(session, db)),
                 (f"level {user.user_level}", VALUE_COLOR),
                 mail_status,
             ],
@@ -1547,6 +1547,7 @@ async def _handle_incoming_invite(
             redraw_in_place=redraw_in_place_enabled(db, user),
             unicode_style=unicode_style_enabled(db, user),
             collapsed=breadcrumb_collapsed_enabled(db, user),
+            accent_color=effective_accent_color_256(db),
         )
     else:
         await session.write_line(colored("Declined.", fg_color=MUTED_COLOR))
@@ -1683,6 +1684,7 @@ async def _new_scan_screen(
         redraw_in_place=redraw_in_place_enabled(db, user),
         unicode_style=unicode_style_enabled(db, user),
         collapsed=breadcrumb_collapsed_enabled(db, user),
+        accent_color=effective_accent_color(session, db),
     )
     if selected is None:
         return
@@ -1921,6 +1923,7 @@ async def _find_screen(
             redraw_in_place=redraw_in_place_enabled(db, user),
             unicode_style=unicode_style_enabled(db, user),
             collapsed=breadcrumb_collapsed_enabled(db, user),
+            accent_color=effective_accent_color(session, db),
         )
         if selected is None:
             return
@@ -2473,6 +2476,7 @@ async def _enter_communities(
         redraw_in_place=redraw_in_place_enabled(db, user),
         unicode_style=unicode_style_enabled(db, user),
         collapsed=breadcrumb_collapsed_enabled(db, user),
+        accent_color=effective_accent_color(session, db),
     )
     if selected is None:
         return
@@ -2696,6 +2700,7 @@ async def _browse_boards_in_category(
     unicode_style = unicode_style_enabled(db, user)
     collapsed = breadcrumb_collapsed_enabled(db, user)
     redraw_in_place = redraw_in_place_enabled(db, user)
+    accent_color = effective_accent_color(session, db)
     title = "Message boards" if title_prefix is not None else "Available message boards"
     picker_breadcrumb = (title_prefix,) if title_prefix is not None else ()
 
@@ -2722,6 +2727,7 @@ async def _browse_boards_in_category(
             redraw_in_place=redraw_in_place,
             unicode_style=unicode_style,
             collapsed=collapsed,
+            accent_color=accent_color,
         )
         if board is not None:
             await _show_board(session, db, board, user, link_context=link_context)
@@ -2762,6 +2768,7 @@ async def _browse_boards_in_category(
         redraw_in_place=redraw_in_place,
         unicode_style=unicode_style,
         collapsed=collapsed,
+        accent_color=accent_color,
     )
     if selected is None:
         return
@@ -2887,6 +2894,7 @@ async def _show_board(
     redraw_in_place = redraw_in_place_enabled(db, user)
     unicode_style = unicode_style_enabled(db, user)
     collapsed = breadcrumb_collapsed_enabled(db, user)
+    accent_color = effective_accent_color(session, db)
 
     def _refetch_current_page() -> PostPage:
         """Re-fetches whichever page is currently on screen, using the
@@ -2962,6 +2970,7 @@ async def _show_board(
                 redraw_in_place=redraw_in_place,
                 unicode_style=unicode_style,
                 collapsed=collapsed,
+                accent_color=accent_color,
             )
             if action is ReviewAction.CANCEL:
                 await session.write_line(colored("Post cancelled.", fg_color=MUTED_COLOR))
@@ -3366,6 +3375,7 @@ async def _render_post_page(
         unicode_style=unicode_style, collapsed=collapsed,
     )
     await session.write_line(f"\r\n{header}")
+    accent = effective_accent_color(session, db)
     for position, post in enumerate(page.posts, start=1):
         when = format_for_display(post.created_at, db)
         edited_marker = f" {badge('edited')}" if post.is_edited else ""
@@ -3386,7 +3396,7 @@ async def _render_post_page(
         # clear the outer ACCENT_COLOR early, leaving the trailing
         # "(timestamp)" text in the terminal's default color instead.
         post_header = (
-            colored(f"[{position}] {sanitize_text(post.subject)} -- ", fg_color=ACCENT_COLOR)
+            colored(f"[{position}] {sanitize_text(post.subject)} -- ", fg_color=accent)
             + author_display
             + colored(f" ({when})", fg_color=METADATA_COLOR)
             + edited_marker
@@ -3437,6 +3447,7 @@ async def _browse_directory(session: Session, db: Database, user: User) -> None:
             redraw_in_place=redraw_in_place_enabled(db, user),
             unicode_style=unicode_style_enabled(db, user),
             collapsed=breadcrumb_collapsed_enabled(db, user),
+            accent_color=effective_accent_color(session, db),
         )
         if selected is None:
             return
@@ -3569,6 +3580,7 @@ async def _caller_who_screen(
         redraw_in_place=redraw_in_place_enabled(db, user),
         unicode_style=unicode_style_enabled(db, user),
         collapsed=breadcrumb_collapsed_enabled(db, user),
+        accent_color=effective_accent_color(session, db),
     )
     if selected is None:
         return
@@ -3728,6 +3740,7 @@ async def _last_sessions_screen(session: Session, db: Database, user: User) -> N
         await session.write_line(colored("No session history yet.", fg_color=MUTED_COLOR))
     else:
         viewer_is_sysop = meets_level(user, SYSOP_LEVEL)
+        accent = effective_accent_color(session, db)
         for entry in entries:
             name = _session_history_display_name(db, entry, viewer_is_sysop=viewer_is_sysop)
             connected = format_for_display(entry.connected_at, db)
@@ -3740,7 +3753,7 @@ async def _last_sessions_screen(session: Session, db: Database, user: User) -> N
             else:
                 status = "still connected"
                 status_color = SUCCESS_COLOR
-            name_color = MUTED_COLOR if name == "(name hidden)" else ACCENT_COLOR
+            name_color = MUTED_COLOR if name == "(name hidden)" else accent
             await session.write_line(
                 colored_truncate(
                     [
@@ -3829,6 +3842,7 @@ async def _sort_preferences_screen(session: Session, lane: DatabaseLane, user: U
             redraw_in_place=await lane.run(redraw_in_place_enabled, user),
             unicode_style=await lane.run(unicode_style_enabled, user),
             collapsed=await lane.run(breadcrumb_collapsed_enabled, user),
+            accent_color=await lane.run(effective_accent_color_256),
         )
         if selected is None:
             return
@@ -3880,6 +3894,7 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
     redraw_in_place = await lane.run(redraw_in_place_enabled, user)
     unicode_style = await lane.run(unicode_style_enabled, user)
     collapsed = await lane.run(breadcrumb_collapsed_enabled, user)
+    accent_color = await lane.run(effective_accent_color_256)
 
     draft: Draft = {
         "bio": await lane.run(get_bio, user) or "",
@@ -4169,6 +4184,7 @@ async def _edit_profile(session: Session, lane: DatabaseLane, user: User) -> Non
         preamble=_preamble,
         unicode_style=unicode_style,
         collapsed=collapsed,
+        accent_color=accent_color,
     )
 
 
@@ -4306,6 +4322,7 @@ async def _identity_details_screen(session: Session, lane: DatabaseLane, user: U
     redraw_in_place = await lane.run(redraw_in_place_enabled, user)
     unicode_style = await lane.run(unicode_style_enabled, user)
     collapsed = await lane.run(breadcrumb_collapsed_enabled, user)
+    accent = await lane.run(effective_accent_color_256)
 
     draft: Draft = {
         "display_name": await lane.run(get_display_name, user),
@@ -4400,7 +4417,7 @@ async def _identity_details_screen(session: Session, lane: DatabaseLane, user: U
         if age_attestation is None and name_attestation is None:
             return colored("Verified: (none)", fg_color=MUTED_COLOR)
         parts = [attr for attr, att in (("age", age_attestation), ("name", name_attestation)) if att is not None]
-        return colored(f"Verified: {', '.join(parts)}", fg_color=ACCENT_COLOR)
+        return colored(f"Verified: {', '.join(parts)}", fg_color=accent)
 
     fields = [
         FieldSpec(
@@ -4485,6 +4502,7 @@ async def _identity_details_screen(session: Session, lane: DatabaseLane, user: U
         preamble=_preamble,
         unicode_style=unicode_style,
         collapsed=collapsed,
+        accent_color=accent,
     )
 
 
@@ -4540,6 +4558,7 @@ async def _verify_identity_menu(session: Session, db: Database, verifier: User) 
         redraw_in_place=redraw_in_place_enabled(db, verifier),
         unicode_style=unicode_style_enabled(db, verifier),
         collapsed=breadcrumb_collapsed_enabled(db, verifier),
+        accent_color=effective_accent_color(session, db),
     )
     if selected is not None:
         await _verify_user(session, db, verifier, selected)

@@ -63,13 +63,15 @@ def truncate(text: str, width: int, *, ellipsis: str = "...") -> str:
 
 
 def colored_truncate(
-    segments: Sequence[tuple[str, int | None]], width: int, *, ellipsis: str = "..."
+    segments: Sequence[tuple[str, int | tuple[int, int, int] | None]], width: int, *, ellipsis: str = "..."
 ) -> str:
     """
     Like `truncate`, but for a line built from several differently-
     colored fields (`(text, fg_color)` pairs, `fg_color=None` for
-    uncolored) -- coloring each segment only *after* the truncation
-    budget is decided against the plain, unescaped text.
+    uncolored, or a truecolor `(r, g, b)` triple -- issue #162's
+    node-wide accent-color override) -- coloring each segment only
+    *after* the truncation budget is decided against the plain,
+    unescaped text.
 
     Coloring first and truncating the ANSI-escaped result the way
     `truncate()` alone would is unsafe: SGR escape sequences count

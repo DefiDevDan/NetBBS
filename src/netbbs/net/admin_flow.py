@@ -240,6 +240,7 @@ from netbbs.net.redraw_preference import (
 )
 from netbbs.net.breadcrumb_preference import breadcrumb_collapsed_enabled
 from netbbs.net.color_depth_preference import effective_truecolor
+from netbbs.net.node_theme import effective_accent_color_256
 from netbbs.net.unicode_style_preference import unicode_style_enabled
 from netbbs.operational_history import list_operational_run_history
 from netbbs.selfupdate import (
@@ -273,7 +274,6 @@ from netbbs.net.main_menu_banner import (
     set_main_menu_banner_enabled,
 )
 from netbbs.rendering import (
-    ACCENT_COLOR,
     ALERT_COLOR,
     ERROR_COLOR,
     HEADER_COLOR,
@@ -985,6 +985,7 @@ async def _trust_subjects_screen(session: Session, lane: DatabaseLane, actor: Us
         redraw_in_place=redraw_in_place,
         unicode_style=unicode_style,
         collapsed=collapsed,
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if selected is None:
         return
@@ -1153,6 +1154,7 @@ async def _clear_trust_override_screen(
         redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
         unicode_style=await lane.run(unicode_style_enabled, actor),
         collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if selected is None:
         return
@@ -1397,6 +1399,7 @@ async def _remote_attestation_override_screen(
             redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
             unicode_style=await lane.run(unicode_style_enabled, actor),
             collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+            accent_color=await lane.run(effective_accent_color_256),
         )
         if selected is None:
             return
@@ -1649,6 +1652,7 @@ async def _create_user_screen(session: Session, lane: DatabaseLane, actor: User)
         redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
         unicode_style=unicode_style,
         collapsed=collapsed,
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if new_user is not None:
         await session.write_line(f"Created {new_user.username!r} at level {new_user.user_level}.")
@@ -1818,6 +1822,7 @@ async def _pick_target_user(session: Session, lane: DatabaseLane, actor: User, *
     redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
     unicode_style = await lane.run(unicode_style_enabled, actor)
     collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
+    accent = await lane.run(effective_accent_color_256)
 
     def _total_pages() -> int:
         return max(1, math.ceil(len(working_set) / _user_picker_page_size(session)))
@@ -1852,7 +1857,7 @@ async def _pick_target_user(session: Session, lane: DatabaseLane, actor: User, *
             segments: list[tuple[str, int | None]] = [
                 (f"  {position:02d}. ", MENU_KEY_COLOR),
                 (f"(#{user.id}) ", MUTED_COLOR),
-                (sanitize_text(user.username), ACCENT_COLOR),
+                (sanitize_text(user.username), accent),
                 (f" - {_user_description(user)}", MUTED_COLOR),
             ]
             await session.write_line(colored_truncate(segments, session.terminal_width))
@@ -2015,9 +2020,9 @@ def _user_description(user: User) -> str:
     return f"level {user.user_level}, {_status_label(user)}"
 
 
-def _user_detail_field_line(hotkey: str, label: str, value: str, *, selected: str | None) -> str:
+def _user_detail_field_line(hotkey: str, label: str, value: str, *, selected: str | None, accent: int) -> str:
     """Dogfood feature request, issue #160's cursor-navigation follow-up
-    (item 1 of the prioritized list): the same `>`-cursor/`ACCENT_COLOR`
+    (item 1 of the prioritized list): the same `>`-cursor/accent-color
     highlight convention `netbbs.net.resource_editor.edit_resource_draft`
     already renders its own fields with -- duplicated rather than
     imported, since this screen is a bespoke dispatch loop (below), not
@@ -2026,7 +2031,7 @@ def _user_detail_field_line(hotkey: str, label: str, value: str, *, selected: st
     across two `colored()` calls would insert an SGR reset between them,
     breaking what should read as one contiguous highlighted run."""
     prefix = (
-        colored(f"> {label}", fg_color=ACCENT_COLOR, bold=True)
+        colored(f"> {label}", fg_color=accent, bold=True)
         if selected == hotkey
         else colored(f"  {label}", fg_color=LABEL_COLOR)
     )
@@ -2058,8 +2063,9 @@ async def _draw_user_detail(
         "\r\n" + screen_title(sanitize_text(target.username),
             breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
     )
-    await session.write_line(_user_detail_field_line("l", "Level", str(target.user_level), selected=selected))
-    await session.write_line(_user_detail_field_line("t", "Status", _status_label(target), selected=selected))
+    accent = await lane.run(effective_accent_color_256)
+    await session.write_line(_user_detail_field_line("l", "Level", str(target.user_level), selected=selected, accent=accent))
+    await session.write_line(_user_detail_field_line("t", "Status", _status_label(target), selected=selected, accent=accent))
     display_format, display_timezone = await lane.run(resolve_display_preferences)
     member_since = format_for_display(
         target.created_at, override_format=display_format, override_timezone=display_timezone
@@ -2070,13 +2076,13 @@ async def _draw_user_detail(
     await session.write_line(
         _user_detail_field_line(
             "i", "Can verify identity (age/name attestation)",
-            "yes" if target.can_verify_identity else "no", selected=selected,
+            "yes" if target.can_verify_identity else "no", selected=selected, accent=accent,
         )
     )
     await session.write_line(
         _user_detail_field_line(
             "k", "Public key (SSH/Link login)",
-            target.fingerprint if target.fingerprint else "(none)", selected=selected,
+            target.fingerprint if target.fingerprint else "(none)", selected=selected, accent=accent,
         )
     )
     # Dogfood follow-up (`netbbs.moderation.blocklist`): the local
@@ -2093,7 +2099,7 @@ async def _draw_user_detail(
     # second button for the same thing.
     blocked = await lane.run(is_blocked, target)
     await session.write_line(
-        _user_detail_field_line("r", "Blocked (local blocklist)", "yes" if blocked else "no", selected=selected)
+        _user_detail_field_line("r", "Blocked (local blocklist)", "yes" if blocked else "no", selected=selected, accent=accent)
     )
 
     entries = await lane.run(list_actions_for_target_user, target.id)
@@ -2893,6 +2899,7 @@ async def _timestamp_settings_screen(session: Session, lane: DatabaseLane, actor
         redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
         unicode_style=await lane.run(unicode_style_enabled, actor),
         collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+        accent_color=await lane.run(effective_accent_color_256),
     )
 
 
@@ -3026,6 +3033,7 @@ async def _link_status_screen(
         redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
         unicode_style=await lane.run(unicode_style_enabled, actor),
         collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if selected is None:
         return
@@ -3113,6 +3121,7 @@ async def _outbox_screen(session: Session, lane: DatabaseLane, actor: User) -> N
         redraw_in_place=redraw_in_place,
         unicode_style=unicode_style,
         collapsed=collapsed,
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if selected is None:
         return
@@ -3191,6 +3200,7 @@ async def _diagnostic_log_screen(session: Session, lane: DatabaseLane, actor: Us
         redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
         unicode_style=await lane.run(unicode_style_enabled, actor),
         collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if selected is None:
         return
@@ -3263,6 +3273,7 @@ async def _audit_log_screen(session: Session, lane: DatabaseLane, actor: User) -
         redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
         unicode_style=await lane.run(unicode_style_enabled, actor),
         collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if selected is None:
         return
@@ -3602,6 +3613,7 @@ async def _who_screen(session: Session, lane: DatabaseLane, actor: User, node_co
         redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
         unicode_style=await lane.run(unicode_style_enabled, actor),
         collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if selected is None:
         return
@@ -4622,6 +4634,7 @@ async def _pick_optional_category(
         return top_level
 
     top_level = await lane.run(_load_top_level)
+    accent_color = await lane.run(effective_accent_color_256)
 
     selected = await pick_item(
         session, top_level,
@@ -4632,6 +4645,7 @@ async def _pick_optional_category(
         redraw_in_place=redraw_in_place,
         unicode_style=unicode_style,
         collapsed=collapsed,
+        accent_color=accent_color,
     )
     if selected is None:
         return None
@@ -4651,6 +4665,7 @@ async def _pick_optional_category(
         redraw_in_place=redraw_in_place,
         unicode_style=unicode_style,
         collapsed=collapsed,
+        accent_color=accent_color,
     )
     return sub_selected.id if sub_selected is not None else selected.id
 
@@ -4682,6 +4697,7 @@ async def _pick_optional_community(
         redraw_in_place=redraw_in_place,
         unicode_style=unicode_style,
         collapsed=collapsed,
+        accent_color=await lane.run(effective_accent_color_256),
     )
     return selected.id if selected is not None else None
 
@@ -5055,6 +5071,7 @@ async def _community_screen(
         redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
         unicode_style=await lane.run(unicode_style_enabled, actor),
         collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if community is not None:
         verb = "Updated" if existing is not None else "Created Community"
@@ -5074,6 +5091,7 @@ async def _list_communities_screen(session: Session, lane: DatabaseLane, actor: 
         redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
         unicode_style=await lane.run(unicode_style_enabled, actor),
         collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if selected is not None:
         await _community_detail_screen(session, lane, actor, selected)
@@ -5415,6 +5433,7 @@ async def _board_screen(
         redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
         unicode_style=unicode_style,
         collapsed=collapsed,
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if board is not None:
         verb = "Updated" if existing is not None else "Created message board"
@@ -5436,6 +5455,7 @@ async def _list_boards_screen(
         redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
         unicode_style=await lane.run(unicode_style_enabled, actor),
         collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if selected is not None:
         await _board_detail_screen(session, lane, actor, selected, link_context=link_context)
@@ -5603,6 +5623,7 @@ async def _link_board_screen(
             redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
             unicode_style=await lane.run(unicode_style_enabled, actor),
             collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+            accent_color=await lane.run(effective_accent_color_256),
         )
         if chosen is not None:
             forked_from = chosen.board_id
@@ -5937,6 +5958,7 @@ async def _pending_posts_screen(
             redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
             unicode_style=await lane.run(unicode_style_enabled, actor),
             collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+            accent_color=await lane.run(effective_accent_color_256),
         )
         if selected is None:
             return
@@ -6314,6 +6336,7 @@ async def _area_screen(
         redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
         unicode_style=unicode_style,
         collapsed=collapsed,
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if area is not None:
         verb = "Updated" if existing is not None else "Created file area"
@@ -6335,6 +6358,7 @@ async def _list_areas_screen(
         redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
         unicode_style=await lane.run(unicode_style_enabled, actor),
         collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if selected is not None:
         await _area_detail_screen(session, lane, actor, selected, link_context=link_context)
@@ -6538,6 +6562,7 @@ async def _pending_files_screen(session: Session, lane: DatabaseLane, actor: Use
             redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
             unicode_style=await lane.run(unicode_style_enabled, actor),
             collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+            accent_color=await lane.run(effective_accent_color_256),
         )
         if selected is None:
             return
@@ -6849,6 +6874,7 @@ async def _channel_screen(
         redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
         unicode_style=unicode_style,
         collapsed=collapsed,
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if channel is not None:
         verb = "Updated" if existing is not None else "Created chat channel"
@@ -6870,6 +6896,7 @@ async def _list_channels_screen(
         redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
         unicode_style=await lane.run(unicode_style_enabled, actor),
         collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if selected is not None:
         await _channel_detail_screen(session, lane, actor, selected, link_context=link_context)
@@ -7029,6 +7056,7 @@ async def _channel_restrictions_screen(session: Session, lane: DatabaseLane, act
             redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
             unicode_style=await lane.run(unicode_style_enabled, actor),
             collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+            accent_color=await lane.run(effective_accent_color_256),
         )
         if selected is None:
             return
@@ -7260,6 +7288,7 @@ async def _create_category_screen(
             redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
             unicode_style=await lane.run(unicode_style_enabled, actor),
             collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+            accent_color=await lane.run(effective_accent_color_256),
         )
         parent_category_id = parent.id if parent is not None else None
     try:
@@ -7293,6 +7322,7 @@ async def _list_categories_screen(
         redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
         unicode_style=await lane.run(unicode_style_enabled, actor),
         collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if selected is None:
         return
@@ -7348,12 +7378,14 @@ async def _pick_moderator_scope(
     await session.write(f"{action_bar(scope_options, width=session.terminal_width)}: ")
     scope_key = (await session.read_key()).lower()
     await session.write_line("")
+    accent_color = await lane.run(effective_accent_color_256)
     if scope_key == "b":
         board = await pick_item(
             session, await lane.run(list_boards, order_by="alphabetical"),
             name_of=lambda b: b.name, stable_id_of=lambda b: b.id,
             title="Which message board?", empty_message="No message boards yet.",
             redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
+            accent_color=accent_color,
         )
         if board is None:
             return None
@@ -7364,6 +7396,7 @@ async def _pick_moderator_scope(
             name_of=lambda a: a.name, stable_id_of=lambda a: a.id,
             title="Which file area?", empty_message="No file areas yet.",
             redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
+            accent_color=accent_color,
         )
         if area is None:
             return None
@@ -7374,6 +7407,7 @@ async def _pick_moderator_scope(
             name_of=lambda c: c.name, stable_id_of=lambda c: c.id,
             title="Which chat channel?", empty_message="No chat channels yet.",
             redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
+            accent_color=accent_color,
         )
         if channel is None:
             return None
@@ -7417,6 +7451,7 @@ async def _pick_optional_community_blanket_scope(
         title="Community",
         empty_message="No Communities exist yet.",
         redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
+        accent_color=await lane.run(effective_accent_color_256),
     )
     return selected.id if selected is not None else None
 
@@ -7430,6 +7465,7 @@ async def _grant_moderator_screen(session: Session, lane: DatabaseLane, actor: U
         name_of=lambda u: u.username, stable_id_of=lambda u: u.id,
         title="Grant moderator to which user?", empty_message="No registered users yet.",
         redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if target is None:
         return
@@ -7496,6 +7532,7 @@ async def _revoke_moderator_screen(session: Session, lane: DatabaseLane, actor: 
         name_of=lambda u: u.username, stable_id_of=lambda u: u.id,
         title="Revoke moderator from which user?", empty_message="No registered users yet.",
         redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
+        accent_color=await lane.run(effective_accent_color_256),
     )
     if target is None:
         return

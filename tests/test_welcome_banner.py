@@ -144,6 +144,47 @@ def test_truecolor_has_no_effect_on_a_custom_ans_banner(db):
     assert load_welcome_banner(db, truecolor=False) == load_welcome_banner(db, truecolor=True)
 
 
+# -- node-wide accent-color override (issue #162) --------------------------
+
+
+def test_no_accent_override_returns_the_unchanged_default_banner(db):
+    assert load_welcome_banner(db, truecolor=False) == DEFAULT_WELCOME_BANNER
+
+
+def test_accent_override_changes_the_256_color_default_banner(db):
+    from netbbs.net.node_theme import set_accent_color_override
+
+    set_accent_color_override(db, (10, 20, 30))
+    result = load_welcome_banner(db, truecolor=False)
+    assert result != DEFAULT_WELCOME_BANNER
+    assert "NetBBS Link" in result
+
+
+def test_accent_override_appears_as_raw_rgb_in_the_truecolor_banner(db):
+    from netbbs.net.node_theme import set_accent_color_override
+
+    set_accent_color_override(db, (10, 20, 30))
+    result = load_welcome_banner(db, truecolor=True)
+    assert "\x1b[38;2;10;20;30m" in result
+
+
+def test_accent_override_has_no_effect_on_a_custom_ans_banner(db):
+    from netbbs.net.node_theme import set_accent_color_override
+
+    banner_path(db).write_bytes("MY CUSTOM BANNER".encode("utf-8"))
+    set_welcome_banner_enabled(db, True)
+    set_accent_color_override(db, (10, 20, 30))
+    assert load_welcome_banner(db, truecolor=False) == "MY CUSTOM BANNER" + RESET
+
+
+def test_clearing_the_accent_override_reverts_to_the_default_banner(db):
+    from netbbs.net.node_theme import set_accent_color_override
+
+    set_accent_color_override(db, (10, 20, 30))
+    set_accent_color_override(db, None)
+    assert load_welcome_banner(db, truecolor=False) == DEFAULT_WELCOME_BANNER
+
+
 # -- welcome_banner_status -------------------------------------------------
 
 
