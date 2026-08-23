@@ -18,9 +18,10 @@ bytes directly to `banner_path(db)`/`main_menu_banner_path(db)` -- zero
 filesystem access needed, identical behavior for a wheel install or a
 source checkout.
 
-Descriptions are copied verbatim from `examples/README.md`'s own
-now-removed "Welcome banners"/"Main-menu mastheads" sections, which
-described the exact same samples before this issue existed.
+Descriptions originate from `examples/README.md`'s own former
+"Welcome banners"/"Main-menu mastheads" sections, which described these
+same samples as loose files before this module existed; that README
+now just points here instead of duplicating the list.
 """
 
 from __future__ import annotations

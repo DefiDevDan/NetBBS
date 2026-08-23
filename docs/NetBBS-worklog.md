@@ -2061,6 +2061,30 @@ one deliberately-left-behind trace of an in-progress restore, and a
 subsequent restore attempt refuses to start a second one over it rather
 than compounding the mess.
 
+### `examples/` is not installed package data (issue #169)
+
+`pyproject.toml`'s `[tool.setuptools.packages.find]` is scoped to
+`src/` only -- nothing under repo-root `examples/` reaches a built
+wheel. A file that must be reachable from a real install (not just a
+source checkout) has to live under `src/netbbs/...` and be listed in
+`[tool.setuptools.package-data]`, loaded via `importlib.resources`
+(`netbbs.net.banner_presets` is the precedent), not read from a path
+computed relative to the repo root.
+
+This was a real, previously-unnoticed product gap, not just a style
+preference: the welcome-banner/masthead sample `.ans` files used to
+live only in `examples/`, so a SysOp running the actually-supported
+install path (a release wheel) had no sample files on their filesystem
+to copy into place at all -- `[E]nable` was reachable but had nothing
+to enable without a separate GitHub checkout just to fetch art. Moving
+the samples into `netbbs.net.banner_presets` and adding a `[G]allery`
+picker on both admin screens closed that gap by construction (zero
+filesystem access needed, identical behavior for a wheel install or a
+source checkout) -- see that module's own docstring. Do not duplicate
+this kind of bundled asset back into `examples/` alongside the package
+copy: a second, stale copy of the same files re-documents the exact
+manual-copy workflow the packaged version exists to make unnecessary.
+
 ### Self-update: checking is wired up, applying is not (issue #82)
 
 `netbbs.selfupdate` has real, fully unit-tested plumbing for a
