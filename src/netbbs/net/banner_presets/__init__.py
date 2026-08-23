@@ -133,6 +133,76 @@ WELCOME_BANNER_PRESETS: tuple[BannerPreset, ...] = (
         description="A plain bordered box on a solid blue background (cyan/gold/magenta accents).",
         resource="classic_terminal_blue.ans",
     ),
+    BannerPreset(
+        key="outrun_sunset_grid", name="Outrun 80s Grid / Pink-Orange-Yellow", depth="truecolor (24-bit RGB)",
+        description=(
+            "Synthwave high-speed vector sun silhouette, road perspective grid, and Outrun highway typography."
+        ),
+        resource="outrun_sunset_grid.ans",
+    ),
+    BannerPreset(
+        key="emerald_matrix_digital_rain", name="Bioluminescent Emerald / Matrix Rain", depth="truecolor (24-bit RGB)",
+        description=(
+            "Organic neural rainforest canopy with cascading digital droplet vines, biocores, and mint plasma."
+        ),
+        resource="emerald_matrix_digital_rain.ans",
+    ),
+    BannerPreset(
+        key="vaporwave_pastel_dream", name="Vaporwave Dream / Pastel Lilac-Peach", depth="truecolor (24-bit RGB)",
+        description=(
+            "Soothing pastel lilac, sky azure, and peach aesthetic with Greek marble columns and Japanese typography."
+        ),
+        resource="vaporwave_pastel_dream.ans",
+    ),
+    BannerPreset(
+        key="crimson_samurai_cyber", name="Cyber Samurai / Crimson & Gold Leaf", depth="truecolor (24-bit RGB)",
+        description=(
+            "Kyoto cyber-citadel aesthetic with katana blade divider, torii gate architecture, and crimson sun."
+        ),
+        resource="crimson_samurai_cyber.ans",
+    ),
+    BannerPreset(
+        key="glacier_aurora_ice", name="Glacial Crystal / Arctic Cyan-White", depth="truecolor (24-bit RGB)",
+        description=(
+            "Sub-zero cryogenic polar vault theme with crystalline snowflake fractals and frost diamond framing."
+        ),
+        resource="glacier_aurora_ice.ans",
+    ),
+    BannerPreset(
+        key="gruvbox_warm_retro", name="Gruvbox Retro / Warm Yellow-Orange", depth="256-color extended ANSI",
+        description=(
+            "Warm earthy retro terminal palette with typewriter block headers, cozy mechanical borders, and signal meters."
+        ),
+        resource="gruvbox_warm_retro.ans",
+    ),
+    BannerPreset(
+        key="solarized_dark_cyan", name="Solarized Dark / Scientific Cyan-Blue", depth="256-color extended ANSI",
+        description=(
+            "Precision IEEE engineering standard with crisp drafting borders, deterministic states, and clean alignment."
+        ),
+        resource="solarized_dark_cyan.ans",
+    ),
+    BannerPreset(
+        key="catppuccin_mocha_lavender", name="Catppuccin Mocha / Lavender & Mauve", depth="256-color extended ANSI",
+        description=(
+            "Cozy pastel dark mode with mocha crust, lavender typography, pastel pill badges, and soft dither ribbon."
+        ),
+        resource="catppuccin_mocha_lavender.ans",
+    ),
+    BannerPreset(
+        key="monokai_pro_vivid", name="Monokai Pro / Vivid Hacker Syntax", depth="256-color extended ANSI",
+        description=(
+            "High-contrast code syntax aesthetic with vivid pink, lime green, yellow keywords, and JSON status headers."
+        ),
+        resource="monokai_pro_vivid.ans",
+    ),
+    BannerPreset(
+        key="c64_nostalgia_cyan", name="Commodore 64 / 8-Bit Vintage Blue", depth="256-color extended ANSI",
+        description=(
+            "Authentic 1982 C64 startup screen recreation with PETSCII borders, 38911 bytes free prompt, and blinking cursor."
+        ),
+        resource="c64_nostalgia_cyan.ans",
+    ),
 )
 
 MAIN_MENU_BANNER_PRESETS: tuple[BannerPreset, ...] = (
@@ -216,6 +286,56 @@ MAIN_MENU_BANNER_PRESETS: tuple[BannerPreset, ...] = (
             "high-tech status line, and crisp service matrix."
         ),
         resource="tokyo_night_magenta_cyan.ans",
+    ),
+    BannerPreset(
+        key="outrun_sunset_strip", name="Outrun Sunset Strip / Pink-Orange", depth="truecolor (24-bit RGB)",
+        description="6-line high-speed synthwave horizon with vector sunset ribbon and turbo navigation tags.",
+        resource="outrun_sunset_strip.ans",
+    ),
+    BannerPreset(
+        key="emerald_matrix_strip", name="Bio-Emerald Masthead / Jade-Mint", depth="truecolor (24-bit RGB)",
+        description="6-line bioluminescent rainforest stream with neural telemetry badges and half-block emerald divider.",
+        resource="emerald_matrix_strip.ans",
+    ),
+    BannerPreset(
+        key="vaporwave_pastel_strip", name="Vaporwave Pastel Strip / Lilac-Sky", depth="truecolor (24-bit RGB)",
+        description="6-line aesthetic Japanese pastel header with marble checkerboard rule and breezy typography.",
+        resource="vaporwave_pastel_strip.ans",
+    ),
+    BannerPreset(
+        key="crimson_samurai_strip", name="Cyber Samurai Blade / Crimson-Gold", depth="truecolor (24-bit RGB)",
+        description="6-line shadow relay header with torii gate icons, katana blade ribbon, and dojo navigation.",
+        resource="crimson_samurai_strip.ans",
+    ),
+    BannerPreset(
+        key="glacier_crystal_strip", name="Glacial Crystal Header / Frost Cyan", depth="truecolor (24-bit RGB)",
+        description="6-line cryogenic arctic header with snowflake diamond markers and ice crystal half-block rule.",
+        resource="glacier_crystal_strip.ans",
+    ),
+    BannerPreset(
+        key="gruvbox_retro_header", name="Gruvbox Retro Header / Warm Gold", depth="256-color extended ANSI",
+        description="6-line mechanical console header with warm amber-to-green dither meter and retro arcade tabs.",
+        resource="gruvbox_retro_header.ans",
+    ),
+    BannerPreset(
+        key="solarized_technical_header", name="Solarized Technical / Clean Cyan", depth="256-color extended ANSI",
+        description="5-line precision drafting header with IEEE telemetry badges and compact service grid.",
+        resource="solarized_technical_header.ans",
+    ),
+    BannerPreset(
+        key="catppuccin_mocha_header", name="Catppuccin Mocha Header / Lavender", depth="256-color extended ANSI",
+        description="6-line cozy pastel header with lavender-to-mauve dither ribbon and rounded dark mode pill badges.",
+        resource="catppuccin_mocha_header.ans",
+    ),
+    BannerPreset(
+        key="monokai_pro_header", name="Monokai Pro Header / Vivid Code", depth="256-color extended ANSI",
+        description="6-line syntax-highlighted code header with JSON status block and monospace navigation prompts.",
+        resource="monokai_pro_header.ans",
+    ),
+    BannerPreset(
+        key="c64_vintage_header", name="Commodore 64 Masthead / Vintage Blue", depth="256-color extended ANSI",
+        description="5-line authentic 8-bit PETSCII header with solid C64 blue background and retro command prompt.",
+        resource="c64_vintage_header.ans",
     ),
 )
 
