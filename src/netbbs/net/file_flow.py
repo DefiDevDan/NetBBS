@@ -81,7 +81,7 @@ from netbbs.link.files import RemoteFile, is_area_linked, list_remote_files
 from netbbs.link.protocol import LinkProtocolError
 from netbbs.net import zmodem
 from netbbs.net.confirm import prompt_yes_no
-from netbbs.net.node_theme import effective_accent_color_256
+from netbbs.net.node_theme import effective_accent_color_256, effective_header_color_256
 from netbbs.net.picker import pick_item
 from netbbs.net.session import Session
 from netbbs.net.sort_ui import SORT_MODE_LABELS, prompt_sort_change
@@ -303,6 +303,7 @@ async def _browse_areas_in_category(
             unicode_style=unicode_style,
             collapsed=collapsed,
             accent_color=await lane.run(effective_accent_color_256),
+            header_color=await lane.run(effective_header_color_256),
         )
         if area is not None:
             await _show_area(session, lane, area, user, link_context=link_context)
@@ -345,6 +346,7 @@ async def _browse_areas_in_category(
         unicode_style=unicode_style,
         collapsed=collapsed,
         accent_color=await lane.run(effective_accent_color_256),
+        header_color=await lane.run(effective_header_color_256),
     )
     if selected is None:
         return
@@ -524,15 +526,17 @@ async def _show_area(
             await lane.run(record_file_area_seen, user, area, current_page.entries[-1])
 
     if not page.entries:
+        header_color = await lane.run(effective_header_color_256)
         heading = screen_title(
             area_name, breadcrumb=(session.node_display_name, "Files"), width=session.terminal_width, clear=redraw_in_place,
-            unicode_style=unicode_style, collapsed=collapsed,
+            unicode_style=unicode_style, collapsed=collapsed, header_color=header_color,
         )
         await session.write_line(f"\r\n{heading}")
         state = empty_state(
             "This file area has no files yet",
             detail="Uploads and fetched Link files will appear here.",
             width=session.terminal_width,
+            header_color=header_color,
         )
         await session.write_line(f"\r\n{state}")
     else:
@@ -617,19 +621,21 @@ async def _browse_remote_files(
     redraw_in_place = await lane.run(redraw_in_place_enabled, user)
     unicode_style = await lane.run(unicode_style_enabled, user)
     collapsed = await lane.run(breadcrumb_collapsed_enabled, user)
+    header_color = await lane.run(effective_header_color_256)
     if not remote_files:
         heading = screen_title(
             "Remote catalogue",
             breadcrumb=(session.node_display_name, "Files", sanitize_text(area.name)),
             width=session.terminal_width,
             clear=redraw_in_place,
-            unicode_style=unicode_style, collapsed=collapsed,
+            unicode_style=unicode_style, collapsed=collapsed, header_color=header_color,
         )
         await session.write_line(f"\r\n{heading}")
         state = empty_state(
             "This file area has no remote catalogue entries",
             detail="New Link descriptors will appear here automatically.",
             width=session.terminal_width,
+            header_color=header_color,
         )
         await session.write_line(f"\r\n{state}")
         return
@@ -651,6 +657,7 @@ async def _browse_remote_files(
         unicode_style=unicode_style,
         collapsed=collapsed,
         accent_color=await lane.run(effective_accent_color_256),
+        header_color=header_color,
     )
     if selected is None:
         return
@@ -730,6 +737,7 @@ async def _fetch_remote_file(
         width=session.terminal_width,
         clear=redraw_in_place,
         unicode_style=unicode_style, collapsed=collapsed,
+        header_color=await lane.run(effective_header_color_256),
     )
     await session.write_line(f"\r\n{heading}")
     transfer = None
@@ -798,6 +806,7 @@ async def _render_file_page(
         width=session.terminal_width,
         clear=redraw_in_place,
         unicode_style=unicode_style, collapsed=collapsed,
+        header_color=await lane.run(effective_header_color_256),
     )
     await session.write_line(f"\r\n{header}")
     display_format, display_timezone = await lane.run(resolve_display_preferences)
@@ -836,6 +845,7 @@ async def _handle_upload(session: Session, lane: DatabaseLane, area: FileArea, u
         clear=await lane.run(redraw_in_place_enabled, user),
         unicode_style=await lane.run(unicode_style_enabled, user),
         collapsed=await lane.run(breadcrumb_collapsed_enabled, user),
+        header_color=await lane.run(effective_header_color_256),
     )
     await session.write_line(f"\r\n{heading}")
     await session.write_line("Start your terminal's Zmodem send (sz) now. Waiting for the transfer to begin...")
@@ -892,6 +902,7 @@ async def _handle_download(session: Session, lane: DatabaseLane, area: FileArea,
         clear=await lane.run(redraw_in_place_enabled, user),
         unicode_style=await lane.run(unicode_style_enabled, user),
         collapsed=await lane.run(breadcrumb_collapsed_enabled, user),
+        header_color=await lane.run(effective_header_color_256),
     )
     await session.write_line(f"\r\n{heading}")
     await session.write_line(f"Starting Zmodem send of {entry_filename!r} — accept the transfer in your terminal.")

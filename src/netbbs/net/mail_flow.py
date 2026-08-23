@@ -65,7 +65,7 @@ from netbbs.net.menu_description_preference import menu_description_level
 from netbbs.net.redraw_preference import redraw_in_place_enabled
 from netbbs.net.breadcrumb_preference import breadcrumb_collapsed_enabled
 from netbbs.net.unicode_style_preference import unicode_style_enabled
-from netbbs.net.node_theme import effective_accent_color_256
+from netbbs.net.node_theme import effective_accent_color_256, effective_header_color_256
 from netbbs.net.picker import pick_item
 from netbbs.net.prose_editor import edit_prose
 from netbbs.net.session import Session
@@ -160,7 +160,8 @@ async def _render_mail_menu(
         else colored("Inbox caught up", fg_color=SUCCESS_COLOR)
     )
     header = screen_title("Mail",
-            breadcrumb=(session.node_display_name,), subtitle=subtitle, width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
+            breadcrumb=(session.node_display_name,), subtitle=subtitle, width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
+            header_color=await lane.run(effective_header_color_256))
     await session.write_line(f"\r\n{header}")
 
     options = [
@@ -205,6 +206,7 @@ async def _show_inbox(session: Session, lane: DatabaseLane, user: User) -> None:
             unicode_style=unicode_style,
             collapsed=collapsed,
             accent_color=await lane.run(effective_accent_color_256),
+            header_color=await lane.run(effective_header_color_256),
         )
         if message is None:
             return
@@ -250,6 +252,7 @@ async def _show_sent(session: Session, lane: DatabaseLane, user: User) -> None:
             unicode_style=unicode_style,
             collapsed=collapsed,
             accent_color=await lane.run(effective_accent_color_256),
+            header_color=await lane.run(effective_header_color_256),
         )
         if message is None:
             return
@@ -273,6 +276,7 @@ async def _render_message(
         width=session.terminal_width,
         clear=redraw_in_place,
         unicode_style=unicode_style, collapsed=collapsed,
+        header_color=await lane.run(effective_header_color_256),
     )
     await session.write_line(f"\r\n{header}")
     accent = await lane.run(effective_accent_color_256)
@@ -472,6 +476,7 @@ async def _compose_mail(
     review_unicode_style = await lane.run(unicode_style_enabled, user)
     review_collapsed = await lane.run(breadcrumb_collapsed_enabled, user)
     review_accent_color = await lane.run(effective_accent_color_256)
+    review_header_color = await lane.run(effective_header_color_256)
     while True:
         action = await review_composition(
             session,
@@ -486,6 +491,7 @@ async def _compose_mail(
             unicode_style=review_unicode_style,
             collapsed=review_collapsed,
             accent_color=review_accent_color,
+            header_color=review_header_color,
         )
         if action is ReviewAction.CANCEL:
             await session.write_line(colored("Message cancelled.", fg_color=MUTED_COLOR))
