@@ -3285,7 +3285,7 @@ def test_edit_option_opens_the_ansi_editor_and_a_save_round_trips_into_banner_pa
     from netbbs.rendering.ansi_parse import parse_ansi_into_buffer
     from netbbs.rendering.screen_buffer import ScreenBuffer
 
-    session = FakeSession(["s", "w", "x", "A", "CTRL+O", "b", "b", "b"])
+    session = FakeSession(["s", "w", "i", "A", "CTRL+O", "b", "b", "b"])
     _run(session, lane, sysop)
     assert "Saved" in _written_text(session)
 
@@ -3307,10 +3307,66 @@ def test_edit_then_quit_without_saving_leaves_banner_file_untouched(db, lane, sy
 
     banner_path(db).write_bytes(b"ORIGINAL")
 
-    session = FakeSession(["s", "w", "x", "A", "CTRL+X", "d", "b", "b", "b"])
+    session = FakeSession(["s", "w", "i", "A", "CTRL+X", "d", "b", "b", "b"])
     _run(session, lane, sysop)
     assert "No changes saved" in _written_text(session)
     assert banner_path(db).read_bytes() == b"ORIGINAL"
+
+
+# -- welcome-banner gallery (issue #169) -------------------------------------
+
+
+def test_gallery_option_appears_in_the_welcome_banner_menu(db, lane, sysop):
+    session = FakeSession(["s", "w", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "allery" in _written_text(session)
+
+
+def test_gallery_lists_bundled_welcome_banner_presets_by_name(db, lane, sysop):
+    session = FakeSession(["s", "w", "g", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "Synthwave / Magenta-Cyan Neon Grid" in text
+    assert "Classic BBS" in text
+
+
+def test_gallery_selecting_a_preset_previews_its_decoded_content_before_applying(db, lane, sysop):
+    from netbbs.net.welcome_banner import is_welcome_banner_enabled
+
+    # item 01 on the picker's first page -- Synthwave / Magenta-Cyan Neon Grid.
+    session = FakeSession(["s", "w", "g", "0", "1", "n", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "Previewing 'Synthwave / Magenta-Cyan Neon Grid':" in text
+    assert "Not applied." in text
+    assert is_welcome_banner_enabled(db) is False
+
+
+def test_gallery_applying_a_preset_writes_its_bytes_and_enables_the_banner(db, lane, sysop):
+    from netbbs.net.banner_presets import WELCOME_BANNER_PRESETS, load_welcome_banner_preset
+    from netbbs.net.welcome_banner import banner_path, is_welcome_banner_enabled
+
+    session = FakeSession(["s", "w", "g", "0", "1", "y", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "Applied and enabled." in text
+    assert is_welcome_banner_enabled(db) is True
+    assert banner_path(db).read_bytes() == load_welcome_banner_preset(WELCOME_BANNER_PRESETS[0])
+
+    rows = db.connection.execute(
+        "SELECT actor_user_id, detail FROM moderation_log WHERE action = 'apply_welcome_banner_preset'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["actor_user_id"] == sysop.id
+    assert "synthwave" in rows[0]["detail"]
+
+
+def test_gallery_back_without_selecting_leaves_the_banner_untouched(db, lane, sysop):
+    from netbbs.net.welcome_banner import is_welcome_banner_enabled
+
+    session = FakeSession(["s", "w", "g", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert is_welcome_banner_enabled(db) is False
 
 
 # -- main-menu masthead (issue #161) ---------------------------------------
@@ -3402,7 +3458,7 @@ def test_masthead_edit_option_opens_the_ansi_editor_and_a_save_round_trips_into_
     from netbbs.rendering.ansi_parse import parse_ansi_into_buffer
     from netbbs.rendering.screen_buffer import ScreenBuffer
 
-    session = FakeSession(["s", "m", "x", "A", "CTRL+O", "b", "b", "b"])
+    session = FakeSession(["s", "m", "i", "A", "CTRL+O", "b", "b", "b"])
     _run(session, lane, sysop)
     assert "Saved" in _written_text(session)
 
@@ -3424,10 +3480,55 @@ def test_masthead_edit_then_quit_without_saving_leaves_banner_file_untouched(db,
 
     main_menu_banner_path(db).write_bytes(b"ORIGINAL")
 
-    session = FakeSession(["s", "m", "x", "A", "CTRL+X", "d", "b", "b", "b"])
+    session = FakeSession(["s", "m", "i", "A", "CTRL+X", "d", "b", "b", "b"])
     _run(session, lane, sysop)
     assert "No changes saved" in _written_text(session)
     assert main_menu_banner_path(db).read_bytes() == b"ORIGINAL"
+
+
+# -- masthead gallery (issue #169) -------------------------------------------
+
+
+def test_masthead_gallery_option_appears_in_the_masthead_menu(db, lane, sysop):
+    session = FakeSession(["s", "m", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "allery" in _written_text(session)
+
+
+def test_masthead_gallery_lists_bundled_masthead_presets_by_name(db, lane, sysop):
+    session = FakeSession(["s", "m", "g", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "Neon Horizon Strip" in text
+    assert "Nordic Ice Clean" in text
+
+
+def test_masthead_gallery_applying_a_preset_writes_its_bytes_and_enables_the_masthead(db, lane, sysop):
+    from netbbs.net.banner_presets import MAIN_MENU_BANNER_PRESETS, load_main_menu_banner_preset
+    from netbbs.net.main_menu_banner import is_main_menu_banner_enabled, main_menu_banner_path
+
+    session = FakeSession(["s", "m", "g", "0", "1", "y", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "Applied and enabled." in text
+    assert is_main_menu_banner_enabled(db) is True
+    assert main_menu_banner_path(db).read_bytes() == load_main_menu_banner_preset(MAIN_MENU_BANNER_PRESETS[0])
+
+    rows = db.connection.execute(
+        "SELECT actor_user_id, detail FROM moderation_log WHERE action = 'apply_main_menu_banner_preset'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["actor_user_id"] == sysop.id
+    assert "neon" in rows[0]["detail"]
+
+
+def test_masthead_gallery_declining_the_apply_prompt_leaves_the_masthead_disabled(db, lane, sysop):
+    from netbbs.net.main_menu_banner import is_main_menu_banner_enabled
+
+    session = FakeSession(["s", "m", "g", "0", "1", "n", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Not applied." in _written_text(session)
+    assert is_main_menu_banner_enabled(db) is False
 
 
 # -- self-service registration -----------------------------------------------

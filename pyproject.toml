@@ -53,6 +53,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "netbbs.web" = ["static/*"]
+"netbbs.net" = ["banner_presets/welcome/*.ans", "banner_presets/masthead/*.ans"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

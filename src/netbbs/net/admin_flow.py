@@ -52,6 +52,7 @@ import asyncio
 import json
 import logging
 import math
+from pathlib import Path
 from typing import Awaitable, Callable, Sequence
 
 import nacl.signing
@@ -266,6 +267,12 @@ from netbbs.net.welcome_banner import (
     set_welcome_banner_enabled,
     welcome_banner_status,
 )
+from netbbs.net.banner_presets import (
+    MAIN_MENU_BANNER_PRESETS,
+    WELCOME_BANNER_PRESETS,
+    load_main_menu_banner_preset,
+    load_welcome_banner_preset,
+)
 from netbbs.net.main_menu_banner import (
     MAX_MASTHEAD_SIZE_BYTES,
     load_main_menu_banner,
@@ -281,6 +288,7 @@ from netbbs.rendering import (
     MENU_KEY_COLOR,
     METADATA_COLOR,
     MUTED_COLOR,
+    RESET,
     SUCCESS_COLOR,
     VALUE_COLOR,
     WARNING_COLOR,
@@ -291,6 +299,7 @@ from netbbs.rendering import (
     colored_truncate,
     counts_row,
     cut_to_width,
+    decode_ansi_bytes,
     double_frame,
     empty_state,
     field_row,
@@ -4070,9 +4079,13 @@ async def _welcome_banner_menu(session: Session, lane: DatabaseLane, actor: User
             await session.write_line("")
             await _disable_welcome_banner_screen(session, lane, actor)
             await _draw_welcome_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
-        elif choice == "x":
+        elif choice == "i":
             await session.write_line("")
             await _edit_welcome_banner_screen(session, lane, actor)
+            await _draw_welcome_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
+        elif choice == "g":
+            await session.write_line("")
+            await _welcome_banner_gallery_screen(session, lane, actor, description_level, redraw_in_place, unicode_style, collapsed)
             await _draw_welcome_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
         else:
             await session.write(reject_unhandled_key(choice))
@@ -4106,7 +4119,8 @@ async def _draw_welcome_banner_menu(
                 MenuEntry(label=menu_key("P", "review"), brief="Show the banner as callers see it"),
                 MenuEntry(label=menu_key("E", "nable"), brief="Turn the banner on"),
                 MenuEntry(label=menu_key("D", "isable"), brief="Turn the banner off"),
-                MenuEntry(label=menu_key("X", " edit"), brief="Edit the banner text"),
+                MenuEntry(label=menu_key("i", "t", prefix="Ed"), brief="Edit the banner text"),
+                MenuEntry(label=menu_key("G", "allery"), brief="Apply a bundled sample banner"),
                 MenuEntry(label=menu_key("B", "ack"), brief="Return to Settings"),
             ],
             description_level,
@@ -4228,6 +4242,50 @@ async def _edit_welcome_banner_screen(session: Session, lane: DatabaseLane, acto
     await session.write_line(f"\r\nSaved {path}. Use [P]review to verify it looks right.")
 
 
+async def _welcome_banner_gallery_screen(
+    session: Session, lane: DatabaseLane, actor: User, description_level: str,
+    redraw_in_place: bool, unicode_style: bool, collapsed: bool,
+) -> None:
+    """Issue #169: apply one of NetBBS's own bundled sample banners with
+    zero filesystem access to the node -- the samples are real installed
+    package data (`netbbs.net.banner_presets`), not files a SysOp has to
+    `cp` into place first (the gap this closes: a wheel install has no
+    `examples/` directory to copy from at all)."""
+    selection = await pick_item(
+        session,
+        list(enumerate(WELCOME_BANNER_PRESETS, start=1)),
+        name_of=lambda pair: pair[1].name,
+        stable_id_of=lambda pair: pair[0],
+        description_of=lambda pair: f"{pair[1].depth} -- {pair[1].description}",
+        title="Welcome banner gallery",
+        empty_message="No bundled welcome-banner samples.",
+        description_level=description_level,
+        redraw_in_place=redraw_in_place,
+        unicode_style=unicode_style,
+        collapsed=collapsed,
+    )
+    if selection is None:
+        return
+    preset = selection[1]
+    data = load_welcome_banner_preset(preset)
+    await session.write_line(colored(f"\r\nPreviewing {preset.name!r}:", fg_color=MUTED_COLOR))
+    await session.write_line(decode_ansi_bytes(data) + RESET)
+
+    if not await prompt_yes_no(session, f"\r\nApply {preset.name!r} as the welcome banner now?", default=False):
+        await session.write_line(colored("Not applied.", fg_color=MUTED_COLOR))
+        return
+
+    def _apply(db: Database) -> Path:
+        path = banner_path(db)
+        path.write_bytes(data)
+        set_welcome_banner_enabled(db, True)
+        record_action(db, actor=actor, action="apply_welcome_banner_preset", detail=f"{preset.key} -> {path}")
+        return path
+
+    path = await lane.run(_apply)
+    await session.write_line(f"Applied and enabled. Saved to {path}. Use [P]review to verify it looks right.")
+
+
 # -- main-menu masthead (issue #161 -- part two of the three-part
 # skinning initiative the welcome banner above calls itself part one
 # of) ---------------------------------------------------------------
@@ -4257,9 +4315,13 @@ async def _main_menu_banner_menu(session: Session, lane: DatabaseLane, actor: Us
             await session.write_line("")
             await _disable_main_menu_banner_screen(session, lane, actor)
             await _draw_main_menu_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
-        elif choice == "x":
+        elif choice == "i":
             await session.write_line("")
             await _edit_main_menu_banner_screen(session, lane, actor)
+            await _draw_main_menu_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
+        elif choice == "g":
+            await session.write_line("")
+            await _main_menu_banner_gallery_screen(session, lane, actor, description_level, redraw_in_place, unicode_style, collapsed)
             await _draw_main_menu_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
         else:
             await session.write(reject_unhandled_key(choice))
@@ -4300,7 +4362,8 @@ async def _draw_main_menu_banner_menu(
                 MenuEntry(label=menu_key("P", "review"), brief="Show the masthead as callers see it"),
                 MenuEntry(label=menu_key("E", "nable"), brief="Turn the masthead on"),
                 MenuEntry(label=menu_key("D", "isable"), brief="Turn the masthead off"),
-                MenuEntry(label=menu_key("X", " edit"), brief="Edit the masthead art"),
+                MenuEntry(label=menu_key("i", "t", prefix="Ed"), brief="Edit the masthead art"),
+                MenuEntry(label=menu_key("G", "allery"), brief="Apply a bundled sample masthead"),
                 MenuEntry(label=menu_key("B", "ack"), brief="Return to Settings"),
             ],
             description_level,
@@ -4404,6 +4467,47 @@ async def _edit_main_menu_banner_screen(session: Session, lane: DatabaseLane, ac
     path.write_bytes(result)
     await lane.run(record_action, actor=actor, action="edit_main_menu_banner", detail=str(path))
     await session.write_line(f"\r\nSaved {path}. Use [P]review to verify it looks right.")
+
+
+async def _main_menu_banner_gallery_screen(
+    session: Session, lane: DatabaseLane, actor: User, description_level: str,
+    redraw_in_place: bool, unicode_style: bool, collapsed: bool,
+) -> None:
+    """Same bundled-sample gallery as `_welcome_banner_gallery_screen`
+    (issue #169), against `main_menu_banner_path` instead."""
+    selection = await pick_item(
+        session,
+        list(enumerate(MAIN_MENU_BANNER_PRESETS, start=1)),
+        name_of=lambda pair: pair[1].name,
+        stable_id_of=lambda pair: pair[0],
+        description_of=lambda pair: f"{pair[1].depth} -- {pair[1].description}",
+        title="Masthead gallery",
+        empty_message="No bundled masthead samples.",
+        description_level=description_level,
+        redraw_in_place=redraw_in_place,
+        unicode_style=unicode_style,
+        collapsed=collapsed,
+    )
+    if selection is None:
+        return
+    preset = selection[1]
+    data = load_main_menu_banner_preset(preset)
+    await session.write_line(colored(f"\r\nPreviewing {preset.name!r}:", fg_color=MUTED_COLOR))
+    await session.write_line(decode_ansi_bytes(data) + RESET)
+
+    if not await prompt_yes_no(session, f"\r\nApply {preset.name!r} as the masthead now?", default=False):
+        await session.write_line(colored("Not applied.", fg_color=MUTED_COLOR))
+        return
+
+    def _apply(db: Database) -> Path:
+        path = main_menu_banner_path(db)
+        path.write_bytes(data)
+        set_main_menu_banner_enabled(db, True)
+        record_action(db, actor=actor, action="apply_main_menu_banner_preset", detail=f"{preset.key} -> {path}")
+        return path
+
+    path = await lane.run(_apply)
+    await session.write_line(f"Applied and enabled. Saved to {path}. Use [P]review to verify it looks right.")
 
 
 # -- boards & areas (design doc) ---------------------------------------
