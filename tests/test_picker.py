@@ -1146,6 +1146,289 @@ def test_next_is_hidden_but_prev_shown_on_the_last_page_of_a_multi_page_list():
     assert result["value"] is None
 
 
+# -- arrow-select (issue #171) -----------------------------------------
+
+_UP = b"\x1b[A"
+_DOWN = b"\x1b[B"
+_ENTER = b"\r\n"
+
+
+def test_no_row_is_highlighted_until_the_first_arrow_press():
+    items = ["alpha", "beta", "gamma"]
+
+    async def handler(session: Session):
+        await pick_item(
+            session, items, name_of=lambda x: x, stable_id_of=lambda x: items.index(x) + 1,
+            title="Items", empty_message="none",
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await skip_initial_negotiation(reader)
+            data = _visible(await _read_until_quiet(reader))
+            assert b"  01. " in data
+            assert b"> 01." not in data
+            writer.write(b"b")
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
+def test_arrow_down_moves_the_highlight_and_bells_past_the_last_row():
+    result = {}
+    items = ["alpha", "beta", "gamma"]
+
+    async def handler(session: Session):
+        result["value"] = await pick_item(
+            session, items, name_of=lambda x: x, stable_id_of=lambda x: items.index(x) + 1,
+            title="Items", empty_message="none",
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await skip_initial_negotiation(reader)
+            await _read_until_quiet(reader)
+
+            writer.write(_DOWN)  # unhighlighted -> row 1 (alpha)
+            await writer.drain()
+            data = _visible(await _read_until_quiet(reader))
+            assert b"> 01." in data
+
+            writer.write(_DOWN)  # row 1 -> row 2 (beta)
+            await writer.drain()
+            data = _visible(await _read_until_quiet(reader))
+            assert b"> 02." in data
+            assert b"> 01." not in data
+
+            writer.write(_DOWN)  # row 2 -> row 3 (gamma, the last row)
+            await writer.drain()
+            data = _visible(await _read_until_quiet(reader))
+            assert b"> 03." in data
+
+            writer.write(_DOWN)  # already on the last row -- bell, no redraw
+            await writer.drain()
+            data = await _read_until_quiet(reader)
+            assert b"\a" in data
+            assert b"gamma" not in data
+
+            writer.write(b"b")
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert result["value"] is None
+
+
+def test_arrow_up_from_unhighlighted_lands_on_the_last_row_and_bells_past_the_first():
+    result = {}
+    items = ["alpha", "beta", "gamma"]
+
+    async def handler(session: Session):
+        result["value"] = await pick_item(
+            session, items, name_of=lambda x: x, stable_id_of=lambda x: items.index(x) + 1,
+            title="Items", empty_message="none",
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await skip_initial_negotiation(reader)
+            await _read_until_quiet(reader)
+
+            writer.write(_UP)  # unhighlighted -> lands on the last row (gamma), not wrapping
+            await writer.drain()
+            data = _visible(await _read_until_quiet(reader))
+            assert b"> 03." in data
+
+            writer.write(_UP)  # row 3 -> row 2
+            await writer.drain()
+            data = _visible(await _read_until_quiet(reader))
+            assert b"> 02." in data
+
+            writer.write(_UP)  # row 2 -> row 1
+            await writer.drain()
+            data = _visible(await _read_until_quiet(reader))
+            assert b"> 01." in data
+
+            writer.write(_UP)  # already on the first row -- bell, no wraparound
+            await writer.drain()
+            data = await _read_until_quiet(reader)
+            assert b"\a" in data
+            assert b"alpha" not in data
+
+            writer.write(b"b")
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert result["value"] is None
+
+
+def test_enter_selects_the_highlighted_row():
+    result = {}
+    items = ["alpha", "beta", "gamma"]
+
+    async def handler(session: Session):
+        result["value"] = await pick_item(
+            session, items, name_of=lambda x: x, stable_id_of=lambda x: items.index(x) + 1,
+            title="Items", empty_message="none",
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await skip_initial_negotiation(reader)
+            await _read_until_quiet(reader)
+
+            writer.write(_DOWN + _DOWN)  # highlight row 2 (beta)
+            await writer.drain()
+            await _read_until_quiet(reader)
+
+            writer.write(_ENTER)
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert result["value"] == "beta"
+
+
+def test_enter_with_nothing_highlighted_bells_and_stays_in_picker():
+    result = {}
+    items = ["alpha", "beta"]
+
+    async def handler(session: Session):
+        result["value"] = await pick_item(
+            session, items, name_of=lambda x: x, stable_id_of=lambda x: items.index(x) + 1,
+            title="Items", empty_message="none",
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await skip_initial_negotiation(reader)
+            await _read_until_quiet(reader)
+
+            writer.write(_ENTER)
+            await writer.drain()
+            data = await _read_until_quiet(reader)
+            assert b"\a" in data
+
+            writer.write(b"b")
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert result["value"] is None
+
+
+def test_two_digit_selection_is_unaffected_by_an_active_highlight():
+    """The two paths coexist without interfering: highlighting a row via
+    the arrows doesn't change what a typed 2-digit number selects."""
+    result = {}
+    items = ["alpha", "beta", "gamma"]
+
+    async def handler(session: Session):
+        result["value"] = await pick_item(
+            session, items, name_of=lambda x: x, stable_id_of=lambda x: items.index(x) + 1,
+            title="Items", empty_message="none",
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await skip_initial_negotiation(reader)
+            await _read_until_quiet(reader)
+
+            writer.write(_DOWN)  # highlight row 1 (alpha)
+            await writer.drain()
+            await _read_until_quiet(reader)
+
+            writer.write(b"03")  # typed selection still jumps straight to row 3 (gamma)
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert result["value"] == "gamma"
+
+
+def test_highlight_resets_to_unhighlighted_after_paging():
+    result = {}
+    items = [f"item{i:02d}" for i in range(1, 21)]  # 2 pages at the default 18-per-page size
+
+    async def handler(session: Session):
+        result["value"] = await pick_item(
+            session, items, name_of=lambda x: x, stable_id_of=lambda x: items.index(x) + 1,
+            title="Items", empty_message="none",
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await skip_initial_negotiation(reader)
+            await _read_until_quiet(reader)
+
+            writer.write(_UP)  # unhighlighted -> lands on page 1's last row (item18)
+            await writer.drain()
+            data = _visible(await _read_until_quiet(reader))
+            assert b"> 18." in data
+
+            writer.write(b"n")  # page to page 2 (item19, item20)
+            await writer.drain()
+            data = _visible(await _read_until_quiet(reader))
+            assert b"> 01." not in data  # no stale highlight carried onto the new page
+
+            writer.write(_DOWN)  # fresh highlight on page 2's own first row
+            await writer.drain()
+            data = _visible(await _read_until_quiet(reader))
+            assert b"> 01." in data
+            assert b"item19" in data
+
+            writer.write(b"b")
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert result["value"] is None
+
+
 # -- description column & truncation ---------------------------------------
 
 

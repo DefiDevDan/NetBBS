@@ -828,6 +828,49 @@ anything was cut. Keep `description_of` to one short field for any picker
 whose `name_of` is itself long; put additional detail in the full-width
 post-selection screen instead, where `truncate` doesn't apply.
 
+### A `Session.read_editor_key` test double must accept `distinguish_ctrl_h` and preserve `read_key()`'s sentinel returns (issue #171)
+
+`pick_item`'s Up/Down/Enter highlight required switching its main loop
+from `session.read_key()` to the structured `read_editor_key()` reader
+(`read_key()` "discards every escape sequence outright," so arrows are
+fundamentally undetectable through it -- see that method's own
+docstring). Every real transport (`TelnetSession`/`SSHSession`/
+`WebSession`/`LocalCLISession`) already implements `read_editor_key`
+correctly, but `pick_item` is reused far more widely than
+`edit_resource_draft` (the only prior `read_editor_key` consumer), and
+two latent gaps across the test suite's lightweight `Session` doubles
+only surfaced once *this* screen finally exercised them:
+
+1. **`distinguish_ctrl_h` isn't universally accepted.** ~20 test-only
+   `read_editor_key` overrides across the suite predate that parameter
+   (e.g. `async def read_editor_key(self):` with no kwarg at all) --
+   calling them as `read_editor_key(distinguish_ctrl_h=True)` raises
+   `TypeError` before their body (an unconditional `raise
+   NotImplementedError`) ever runs, which the
+   `except NotImplementedError` fallback doesn't catch.
+   `picker._read_navigable_key` (deliberately its own copy, not shared
+   with `resource_editor._read_navigable_key` -- see its own
+   docstring) retries the call with no kwarg at all before giving up,
+   rather than requiring every one of those ~20 fixtures to be
+   updated for a parameter their bodies never actually use.
+2. **The `read_key()` fallback must still recognize the four unechoed
+   sentinels.** A `Session` double with no working `read_editor_key`
+   at all falls back to wrapping `session.read_key()`'s return as a
+   plain `EditorKeyKind.CHAR` -- but several fixtures script
+   `REDRAW_KEY`/`REFRESH_KEY`/`HELP_KEY`/`CANCEL_KEY` directly (or, like
+   `test_who_online.py`'s Ctrl-R-triggered registration, override
+   `read_key()` to inspect one for a side effect), and naively wrapping
+   the sentinel string as an ordinary *echoed* character both breaks
+   the Ctrl-combo's own handling (it's no longer recognized as `CTRL`)
+   and visibly echoes a raw control byte that real `read_key()` never
+   would. The fallback path translates these four known strings back
+   to the matching `EditorKeyKind.CTRL` event before falling through to
+   the generic `CHAR` wrap.
+
+Any future caller moving from `read_key()` to `read_editor_key()` in a
+screen with broad test-double reuse should expect both gaps, not just
+whichever one its own first test run happens to hit.
+
 ### Pinned chat UI
 
 The pinned status/input rows and line editor share one write lock. The live

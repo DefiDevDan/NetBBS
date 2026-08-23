@@ -1,7 +1,8 @@
 """
 Generic paginated item picker: browse via [N]ext/[P]rev, [S]earch,
 [G]oto #, [B]ack, or a 2-digit number to select an item on the current
-page.
+page -- plus an Up/Down-highlight-then-Enter path (issue #171) purely
+additive alongside the numbered selection, not a replacement for it.
 
 Built once, reused across boards, chat channels, and (once built) file
 areas — the same underlying problem (choosing one of potentially many
@@ -42,7 +43,7 @@ from __future__ import annotations
 import math
 from typing import Awaitable, Callable, Sequence, TypeVar
 
-from netbbs.net.char_input import CANCEL_KEY, HELP_KEY, REDRAW_KEY, REFRESH_KEY, Completer, reject_unhandled_key
+from netbbs.net.char_input import CANCEL_KEY, HELP_KEY, REDRAW_KEY, REFRESH_KEY, Completer, EditorKey, EditorKeyKind
 from netbbs.net.help_overlay import show_help
 from netbbs.net.session import Session
 from netbbs.rendering import (
@@ -165,6 +166,23 @@ async def pick_item(
     (most existing callers), the same as any other key this function
     doesn't recognize.
 
+    Issue #171: Up/Down move a highlight (`> ` in place of the row's
+    leading two spaces) one row at a time; Enter selects whichever row
+    is currently highlighted. Nothing is highlighted until the first
+    arrow press -- the screen looks identical to today until then,
+    matching `netbbs.net.resource_editor.edit_resource_draft`'s own
+    cursor-nav precedent for the same reason. Deliberately does *not*
+    wrap at the top/bottom of a page the way that screen's field cursor
+    does, though: this screen already has its own boundary convention
+    ([N]ext/[P]rev bell-reject at the edge of the page rather than
+    wrapping), and the highlight follows that, not the unrelated
+    field-editor's. The highlight is scoped to the current page and
+    working set -- any action that changes either (paging, a search
+    that narrows/clears, a sort change, `Ctrl-R` refresh) drops it back
+    to unhighlighted, never carrying a stale index into a different
+    page's items. Typing a 2-digit number is completely unaffected --
+    it still selects instantly, with no highlight step involved.
+
     Issue #112: an empty list remains interactive when `refresh` exists.
     Dynamic screens such as Who's Online can therefore start empty and
     populate later via Ctrl-R instead of immediately returning to their
@@ -216,6 +234,7 @@ async def pick_item(
 
     working_set: Sequence[T] = items
     page_index = 0
+    highlighted: int | None = None
 
     def _total_pages() -> int:
         return max(1, math.ceil(len(working_set) / _page_size(session, on_sort, description_level)))
@@ -264,8 +283,15 @@ async def pick_item(
             # name in ACCENT_COLOR (this module's existing convention for
             # navigable item names), and any description muted again.
             description = description_of(item)
+            # Issue #171: a highlighted row's leading two spaces become
+            # "> ", the same marker/column-width-preserving substitution
+            # `edit_resource_draft` already uses for its own arrow
+            # cursor -- `highlighted` is `None` (marker never shown)
+            # until the first arrow press, see this function's own
+            # docstring.
+            marker = "> " if highlighted == position - 1 else "  "
             segments: list[tuple[str, int | None]] = [
-                (f"  {position:02d}. ", MENU_KEY_COLOR),
+                (f"{marker}{position:02d}. ", MENU_KEY_COLOR),
                 (f"(#{stable_id_of(item)}) ", MUTED_COLOR),
                 (sanitize_text(name_of(item)), accent_color),
             ]
@@ -335,53 +361,133 @@ async def pick_item(
 
     page_items = await _render()
     while True:
-        key = await session.read_key()
-        key_lower = key.lower()
+        key = await _read_navigable_key(session, distinguish_ctrl_h=True)
 
-        if key == REDRAW_KEY:
+        if key.kind == EditorKeyKind.CTRL and key.char == "l":
             page_items = await _render()
             continue
 
-        if key == HELP_KEY:
+        if key.kind == EditorKeyKind.CTRL and key.char == "h":
             await _show_picker_help(session, on_sort=on_sort, has_refresh=refresh is not None)
             page_items = await _render()
             continue
 
-        if key == REFRESH_KEY:
+        if key.kind == EditorKeyKind.CTRL and key.char == "r":
             if refresh is None:
-                await session.write(reject_unhandled_key(key))
+                await session.write("\a")
                 continue
             items = await refresh()
             working_set = items
             page_index = 0
+            highlighted = None
             page_items = await _render()
             continue
 
-        if key_lower == "b" or key == CANCEL_KEY:
+        if key.kind == EditorKeyKind.CTRL and key.char == "c":
             # Issue #157: Ctrl-C as an incremental alias for [B]ack --
             # this screen's own "leave without selecting" action.
             await session.write_line("")
             return None
 
-        if key_lower == "n":
+        if key.kind == EditorKeyKind.DOWN:
+            # Issue #171. `not page_items` only reachable via the
+            # refresh-enabled empty-list path (issue #112) -- nothing to
+            # highlight yet, same guard [S]earch/[G]oto already apply.
+            if not page_items:
+                await session.write("\a")
+            elif highlighted is None:
+                highlighted = 0
+                page_items = await _render()
+            elif highlighted < len(page_items) - 1:
+                highlighted += 1
+                page_items = await _render()
+            else:
+                # Deliberately no wraparound -- matches this screen's
+                # own [N]ext/[P]rev boundary convention, not
+                # edit_resource_draft's field-cursor wraparound (see
+                # this function's own docstring).
+                await session.write("\a")
+            continue
+
+        if key.kind == EditorKeyKind.UP:
+            if not page_items:
+                await session.write("\a")
+            elif highlighted is None:
+                highlighted = len(page_items) - 1
+                page_items = await _render()
+            elif highlighted > 0:
+                highlighted -= 1
+                page_items = await _render()
+            else:
+                await session.write("\a")
+            continue
+
+        if key.kind == EditorKeyKind.ENTER:
+            if highlighted is None:
+                # Nothing highlighted -- Enter has no target. Never
+                # echoed, so just the bell, same as an unhandled
+                # Ctrl-combo below.
+                await session.write("\a")
+                continue
+            selected_item = page_items[highlighted]
+            await session.write_line("")
+            return selected_item
+
+        if key.kind == EditorKeyKind.ESCAPE:
+            # Dogfood-request precedent from edit_resource_draft: Esc
+            # cancels cursor-navigation (drops the highlight) rather
+            # than leaving the screen -- [B]ack/Ctrl-C already own
+            # "actually leave." A no-op bell when nothing is
+            # highlighted -- there is no cursor-nav state to cancel.
+            if highlighted is not None:
+                highlighted = None
+                page_items = await _render()
+            else:
+                await session.write("\a")
+            continue
+
+        if key.kind != EditorKeyKind.CHAR or key.char is None:
+            # Backspace/Delete/Tab/Left/Right/Home/End/PageUp/PageDown,
+            # or an unmapped Ctrl combo -- none of these are echoed
+            # (only ordinary characters are, just below), so only the
+            # bell, matching Ctrl-L/Ctrl-R/Ctrl-H/Ctrl-C's own
+            # pre-existing unechoed-rejection precedent above.
+            await session.write("\a")
+            continue
+
+        # An ordinary character: echo it immediately, the same
+        # unconditional "echo then decide" behavior `read_key()` itself
+        # used to provide before this loop moved onto the structured
+        # reader above for arrow-key support.
+        char = key.char
+        await session.write(char)
+        char_lower = char.lower()
+
+        if char_lower == "b":
+            await session.write_line("")
+            return None
+
+        if char_lower == "n":
             if page_index < _total_pages() - 1:
                 await session.write_line("")
                 page_index += 1
+                highlighted = None
                 page_items = await _render()
             else:
                 await session.write(reject_keystroke())
             continue
 
-        if key_lower == "p":
+        if char_lower == "p":
             if page_index > 0:
                 await session.write_line("")
                 page_index -= 1
+                highlighted = None
                 page_items = await _render()
             else:
                 await session.write(reject_keystroke())
             continue
 
-        if key_lower == "s":
+        if char_lower == "s":
             if not items:
                 # Dogfood report, issue #155: reachable at all only
                 # because `refresh` (Who's Online's own use) keeps this
@@ -408,6 +514,7 @@ async def pick_item(
                 # two separate commands for what's really one action.
                 working_set = items
                 page_index = 0
+                highlighted = None
                 page_items = await _render()
                 continue
             matches = [item for item in items if query.lower() in name_of(item).lower()]
@@ -419,22 +526,24 @@ async def pick_item(
                 return matches[0]
             working_set = matches
             page_index = 0
+            highlighted = None
             page_items = await _render()
             continue
 
-        if key_lower == "o":
+        if char_lower == "o":
             if on_sort is None:
-                await session.write(reject_unhandled_key(key))
+                await session.write(reject_keystroke())
                 continue
             new_items = await on_sort()
             if new_items is not None:
                 items = new_items
                 working_set = new_items
                 page_index = 0
+                highlighted = None
             page_items = await _render()
             continue
 
-        if key_lower == "g":
+        if char_lower == "g":
             if not items:
                 # Same reasoning as [S]earch's own guard above -- issue
                 # #155.
@@ -464,18 +573,24 @@ async def pick_item(
             await session.write("Choice: ")
             continue
 
-        if key.isdigit():
-            second = await session.read_key()
-            if not second.isdigit():
-                # The first digit is always echoed. Ctrl-L/Ctrl-R are
-                # deliberately returned unechoed, however, so erase only
-                # the one character which actually reached the terminal in
-                # that case; ordinary invalid second keys still contributed
-                # their own echo and therefore erase both characters.
-                erase_count = 1 if second in (REDRAW_KEY, REFRESH_KEY) else 2
+        if char.isdigit():
+            second = await _read_navigable_key(session, distinguish_ctrl_h=True)
+            second_char = (
+                second.char if second.kind == EditorKeyKind.CHAR and second.char is not None else None
+            )
+            if second_char is not None:
+                await session.write(second_char)
+            if second_char is None or not second_char.isdigit():
+                # The first digit is always echoed just above. A second
+                # key that was itself an ordinary character (including
+                # a non-digit one) was just echoed the same way; a
+                # second key of any other kind (arrows, Enter, Escape,
+                # Ctrl combos) never is -- erase only what actually
+                # reached the terminal.
+                erase_count = 2 if second_char is not None else 1
                 await session.write(reject_keystroke(erase_count))
                 continue
-            number = int(key + second)
+            number = int(char + second_char)
             if 1 <= number <= len(page_items):
                 # A valid selection is a real state change -- same "end
                 # the echoed input with its own newline before whatever
@@ -493,19 +608,64 @@ async def pick_item(
         await session.write(reject_keystroke())
 
 
+async def _read_navigable_key(session: Session, *, distinguish_ctrl_h: bool = False) -> EditorKey:
+    """Best-effort structured key read for issue #171's Up/Down/Enter
+    highlight path -- same shape as `netbbs.net.resource_editor.
+    _read_navigable_key` (duplicated rather than shared, matching this
+    codebase's own precedent for this kind of narrow glue: `pick_item`
+    is reused far more widely than `edit_resource_draft`, so this copy
+    additionally tolerates a `read_editor_key` override that doesn't
+    accept `distinguish_ctrl_h` at all -- several lightweight `Session`
+    test doubles across the suite predate that parameter and were never
+    exercised through a structured-key path before now).
+
+    Falls back to the plain single-keystroke reader, wrapped as an
+    `EditorKeyKind.CHAR`, for `Session` adapters that don't support
+    `read_editor_key` (or raise `NotImplementedError` from it) at all --
+    every real transport does, so this only ever matters for tests.
+    That fallback still recognizes `read_key()`'s own four unechoed
+    sentinel returns (`REDRAW_KEY`/`REFRESH_KEY`/`HELP_KEY`/
+    `CANCEL_KEY`) and maps them to the matching `EditorKeyKind.CTRL`
+    event rather than wrapping them as an ordinary, echoed `CHAR` --
+    several lightweight test doubles across the suite script these
+    sentinels directly (or their own `read_key()` override inspects one
+    for a side effect, e.g. `test_who_online.py`'s Ctrl-R-triggered
+    registration), predating this screen's own structured-key path."""
+    read_editor_key = getattr(session, "read_editor_key", None)
+    if read_editor_key is not None:
+        try:
+            try:
+                return await read_editor_key(distinguish_ctrl_h=distinguish_ctrl_h)
+            except TypeError:
+                return await read_editor_key()
+        except NotImplementedError:
+            pass
+    raw = await session.read_key()
+    sentinel_char = {REDRAW_KEY: "l", REFRESH_KEY: "r", HELP_KEY: "h", CANCEL_KEY: "c"}.get(raw)
+    if sentinel_char is not None:
+        return EditorKey(EditorKeyKind.CTRL, char=sentinel_char)
+    return EditorKey(EditorKeyKind.CHAR, char=raw)
+
+
 async def _show_picker_help(session: Session, *, on_sort: Callable | None, has_refresh: bool) -> None:
     """Ctrl-H's own content for this screen (dogfood feature request --
     the shared picker had no on-demand help at all, only the terse
     inline `brief` shown when menu descriptions are on). One shared
     listing rather than per-field like `netbbs.net.resource_editor.
-    edit_resource_draft`'s own Ctrl-H, since this screen's nav commands
-    aren't a field list to arrow-highlight one of -- every command
-    explained at once, in the order it appears in the nav row, with
-    `[O]rder`/Ctrl-R included only when this caller actually offers
-    them (matching `_nav_entries`' own conditional inclusion)."""
+    edit_resource_draft`'s own Ctrl-H -- this screen's nav commands
+    aren't a field list the way that screen's own fields are, even
+    though issue #171 gave this screen its own Up/Down highlight too --
+    every command explained at once, in the order it appears in the nav
+    row, with `[O]rder`/Ctrl-R included only when this caller actually
+    offers them (matching `_nav_entries`' own conditional inclusion)."""
     lines = [
         colored("Next / Prev", fg_color=HEADER_COLOR, bold=True),
         "  Move one page forward/back through the list.",
+        "",
+        colored("Up / Down / Enter", fg_color=HEADER_COLOR, bold=True),
+        "  Move a highlight up or down one row, then Enter selects it -- a lighter-weight "
+        "alternative to typing the 2-digit number below. Purely optional: nothing is "
+        "highlighted until the first press.",
         "",
         colored("A 2-digit number", fg_color=HEADER_COLOR, bold=True),
         "  Selects that item on the current page directly (e.g. '05') -- always exactly "
