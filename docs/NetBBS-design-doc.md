@@ -238,20 +238,26 @@ Untrusted user text is sanitized before styling. Trusted ANSI is added only
 after sanitization. Nested colored fragments are composed independently because
 an SGR reset does not restore an outer color.
 
-A SysOp may override the node's accent color (issue #162, part three of the
-skinning initiative the welcome banner/main-menu masthead already started) --
-the color used for board/channel/user names and other navigable-item
-branding across the whole product. `netbbs.net.node_theme` resolves a
-node-wide RGB override (downgraded to the nearest 256-color index for a
-session without truecolor support) in place of `theme.ACCENT_COLOR`
-wherever a screen renders one. This is deliberately narrow: every
-*semantic* color in `netbbs.rendering.theme` (errors, warnings, success,
-privilege badges, operational alerts, verified-identity badges) stays fixed
-everywhere, never SysOp-configurable -- a caller who has used several
-NetBBS nodes can keep trusting that red always means failure and green
-always means verified/success, regardless of any node's own branding. Full
-palette theming (every color configurable) was considered and rejected on
-exactly this basis, not merely deferred as too large -- see issue #163.
+A SysOp may override three of the node's branding colors -- accent (board/
+channel/user names and other navigable-item branding), header (section
+titles and frame borders), and clock (the main-menu prompt's time display)
+-- independently (issue #162, part three of the skinning initiative the
+welcome banner/main-menu masthead already started). `netbbs.net.node_theme`
+resolves each node-wide RGB override (downgraded to the nearest 256-color
+index for a session without truecolor support) in place of the matching bare
+`theme.py` constant everywhere a screen renders one, including every shared
+rendering primitive (`screen_title`, `double_frame`, `empty_state`) and every
+screen built on top of them. A SysOp sets or clears each color from
+Settings > [C]olors, which previews the candidate RGB against real sample
+text at both truecolor and 256-color depth before asking for confirmation.
+This is deliberately narrow: every *semantic* color in `netbbs.rendering.
+theme` (errors, warnings, success, privilege badges, operational alerts,
+verified-identity badges) stays fixed everywhere, never SysOp-configurable --
+a caller who has used several NetBBS nodes can keep trusting that red always
+means failure and green always means verified/success, regardless of any
+node's own branding. Full palette theming (every color configurable) was
+considered and rejected on exactly this basis, not merely deferred as too
+large -- see issue #163.
 
 The project intentionally provides two composition paths:
 
