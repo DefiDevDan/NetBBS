@@ -864,7 +864,12 @@ def test_pagination_adapts_to_negotiated_terminal_height():
 def test_description_level_brief_shows_nav_descriptions():
     """Issue #160's rollout to this screen: the nav row renders through
     `menu_grid` when `description_level="brief"` is passed, showing each
-    nav command's own short description underneath its hotkey."""
+    nav command's own short description underneath its hotkey.
+
+    Only two items (a single page) deliberately, so [N]ext/[P]rev are
+    both hidden (issue #169 dogfood report -- neither is usable with
+    nothing to page to) and only [S]earch/[G]oto/[B]ack remain to
+    assert the descriptive rendering against."""
     result = {}
     items = ["item1", "item2"]
 
@@ -880,7 +885,7 @@ def test_description_level_brief_shows_nav_descriptions():
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
             await skip_initial_negotiation(reader)
             text = (await _read_until_quiet(reader)).decode()
-            assert "Next page" in text
+            assert "Search by name" in text
             assert "Return without picking" in text
             writer.write(b"b")
             await writer.drain()
@@ -1046,6 +1051,89 @@ def test_next_on_last_page_sounds_bell_and_stays_in_picker():
             assert b"\a" in data
             assert b"Already on the last page." not in data
             assert b"page " not in data
+            writer.write(b"b")
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert result["value"] is None
+
+
+def test_next_and_prev_are_hidden_on_a_single_page_list():
+    """Dogfood report (issue #169): [N]ext/[P]rev used to be shown even
+    with nothing to page to -- pressing either just bell-rejected
+    (still true, see the two tests above), but the nav row implied both
+    were live options. Matches the precedent already set by
+    `netbbs.net.login_flow`'s board-post pager, which only shows its own
+    [O]lder/[N]ewer when there actually is more to page to."""
+    result = {}
+    items = ["a", "b"]
+
+    async def handler(session: Session):
+        result["value"] = await pick_item(
+            session, items, name_of=lambda x: x, stable_id_of=lambda x: items.index(x) + 1, title="I", empty_message="none"
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await skip_initial_negotiation(reader)
+            text = (await _read_until_quiet(reader)).decode()
+            assert "ext" not in text  # the "ext" tail of "[N]ext" -- see menu_key
+            assert "rev" not in text  # the "rev" tail of "[P]rev"
+            assert "earch" in text  # [S]earch stays -- unaffected by paging state
+            writer.write(b"b")
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert result["value"] is None
+
+
+def test_next_is_hidden_but_prev_shown_on_the_last_page_of_a_multi_page_list():
+    result = {}
+    items = [f"item{i:02d}" for i in range(1, 41)]  # spans several pages
+
+    def _current_and_total_page(text: str) -> tuple[int, int]:
+        match = re.search(r"page (\d+)/(\d+)", text)
+        assert match is not None, text
+        return int(match.group(1)), int(match.group(2))
+
+    async def handler(session: Session):
+        result["value"] = await pick_item(
+            session, items, name_of=lambda x: x, stable_id_of=lambda x: items.index(x) + 1, title="I", empty_message="none"
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await skip_initial_negotiation(reader)
+            text = (await _read_until_quiet(reader)).decode()
+            assert "ext" in text  # first page: a next page exists
+            assert "rev" not in text  # first page: no previous page yet
+
+            current, total = _current_and_total_page(text)
+            assert total > 1  # the scenario is only meaningful with several pages
+            for _ in range(total - current):
+                writer.write(b"n")
+                await writer.drain()
+                text = (await _read_until_quiet(reader)).decode()
+
+            current, total = _current_and_total_page(text)
+            assert current == total
+            assert "rev" in text  # last page: a previous page exists
+            assert "ext" not in text  # last page: no next page
+
             writer.write(b"b")
             await writer.drain()
             await _read_until_quiet(reader)

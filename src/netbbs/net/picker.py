@@ -273,7 +273,10 @@ async def pick_item(
                 segments.append((f" - {sanitize_text(description)}", MUTED_COLOR))
             await session.write_line(colored_truncate(segments, session.terminal_width))
 
-        nav = _render_nav(session, on_sort, description_level)
+        nav = _render_nav(
+            session, on_sort, description_level,
+            include_next=page_index < total_pages - 1, include_prev=page_index > 0,
+        )
         # Folded into this same trailing line, not a line of its own
         # (issue #102's own "document it somewhere discoverable"
         # criterion) -- a permanent extra row here would shift every
@@ -576,21 +579,37 @@ def _search_completer(candidates: Sequence[str]) -> Completer:
 _MIN_PAGE_SIZE_FOR_DESCRIPTIVE_NAV = 5
 
 
-def _nav_entries(on_sort: Callable | None) -> list[MenuEntry]:
-    entries = [
-        MenuEntry(label=menu_key("N", "ext"), brief="Next page"),
-        MenuEntry(label=menu_key("P", "rev"), brief="Previous page"),
-        MenuEntry(label=menu_key("S", "earch"), brief="Search by name"),
-        MenuEntry(label=menu_key("G", "oto #"), brief="Jump to an item's #"),
-    ]
+def _nav_entries(on_sort: Callable | None, *, include_next: bool = True, include_prev: bool = True) -> list[MenuEntry]:
+    # Dogfood-reported UI issue: [N]ext/[P]rev used to be shown even when
+    # there was no next/previous page to go to -- pressing them just bell-
+    # rejected (still true, see the main loop below), but the menu row lied
+    # about what was actually available. Matches the precedent already set
+    # by `netbbs.net.login_flow`'s board-post pager, which only appends its
+    # own [O]lder/[N]ewer entries when `page.has_older`/`page.has_newer` are
+    # true, rather than always showing them. `include_next`/`include_prev`
+    # default to `True` so `_page_size`'s own reservation call below (which
+    # doesn't know the current page) keeps sizing for the worst case (both
+    # shown) -- the real nav render passed below can only ever be shorter
+    # than that reservation, never longer, so page size never fluctuates as
+    # the caller pages through.
+    entries = []
+    if include_next:
+        entries.append(MenuEntry(label=menu_key("N", "ext"), brief="Next page"))
+    if include_prev:
+        entries.append(MenuEntry(label=menu_key("P", "rev"), brief="Previous page"))
+    entries.append(MenuEntry(label=menu_key("S", "earch"), brief="Search by name"))
+    entries.append(MenuEntry(label=menu_key("G", "oto #"), brief="Jump to an item's #"))
     if on_sort is not None:
         entries.append(MenuEntry(label=menu_key("O", "rder"), brief="Change sort order"))
     entries.append(MenuEntry(label=menu_key("B", "ack"), brief="Return without picking"))
     return entries
 
 
-def _render_nav(session: Session, on_sort: Callable | None, description_level: str) -> str:
-    entries = _nav_entries(on_sort)
+def _render_nav(
+    session: Session, on_sort: Callable | None, description_level: str,
+    *, include_next: bool = True, include_prev: bool = True,
+) -> str:
+    entries = _nav_entries(on_sort, include_next=include_next, include_prev=include_prev)
     if description_level != "off":
         descriptive = menu_grid(
             [("", entries)], width=session.terminal_width, height=session.terminal_height,
@@ -614,7 +633,11 @@ def _page_size(session: Session, on_sort: Callable | None, description_level: st
     # exactly 1 line -- still true for `description_level="off"`
     # (`action_bar`), so the reserved budget only needs to grow past
     # that constant once "brief"/"detailed" switches the nav row to
-    # `menu_grid`'s taller, one-entry-per-line rendering.
+    # `menu_grid`'s taller, one-entry-per-line rendering. Deliberately
+    # calls `_render_nav` with its `include_next`/`include_prev` defaults
+    # (both `True`) rather than the current page's real availability --
+    # see `_nav_entries`' own docstring-comment for why this must stay the
+    # worst-case (tallest possible) reservation.
     nav_lines = _render_nav(session, on_sort, description_level).count("\r\n") + 1
     available = session.terminal_height - (_RESERVED_LINES - 1 + nav_lines)
     return max(1, min(_MAX_PAGE_SIZE, available))
