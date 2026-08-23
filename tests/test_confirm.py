@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
 import pytest
 
@@ -49,6 +50,16 @@ def _written_text(session: FakeSession) -> str:
     return "".join(session.written)
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _visible(session: FakeSession) -> str:
+    """Strips the SGR highlight `_highlighted` now wraps the default
+    Y/N letter in, so a hint-text assertion can match the plain
+    letters/brackets without hardcoding the exact escape sequence."""
+    return _ANSI_RE.sub("", _written_text(session))
+
+
 def _char(value: str) -> EditorKey:
     return EditorKey(EditorKeyKind.CHAR, char=value)
 
@@ -93,11 +104,27 @@ def test_invalid_keys_bell_and_retry_without_selecting_default():
 def test_hint_reflects_the_default():
     session = FakeSession([_ENTER])
     asyncio.run(prompt_yes_no(session, "Confirm?", default=True))
-    assert "[Y/n]" in _written_text(session)
+    assert "[Y/n]" in _visible(session)
 
     session2 = FakeSession([_ENTER])
     asyncio.run(prompt_yes_no(session2, "Confirm?", default=False))
-    assert "[y/N]" in _written_text(session2)
+    assert "[y/N]" in _visible(session2)
+
+
+def test_hint_highlights_the_default_letter():
+    # Dogfood request: the letter Enter would actually choose is
+    # visually highlighted -- the *other* letter stays plain either way.
+    session = FakeSession([_ENTER])
+    asyncio.run(prompt_yes_no(session, "Confirm?", default=True))
+    text = _written_text(session)
+    assert "\x1b[38;5;46mY\x1b[0m" in text
+    assert "\x1b[38;5;46mn\x1b[0m" not in text
+
+    session2 = FakeSession([_ENTER])
+    asyncio.run(prompt_yes_no(session2, "Confirm?", default=False))
+    text2 = _written_text(session2)
+    assert "\x1b[38;5;46mN\x1b[0m" in text2
+    assert "\x1b[38;5;46my\x1b[0m" not in text2
 
 
 # -- prompt_yes_no_or_keep -----------------------------------------------------
@@ -132,11 +159,11 @@ def test_invalid_key_cannot_keep_current():
 def test_keep_hint_shows_only_the_current_value():
     session = FakeSession([_ENTER])
     asyncio.run(prompt_yes_no_or_keep(session, "Pinned?", current=True))
-    assert "[y]" in _written_text(session)
+    assert "[y]" in _visible(session)
 
     session2 = FakeSession([_ENTER])
     asyncio.run(prompt_yes_no_or_keep(session2, "Pinned?", current=False))
-    assert "[N]" in _written_text(session2)
+    assert "[N]" in _visible(session2)
 
 
 def test_accepted_choice_is_echoed_and_ends_the_input_row():

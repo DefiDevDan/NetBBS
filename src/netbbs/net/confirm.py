@@ -4,6 +4,24 @@ from __future__ import annotations
 
 from netbbs.net.char_input import EditorKeyKind
 from netbbs.net.session import Session
+from netbbs.rendering import MENU_KEY_COLOR, colored
+
+
+def _highlighted(letter: str) -> str:
+    """Highlights the letter Enter would actually choose, the same
+    `MENU_KEY_COLOR`-bold treatment `netbbs.rendering.menu.menu_key`
+    already uses for every other on-screen hotkey -- dogfood request.
+    Deliberately not a red/green good-or-bad mapping: `prompt_yes_no` is
+    reused for both safe and destructive confirmations (`Approve this
+    account?` and `Delete these stale drafts now?` alike), so "yes" is
+    not reliably the "good" choice to color green, nor "no" reliably
+    the "bad" one to color red -- doing so would misdirect exactly the
+    destructive-action prompts where getting this right matters most.
+    Highlighting *the default* stays true regardless of which letter it
+    is, and matches the existing capitalization convention (design doc
+    §3.2's fixed-everywhere semantic-color rule) rather than
+    contradicting it."""
+    return colored(letter, fg_color=MENU_KEY_COLOR, bold=True)
 
 
 async def read_confirmation_choice(session: Session) -> bool | None:
@@ -63,7 +81,7 @@ async def prompt_yes_no(session: Session, prompt: str, *, default: bool) -> bool
     ``default``. Invalid keys are rejected and the prompt remains active;
     they can never silently choose the default.
     """
-    hint = "Y/n" if default else "y/N"
+    hint = f"{_highlighted('Y')}/n" if default else f"y/{_highlighted('N')}"
     await session.write(f"{prompt} [{hint}]: ")
     answer = await read_confirmation_choice(session)
     return default if answer is None else answer
@@ -79,7 +97,7 @@ async def prompt_yes_no_or_keep(session: Session, prompt: str, *, current: bool)
     non-boolean fields on the very same edit screens. Y/N returns on one
     keypress; Enter keeps the current value.
     """
-    hint = "y" if current else "N"
+    hint = _highlighted("y" if current else "N")
     await session.write(f"{prompt} [{hint}]: ")
     answer = await read_confirmation_choice(session)
     return current if answer is None else answer
