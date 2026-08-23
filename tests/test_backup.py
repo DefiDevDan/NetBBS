@@ -1,7 +1,7 @@
 """
 Tests for netbbs.backup (design doc §13.4, issue #60's first
 operational slice): create_backup/restore_backup capturing and
-restoring all five recoverable-state artifacts, the ordering/safety
+restoring all six recoverable-state artifacts, the ordering/safety
 invariants around them, and the `python -m netbbs.backup` CLI.
 """
 
@@ -48,6 +48,10 @@ def _welcome_banner_path(db_path):
     return db_path.parent / f"{db_path.stem}_welcome_banner.ans"
 
 
+def _main_menu_banner_path(db_path):
+    return db_path.parent / f"{db_path.stem}_main_menu_banner.ans"
+
+
 @pytest.fixture
 def db_path(tmp_path):
     path = tmp_path / "netbbs.db"
@@ -61,7 +65,7 @@ def identity_dir(tmp_path):
 
 
 def _seed_full_node(db_path, identity_dir) -> NodeIdentity:
-    """Populate every one of the five backup artifacts with
+    """Populate every one of the six backup artifacts with
     distinguishable content, including the transient `.incoming`
     staging file that must never survive into a backup."""
     blob_path = _storage_root(db_path) / _BLOB_HASH[:2] / _BLOB_HASH
@@ -77,6 +81,7 @@ def _seed_full_node(db_path, identity_dir) -> NodeIdentity:
 
     _ssh_host_key_path(db_path).write_bytes(b"fake ssh host key")
     _welcome_banner_path(db_path).write_text("fake banner")
+    _main_menu_banner_path(db_path).write_text("fake masthead")
 
     return identity
 
@@ -84,7 +89,7 @@ def _seed_full_node(db_path, identity_dir) -> NodeIdentity:
 # -- create_backup --------------------------------------------------------
 
 
-def test_create_backup_captures_all_five_artifacts(tmp_path, db_path, identity_dir):
+def test_create_backup_captures_all_six_artifacts(tmp_path, db_path, identity_dir):
     _seed_full_node(db_path, identity_dir)
     destination = tmp_path / "backup1"
 
@@ -96,6 +101,7 @@ def test_create_backup_captures_all_five_artifacts(tmp_path, db_path, identity_d
     assert (destination / "identity" / "transitions.json").exists()
     assert (destination / f"{db_path.stem}_ssh_host_key").read_bytes() == b"fake ssh host key"
     assert (destination / f"{db_path.stem}_welcome_banner.ans").read_text() == "fake banner"
+    assert (destination / f"{db_path.stem}_main_menu_banner.ans").read_text() == "fake masthead"
     assert (destination / "manifest.json").exists()
 
 
@@ -137,9 +143,10 @@ def test_create_backup_refuses_if_database_missing(tmp_path, identity_dir):
 
 def test_create_backup_tolerates_no_identity_files_or_extras(tmp_path, db_path, identity_dir):
     """A brand-new node that has never uploaded a file, never had its
-    welcome banner customized, or (implausibly, but not this module's
-    job to assume otherwise) has no identity directory yet should still
-    back up cleanly -- every artifact past the database is optional."""
+    welcome banner or main-menu masthead customized, or (implausibly,
+    but not this module's job to assume otherwise) has no identity
+    directory yet should still back up cleanly -- every artifact past
+    the database is optional."""
     destination = tmp_path / "backup1"
 
     create_backup(db_path=db_path, identity_dir=identity_dir, destination=destination)
@@ -192,7 +199,7 @@ def test_restore_backup_round_trip(tmp_path, db_path, identity_dir):
     destination = tmp_path / "backup1"
     create_backup(db_path=db_path, identity_dir=identity_dir, destination=destination)
 
-    # Simulate data loss: wipe every one of the five artifacts.
+    # Simulate data loss: wipe every one of the six artifacts.
     conn = sqlite3.connect(str(db_path))
     conn.execute("DELETE FROM node_config")
     conn.commit()
@@ -202,6 +209,7 @@ def test_restore_backup_round_trip(tmp_path, db_path, identity_dir):
     shutil.rmtree(identity_dir)
     _ssh_host_key_path(db_path).unlink()
     _welcome_banner_path(db_path).unlink()
+    _main_menu_banner_path(db_path).unlink()
 
     restore_backup(source=destination, db_path=db_path, identity_dir=identity_dir)
 
@@ -209,6 +217,7 @@ def test_restore_backup_round_trip(tmp_path, db_path, identity_dir):
     assert (identity_dir / "root.identity").exists()
     assert _ssh_host_key_path(db_path).read_bytes() == b"fake ssh host key"
     assert _welcome_banner_path(db_path).read_text() == "fake banner"
+    assert _main_menu_banner_path(db_path).read_text() == "fake masthead"
     conn = sqlite3.connect(str(db_path))
     marker = conn.execute("SELECT value FROM node_config WHERE key = 'marker'").fetchone()
     conn.close()

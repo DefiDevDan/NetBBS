@@ -54,3 +54,15 @@ Both files are plain UTF-8 text containing real ANSI escape sequences
 terminal that supports ANSI/VT100 sequences, not a plain text editor,
 or the escape codes will show up as literal characters instead of
 color/formatting.
+
+## Main-menu masthead
+
+`netbbs.net.main_menu_banner` (issue #161) offers the same mechanism as
+the welcome banner above, applied to a second, independent screen: an
+optional masthead shown above the main menu, which otherwise stays
+exactly as live/dynamic as it always was (mail count, per-user
+preferences, node status). No sample art is provided for this one —
+author your own `.ans` file at `<db-file-stem>_main_menu_banner.ans`
+(or reuse/adapt one of the welcome-banner samples above), then enable
+it from `[S]ysOp` → `[S]ystem` → `[M]asthead` → `[E]nable`. `[P]review`
+and `[X] edit` work the same way as the welcome banner's own screen.

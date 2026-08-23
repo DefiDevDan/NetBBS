@@ -265,6 +265,13 @@ from netbbs.net.welcome_banner import (
     set_welcome_banner_enabled,
     welcome_banner_status,
 )
+from netbbs.net.main_menu_banner import (
+    MAX_MASTHEAD_SIZE_BYTES,
+    load_main_menu_banner,
+    main_menu_banner_path,
+    main_menu_banner_status,
+    set_main_menu_banner_enabled,
+)
 from netbbs.rendering import (
     ACCENT_COLOR,
     ALERT_COLOR,
@@ -803,6 +810,10 @@ async def _system_menu(
             await session.write_line("")
             await _welcome_banner_menu(session, lane, actor)
             await _draw_system_menu(session, node_controls, link_context, description_level, redraw_in_place, unicode_style)
+        elif choice == "m":
+            await session.write_line("")
+            await _main_menu_banner_menu(session, lane, actor)
+            await _draw_system_menu(session, node_controls, link_context, description_level, redraw_in_place, unicode_style)
         elif choice == "u":
             await session.write_line("")
             await _update_settings_screen(session, lane, actor)
@@ -860,6 +871,7 @@ async def _draw_system_menu(
             breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed))
     option_list = [
         MenuEntry(label=menu_key("W", "elcome banner"), brief="First-login greeting text"),
+        MenuEntry(label=menu_key("M", "asthead"), brief="Custom art above the main menu"),
         MenuEntry(label=menu_key("U", "pdate"), brief="Software update settings"),
         MenuEntry(label=menu_key("T", "imestamp format"), brief="Node-wide date/time display"),
         MenuEntry(label=menu_key("P", "olicy trust"), brief="Federation trust policy"),
@@ -4201,6 +4213,184 @@ async def _edit_welcome_banner_screen(session: Session, lane: DatabaseLane, acto
 
     path.write_bytes(result)
     await lane.run(record_action, actor=actor, action="edit_welcome_banner", detail=str(path))
+    await session.write_line(f"\r\nSaved {path}. Use [P]review to verify it looks right.")
+
+
+# -- main-menu masthead (issue #161 -- part two of the three-part
+# skinning initiative the welcome banner above calls itself part one
+# of) ---------------------------------------------------------------
+
+
+async def _main_menu_banner_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
+    description_level = await lane.run(menu_description_level, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
+    await _draw_main_menu_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
+    while True:
+        choice = (await session.read_key()).lower()
+
+        if choice == "b":
+            await session.write_line("")
+            return
+        elif choice == "p":
+            await session.write_line("")
+            await _preview_main_menu_banner_screen(session, lane, actor)
+            await _draw_main_menu_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
+        elif choice == "e":
+            await session.write_line("")
+            await _enable_main_menu_banner_screen(session, lane, actor)
+            await _draw_main_menu_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
+        elif choice == "d":
+            await session.write_line("")
+            await _disable_main_menu_banner_screen(session, lane, actor)
+            await _draw_main_menu_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
+        elif choice == "x":
+            await session.write_line("")
+            await _edit_main_menu_banner_screen(session, lane, actor)
+            await _draw_main_menu_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
+        else:
+            await session.write(reject_unhandled_key(choice))
+
+
+async def _draw_main_menu_banner_menu(
+    session: Session, lane: DatabaseLane, description_level: str, redraw_in_place: bool,
+    unicode_style: bool,
+    collapsed: bool,
+) -> None:
+    status = await lane.run(main_menu_banner_status)
+    state = "ENABLED" if status.enabled else "disabled"
+    if status.exists:
+        file_state = f"{status.size_bytes} bytes"
+    else:
+        file_state = "missing"
+    state_color = SUCCESS_COLOR if status.enabled else MUTED_COLOR
+    file_color = METADATA_COLOR if status.exists else ERROR_COLOR
+    detail = (
+        colored(state, fg_color=state_color, bold=status.enabled)
+        + colored(" -- file: ", fg_color=LABEL_COLOR)
+        + colored(str(status.path), fg_color=METADATA_COLOR)
+        + colored(f" ({file_state})", fg_color=file_color)
+    )
+    await session.write_line("\r\n" + screen_title("Main-menu masthead",
+            breadcrumb=(session.node_display_name, "System"), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed))
+    await session.write_line(detail)
+    await session.write_line(
+        colored(
+            "Shown above the main menu, which stays fully live/dynamic underneath "
+            "it -- disabled by default, no effect on any existing node.",
+            fg_color=MUTED_COLOR,
+        )
+    )
+    await session.write_line(
+        _menu_row(
+            [
+                MenuEntry(label=menu_key("P", "review"), brief="Show the masthead as callers see it"),
+                MenuEntry(label=menu_key("E", "nable"), brief="Turn the masthead on"),
+                MenuEntry(label=menu_key("D", "isable"), brief="Turn the masthead off"),
+                MenuEntry(label=menu_key("X", " edit"), brief="Edit the masthead art"),
+                MenuEntry(label=menu_key("B", "ack"), brief="Return to Settings"),
+            ],
+            description_level,
+            width=session.terminal_width,
+            height=session.terminal_height,
+        )
+    )
+    await session.write("Choice: ")
+
+
+async def _preview_main_menu_banner_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    """Renders the exact masthead `netbbs.net.login_flow._draw_main_menu`
+    would prepend above the main menu right now -- the same
+    `load_main_menu_banner` call, a smoke test of the loading path
+    itself. Unlike the welcome-banner preview, this never calls into
+    `netbbs.net.login_flow` to reproduce the real menu underneath it --
+    that module already imports `admin_menu` from this one, so the
+    reverse import would be circular, and the masthead itself carries no
+    truecolor-dependent content to showcase (shown exactly as authored,
+    the same "trusted, already-composed art" tier as the welcome
+    banner's own custom-file path)."""
+
+    def _load(db: Database) -> tuple:
+        return main_menu_banner_status(db), load_main_menu_banner(db)
+
+    status, masthead = await lane.run(_load)
+    await session.write_line(colored("\r\nPreviewing the masthead as shown above the main menu:", fg_color=MUTED_COLOR))
+    if not masthead:
+        await session.write_line(
+            colored(
+                f"(no masthead would be shown -- enabled={status.enabled}, file exists={status.exists})",
+                fg_color=MUTED_COLOR,
+            )
+        )
+        return
+    await session.write_line(masthead)
+    await session.write_line(
+        colored("(the main menu itself renders live, unchanged, immediately below this)", fg_color=MUTED_COLOR)
+    )
+
+
+async def _enable_main_menu_banner_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    status = await lane.run(main_menu_banner_status)
+    if not status.exists:
+        await session.write_line(
+            colored(
+                f"No masthead file found at {status.path}. Place a .ans file there first, then enable.",
+                fg_color=MUTED_COLOR,
+            )
+        )
+        return
+    if (status.size_bytes or 0) > MAX_MASTHEAD_SIZE_BYTES:
+        await session.write_line(
+            colored(
+                f"Masthead file at {status.path} is {status.size_bytes} bytes, over the "
+                f"{MAX_MASTHEAD_SIZE_BYTES} byte limit -- not enabling.",
+                fg_color=MUTED_COLOR,
+            )
+        )
+        return
+
+    def _apply(db: Database) -> None:
+        set_main_menu_banner_enabled(db, True)
+        record_action(db, actor=actor, action="enable_main_menu_banner", detail=str(status.path))
+
+    await lane.run(_apply)
+    await session.write_line("Main-menu masthead enabled. Use [P]review to verify it looks right.")
+
+
+async def _disable_main_menu_banner_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    def _apply(db: Database):
+        status = main_menu_banner_status(db)
+        set_main_menu_banner_enabled(db, False)
+        record_action(db, actor=actor, action="disable_main_menu_banner", detail=str(status.path))
+        return status
+
+    status = await lane.run(_apply)
+    await session.write_line(
+        f"Masthead disabled -- the main menu reverts to showing no banner above it. "
+        f"Your file at {status.path} was left in place."
+    )
+
+
+async def _edit_main_menu_banner_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    """Same WYSIWYG ANSI art editor as `_edit_welcome_banner_screen`,
+    against `main_menu_banner_path` instead."""
+    path = await lane.run(main_menu_banner_path)
+    initial_bytes = path.read_bytes() if path.exists() else None
+    draft_path = path.parent / f"{path.name}.draft"
+
+    result = await edit_ansi_art(
+        session, initial_bytes=initial_bytes, draft_path=draft_path,
+        redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+        unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+    )
+    if result is None:
+        await session.write_line(colored("\r\nNo changes saved.", fg_color=MUTED_COLOR))
+        return
+
+    path.write_bytes(result)
+    await lane.run(record_action, actor=actor, action="edit_main_menu_banner", detail=str(path))
     await session.write_line(f"\r\nSaved {path}. Use [P]review to verify it looks right.")
 
 

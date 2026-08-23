@@ -3313,6 +3313,123 @@ def test_edit_then_quit_without_saving_leaves_banner_file_untouched(db, lane, sy
     assert banner_path(db).read_bytes() == b"ORIGINAL"
 
 
+# -- main-menu masthead (issue #161) ---------------------------------------
+
+
+def test_masthead_option_appears_in_the_system_submenu(db, lane, sysop):
+    # menu_key("M", "asthead") highlights the "M" separately, so the
+    # contiguous literal text is "asthead", not "Masthead".
+    session = FakeSession(["s", "b", "b"])
+    _run(session, lane, sysop)
+    assert "asthead" in _written_text(session)
+
+
+def test_masthead_enable_with_no_file_present_shows_friendly_error_and_leaves_flag_disabled(db, lane, sysop):
+    from netbbs.net.main_menu_banner import is_main_menu_banner_enabled
+
+    session = FakeSession(["s", "m", "e", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "No masthead file found" in _written_text(session)
+    assert is_main_menu_banner_enabled(db) is False
+
+
+def test_masthead_enable_with_oversized_file_shows_friendly_error_and_leaves_flag_disabled(db, lane, sysop):
+    from netbbs.net.main_menu_banner import (
+        MAX_MASTHEAD_SIZE_BYTES,
+        is_main_menu_banner_enabled,
+        main_menu_banner_path,
+    )
+
+    main_menu_banner_path(db).write_bytes(b"x" * (MAX_MASTHEAD_SIZE_BYTES + 1))
+    session = FakeSession(["s", "m", "e", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "over the" in _written_text(session)
+    assert "byte limit" in _written_text(session)
+    assert is_main_menu_banner_enabled(db) is False
+
+
+def test_masthead_enable_with_valid_file_present_succeeds_and_sets_flag(db, lane, sysop):
+    from netbbs.net.main_menu_banner import is_main_menu_banner_enabled, main_menu_banner_path
+
+    main_menu_banner_path(db).write_bytes(b"MY CUSTOM MASTHEAD")
+    session = FakeSession(["s", "m", "e", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Main-menu masthead enabled" in _written_text(session)
+    assert is_main_menu_banner_enabled(db) is True
+
+
+def test_masthead_disable_reverts_flag_without_deleting_file(db, lane, sysop):
+    from netbbs.net.main_menu_banner import (
+        is_main_menu_banner_enabled,
+        main_menu_banner_path,
+        set_main_menu_banner_enabled,
+    )
+
+    main_menu_banner_path(db).write_bytes(b"MY CUSTOM MASTHEAD")
+    set_main_menu_banner_enabled(db, True)
+
+    session = FakeSession(["s", "m", "d", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Masthead disabled" in _written_text(session)
+    assert is_main_menu_banner_enabled(db) is False
+    assert main_menu_banner_path(db).read_bytes() == b"MY CUSTOM MASTHEAD"
+
+
+def test_masthead_preview_screen_renders_resolved_content(db, lane, sysop):
+    from netbbs.net.main_menu_banner import main_menu_banner_path, set_main_menu_banner_enabled
+
+    main_menu_banner_path(db).write_bytes(b"MY DISTINCTIVE MASTHEAD TEXT")
+    set_main_menu_banner_enabled(db, True)
+
+    session = FakeSession(["s", "m", "p", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "MY DISTINCTIVE MASTHEAD TEXT" in text
+    assert "the main menu itself renders live, unchanged" in text
+
+
+def test_masthead_preview_screen_when_disabled_says_no_masthead_shown(db, lane, sysop):
+    session = FakeSession(["s", "m", "p", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "no masthead would be shown" in text
+    assert "enabled=False" in text
+
+
+def test_masthead_edit_option_opens_the_ansi_editor_and_a_save_round_trips_into_banner_path(db, lane, sysop):
+    from netbbs.net.main_menu_banner import main_menu_banner_path
+    from netbbs.rendering.ansi_art import decode_ansi_bytes
+    from netbbs.rendering.ansi_parse import parse_ansi_into_buffer
+    from netbbs.rendering.screen_buffer import ScreenBuffer
+
+    session = FakeSession(["s", "m", "x", "A", "CTRL+O", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Saved" in _written_text(session)
+
+    saved = main_menu_banner_path(db)
+    assert saved.exists()
+    buf = ScreenBuffer(80, 24)
+    parse_ansi_into_buffer(decode_ansi_bytes(saved.read_bytes()), buf)
+    assert buf.get_cell(0, 0).char == "A"
+
+    rows = db.connection.execute(
+        "SELECT actor_user_id FROM moderation_log WHERE action = 'edit_main_menu_banner'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["actor_user_id"] == sysop.id
+
+
+def test_masthead_edit_then_quit_without_saving_leaves_banner_file_untouched(db, lane, sysop):
+    from netbbs.net.main_menu_banner import main_menu_banner_path
+
+    main_menu_banner_path(db).write_bytes(b"ORIGINAL")
+
+    session = FakeSession(["s", "m", "x", "A", "CTRL+X", "d", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "No changes saved" in _written_text(session)
+    assert main_menu_banner_path(db).read_bytes() == b"ORIGINAL"
+
+
 # -- self-service registration -----------------------------------------------
 
 

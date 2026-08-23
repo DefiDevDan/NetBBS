@@ -2,18 +2,19 @@
 Node backup and restore (design doc §13.4/§13.10, issue #60's first
 operational slice, hardened by issue #75).
 
-A node's recoverable state is five `db_path`-relative artifacts, not
+A node's recoverable state is six `db_path`-relative artifacts, not
 just the database: content blobs (`netbbs.files.storage`), node
 identity (`netbbs.link.node_identity`), the SSH host key
-(`netbbs.net.ssh`), and the welcome banner
-(`netbbs.net.welcome_banner`) all live at derived paths alongside the
-database, each with no independent config field of its own. A backup
-covering only the database silently loses the SSH host key (every
-client gets a MITM warning after restore) and, far more seriously, the
-Link node identity -- root-key custody is explicitly "part of ordinary
-node backup and restore" (design doc §4.5), not a separate ceremony.
-This module treats all five as one atomic backup operation, never a
-DB-only one.
+(`netbbs.net.ssh`), the welcome banner
+(`netbbs.net.welcome_banner`), and the main-menu masthead
+(`netbbs.net.main_menu_banner`, issue #161) all live at derived paths
+alongside the database, each with no independent config field of its
+own. A backup covering only the database silently loses the SSH host
+key (every client gets a MITM warning after restore) and, far more
+seriously, the Link node identity -- root-key custody is explicitly
+"part of ordinary node backup and restore" (design doc §4.5), not a
+separate ceremony. This module treats all six as one atomic backup
+operation, never a DB-only one.
 
 Deliberately path-based, not `Database`-based: a backup must be safely
 takeable against a live, running node, and opening a second `Database`
@@ -124,6 +125,12 @@ def _welcome_banner_path_for(db_path: Path) -> Path:
     return db_path.parent / f"{db_path.stem}_welcome_banner.ans"
 
 
+def _main_menu_banner_path_for(db_path: Path) -> Path:
+    """Mirrors `netbbs.net.main_menu_banner.main_menu_banner_path`'s
+    own derived path (issue #161)."""
+    return db_path.parent / f"{db_path.stem}_main_menu_banner.ans"
+
+
 def _sha256_of_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -155,15 +162,16 @@ def create_backup(*, db_path: Path, identity_dir: Path, destination: Path) -> Pa
     SQLite's own online backup API (`netbbs.selfupdate.
     snapshot_database`), and every other artifact is either static once
     created or already rewritten via its own atomic-replace pattern --
-    see the module docstring for the one accepted exception (the
-    welcome banner has no atomicity guarantee on its own writes; a
-    backup landing mid-edit could capture a half-written one, purely
-    cosmetic, no correctness consequence).
+    see the module docstring for the accepted exceptions (the welcome
+    banner and the main-menu masthead have no atomicity guarantee on
+    their own writes; a backup landing mid-edit could capture a
+    half-written one, purely cosmetic, no correctness consequence).
 
     The manifest's `checksums` (design doc §13.10, issue #75) cover
     every file captured *outside* the content-addressed `files/` tree
-    -- the database snapshot, each identity file, the SSH host key, and
-    the welcome banner. The blob tree needs no manifest entry at all:
+    -- the database snapshot, each identity file, the SSH host key, the
+    welcome banner, and the main-menu masthead. The blob tree needs no
+    manifest entry at all:
     a blob's own path already *is* its claimed hash
     (`netbbs.files.storage`'s own layout), so restore verifies it by
     recomputing and comparing against the filename, not against
@@ -193,7 +201,11 @@ def create_backup(*, db_path: Path, identity_dir: Path, destination: Path) -> Pa
             if entry.is_file():
                 checksums[f"{_IDENTITY_DIRNAME}/{entry.name}"] = _sha256_of_file(entry)
 
-    for extra_path in (_ssh_host_key_path_for(db_path), _welcome_banner_path_for(db_path)):
+    for extra_path in (
+        _ssh_host_key_path_for(db_path),
+        _welcome_banner_path_for(db_path),
+        _main_menu_banner_path_for(db_path),
+    ):
         if extra_path.exists():
             shutil.copy2(extra_path, destination / extra_path.name)
             checksums[extra_path.name] = _sha256_of_file(destination / extra_path.name)

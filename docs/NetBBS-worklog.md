@@ -731,8 +731,8 @@ Shared semantic roles (`LABEL_COLOR`, `VALUE_COLOR`, `METADATA_COLOR`,
 `SUCCESS_COLOR`, and `ERROR_COLOR`) are the presentation contract for mature
 line-oriented surfaces. Caller and SysOp Who use the same picker palette;
 mail detail and outcomes, vCards and profiles, Last sessions, picker feedback,
-and welcome-banner administration use the shared roles instead of inventing
-screen-local colors. When styled fields must fit a terminal width, build the
+and welcome-banner/main-menu-masthead administration use the shared roles
+instead of inventing screen-local colors. When styled fields must fit a terminal width, build the
 trusted ANSI segments independently and use `colored_truncate`; slicing the
 completed string by Python length can split an escape sequence and counts SGR
 bytes as visible columns.
@@ -746,6 +746,18 @@ banner is rendered before the bounded lazy NEW-ENVIRON reply may arrive and
 therefore must remain safe at 256 colors; later screens can use and report the
 negotiated result. A custom SysOp welcome file intentionally bypasses the
 generated truecolor showcase and its preview must say so.
+
+`rendering.layout.screen_title(clear=True)` prepends its own `clear_screen()`
+*inside the string it returns* — the clear-and-home sequence is not a separate
+step a caller can order independently. A screen that needs to show something
+above the title/breadcrumb itself (e.g. `login_flow._draw_main_menu`'s
+optional main-menu masthead, issue #161) cannot just write that content before
+calling `screen_title(clear=True)`: the embedded `clear_screen()` fires when
+the title string is later written, wiping anything already-written first. Pass
+`clear=False` to `screen_title` in that case and issue `clear_screen()` by
+hand immediately before the prepended content instead — never rely on
+`screen_title`'s own `clear` for a screen whose real first line isn't the
+title.
 
 ### Text and byte boundaries
 

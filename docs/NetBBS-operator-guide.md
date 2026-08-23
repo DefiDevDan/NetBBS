@@ -195,6 +195,7 @@ back up all of it together, not just the database (see §5):
 | Node identity (Link keys) | your configured `identity_dir` |
 | SSH host key | `<db-stem>_ssh_host_key` |
 | Welcome banner (if customized) | `<db-stem>_welcome_banner.ans` |
+| Main-menu masthead (if customized) | `<db-stem>_main_menu_banner.ans` |
 | Config file | wherever `--config` points (not derived from `--db`) |
 | Logs | `netbbs.log` next to the database, self-rotating at 10 MiB
   with 5 backups kept (50 MiB worst case, never unbounded) — also

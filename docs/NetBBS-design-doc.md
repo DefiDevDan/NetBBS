@@ -2844,7 +2844,7 @@ introduced.
 
 ### 13.4 Backup and restore (issue #60's first operational slice)
 
-A node's recoverable state is not only its database — it is five artifacts,
+A node's recoverable state is not only its database — it is six artifacts,
 today scattered across derived, `db_path`-relative filenames with no single
 existing tool that treats them as one recoverable set:
 
@@ -2855,6 +2855,7 @@ existing tool that treats them as one recoverable set:
 | Node identity | `identity_dir` (`root.identity`, `signing.identity`, `transport.identity`, `transitions.json`) | `netbbs.link.node_identity` |
 | SSH host key | `db_path.parent / f"{db_path.stem}_ssh_host_key"` | `netbbs.net.ssh.ensure_host_key`, once, at first startup |
 | Welcome banner | `db_path.parent / f"{db_path.stem}_welcome_banner.ans"` | SysOp, via the welcome-banner menu screen |
+| Main-menu masthead | `db_path.parent / f"{db_path.stem}_main_menu_banner.ans"` | SysOp, via the masthead menu screen (issue #161) |
 
 A backup covering only the database silently loses the SSH host key (every
 client gets a MITM warning on next connect after restore) and, far more
@@ -2893,14 +2894,14 @@ of "the operator/an external trigger drives it, not a built-in timer").
    still reclaim, never a dangling reference). Reversing the order would
    risk the opposite, genuinely broken case: a DB snapshot referencing a
    blob the copy hadn't reached yet.
-3. **Node identity, SSH host key, welcome banner**: plain file copies (each
-   is either static after creation or already rewritten via its own
-   atomic-replace pattern — `node_identity.py`'s `transitions.json`, notably
-   — so no read-tearing hazard). The welcome banner is the one exception
-   with no atomicity guarantee on its own writes; a backup landing mid-edit
-   could capture a half-written banner. Accepted as-is: purely cosmetic, no
-   correctness consequence, not worth an atomic-write retrofit just for
-   backup's sake.
+3. **Node identity, SSH host key, welcome banner, main-menu masthead**: plain
+   file copies (each is either static after creation or already rewritten via
+   its own atomic-replace pattern — `node_identity.py`'s `transitions.json`,
+   notably — so no read-tearing hazard). The welcome banner and main-menu
+   masthead are the accepted exceptions, with no atomicity guarantee on their
+   own writes; a backup landing mid-edit could capture a half-written file.
+   Accepted as-is: purely cosmetic, no correctness consequence, not worth an
+   atomic-write retrofit just for backup's sake.
 
 Writes `destination/manifest.json` last (timestamp, `netbbs.__version__`,
 the database's own `PRAGMA user_version`, and the five source paths as

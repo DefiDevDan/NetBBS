@@ -166,6 +166,7 @@ from netbbs.net.draft_storage import delete_draft, drafts_directory, load_draft
 from netbbs.net.editor_preference import fullscreen_editor_enabled, set_fullscreen_editor_enabled
 from netbbs.net.file_flow import browse_file_areas, enter_file_area, has_visible_areas
 from netbbs.net.mail_flow import browse_mail
+from netbbs.net.main_menu_banner import load_main_menu_banner
 from netbbs.net.maintenance import LOCKDOWN_MESSAGE, LOCKDOWN_NOTICE, MAINTENANCE_MESSAGE, MaintenanceMode
 from netbbs.net.nodeconfig import ThrottleConfig
 from netbbs.net.picker import pick_item
@@ -193,6 +194,7 @@ from netbbs.rendering import (
     MenuEntry,
     action_bar,
     badge,
+    clear_screen,
     colored,
     colored_truncate,
     counts_row,
@@ -1084,6 +1086,12 @@ async def _draw_main_menu(
     unlike `[N]ew scan`, this doesn't summarize *everything* accessible;
     it only runs once a query is actually typed, so there's no "brand-new
     account" empty-list concern to gate on either.
+
+    `netbbs.net.main_menu_banner.load_main_menu_banner` (issue #161,
+    skinning part two) optionally prepends a SysOp-authored masthead
+    above everything below -- `""` (no masthead, the default) reproduces
+    this function's output byte-for-byte as it was before that module
+    existed.
     """
     for text, created_at in mailbox.flush(session):
         await session.write_line(format_with_preference(db, user, text, created_at))
@@ -1158,6 +1166,8 @@ async def _draw_main_menu(
         if unread
         else ("mail caught up", SUCCESS_COLOR)
     )
+    masthead = load_main_menu_banner(db)
+    redraw = redraw_in_place_enabled(db, user)
     title = screen_title(
         "Main menu",
         breadcrumb=(session.node_display_name,),
@@ -1170,7 +1180,12 @@ async def _draw_main_menu(
             unicode_style=unicode_style,
         ),
         width=session.terminal_width,
-        clear=redraw_in_place_enabled(db, user),
+        # `clear` stays False here whenever a masthead is shown -- it
+        # must land *after* any clear-screen sequence but *before* this
+        # title/breadcrumb, and `screen_title` only ever prepends its own
+        # clear_screen() to its own returned text, so the redraw-in-place
+        # clear is issued by hand below instead in that case (issue #161).
+        clear=False if masthead else redraw,
         unicode_style=unicode_style, collapsed=collapsed)
     options = menu_grid(
         [("Explore", explore_options), ("You", personal_options), ("System", system_options)],
@@ -1178,7 +1193,14 @@ async def _draw_main_menu(
         height=session.terminal_height,
         description_level=menu_description_level(db, user),
     )
-    await session.write_line(f"\r\n{title}\r\n{options}\r\n")
+    if masthead:
+        prefix = clear_screen() if redraw else ""
+        await session.write_line(f"{prefix}{masthead}\r\n{title}\r\n{options}\r\n")
+    else:
+        # Masthead disabled (the default): identical bytes to before
+        # issue #161, unconditionally -- no existing node's output
+        # changes just because this module now exists.
+        await session.write_line(f"\r\n{title}\r\n{options}\r\n")
     await session.write(_main_menu_prompt(db, user, node_controls))
 
 
