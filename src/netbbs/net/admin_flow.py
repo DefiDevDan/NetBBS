@@ -4114,7 +4114,7 @@ async def _draw_welcome_banner_menu(
             breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed))
     await session.write_line(detail)
     await session.write_line(
-        _menu_row(
+        "\r\n" + _menu_row(
             [
                 MenuEntry(label=menu_key("P", "review"), brief="Show the banner as callers see it"),
                 MenuEntry(label=menu_key("E", "nable"), brief="Turn the banner on"),
@@ -4174,6 +4174,15 @@ async def _preview_welcome_banner_screen(session: Session, lane: DatabaseLane, a
                 fg_color=MUTED_COLOR,
             )
         )
+    # Dogfood report: this screen used to fall straight through to the
+    # menu's own immediate redraw, which -- with redraw_in_place on
+    # (the default for new accounts, issue #160's own follow-up)
+    # cleared the just-printed preview off the screen before it could
+    # actually be read, sometimes in well under a second. Same
+    # present-then-wait shape `netbbs.net.help_overlay.show_help`
+    # already uses for the identical reason.
+    await session.write_line(colored("Press any key to continue...", fg_color=MUTED_COLOR))
+    await session.read_key()
 
 
 async def _enable_welcome_banner_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
@@ -4350,14 +4359,14 @@ async def _draw_main_menu_banner_menu(
             breadcrumb=(session.node_display_name, "System"), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed))
     await session.write_line(detail)
     await session.write_line(
-        colored(
+        "\r\n" + colored(
             "Shown above the main menu, which stays fully live/dynamic underneath "
             "it -- disabled by default, no effect on any existing node.",
             fg_color=MUTED_COLOR,
         )
     )
     await session.write_line(
-        _menu_row(
+        "\r\n" + _menu_row(
             [
                 MenuEntry(label=menu_key("P", "review"), brief="Show the masthead as callers see it"),
                 MenuEntry(label=menu_key("E", "nable"), brief="Turn the masthead on"),
@@ -4398,11 +4407,16 @@ async def _preview_main_menu_banner_screen(session: Session, lane: DatabaseLane,
                 fg_color=MUTED_COLOR,
             )
         )
-        return
-    await session.write_line(masthead)
-    await session.write_line(
-        colored("(the main menu itself renders live, unchanged, immediately below this)", fg_color=MUTED_COLOR)
-    )
+    else:
+        await session.write_line(masthead)
+        await session.write_line(
+            colored("(the main menu itself renders live, unchanged, immediately below this)", fg_color=MUTED_COLOR)
+        )
+    # See _preview_welcome_banner_screen's identical fix for why this
+    # wait exists -- without it, redraw_in_place clears this preview
+    # before it can actually be read.
+    await session.write_line(colored("Press any key to continue...", fg_color=MUTED_COLOR))
+    await session.read_key()
 
 
 async def _enable_main_menu_banner_screen(session: Session, lane: DatabaseLane, actor: User) -> None:

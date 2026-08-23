@@ -3231,7 +3231,10 @@ def test_preview_screen_renders_resolved_banner_content(db, lane, sysop):
     banner_path(db).write_bytes(b"MY DISTINCTIVE BANNER TEXT")
     set_welcome_banner_enabled(db, True)
 
-    session = FakeSession(["s", "w", "p", "b", "b", "b"])
+    # Trailing "x" dismisses the preview's own "Press any key to
+    # continue..." wait (dogfood fix: the preview used to be cleared by
+    # the menu's own immediate redraw before it could be read).
+    session = FakeSession(["s", "w", "p", "x", "b", "b", "b"])
     _run(session, lane, sysop)
     text = _written_text(session)
     assert "MY DISTINCTIVE BANNER TEXT" in text
@@ -3240,7 +3243,10 @@ def test_preview_screen_renders_resolved_banner_content(db, lane, sysop):
 
 
 def test_preview_screen_when_disabled_shows_default_and_says_so(db, lane, sysop):
-    session = FakeSession(["s", "w", "p", "b", "b", "b"])
+    # Trailing "x" dismisses the preview's own "Press any key to
+    # continue..." wait (dogfood fix: the preview used to be cleared by
+    # the menu's own immediate redraw before it could be read).
+    session = FakeSession(["s", "w", "p", "x", "b", "b", "b"])
     _run(session, lane, sysop)
     text = _written_text(session)
     assert "showing the DEFAULT banner" in text
@@ -3258,7 +3264,10 @@ def test_preview_screen_color_depth_override_forces_truecolor(db, lane, sysop):
     from netbbs.net.color_depth_preference import set_color_depth_override
 
     set_color_depth_override(db, sysop, "truecolor")
-    session = FakeSession(["s", "w", "p", "b", "b", "b"])
+    # Trailing "x" dismisses the preview's own "Press any key to
+    # continue..." wait (dogfood fix: the preview used to be cleared by
+    # the menu's own immediate redraw before it could be read).
+    session = FakeSession(["s", "w", "p", "x", "b", "b", "b"])
     _run(session, lane, sysop)
     text = _written_text(session)
     assert "rendering: truecolor gradient" in text
@@ -3271,7 +3280,10 @@ def test_preview_screen_color_depth_override_forces_256_color(db, lane, sysop):
     from netbbs.net.color_depth_preference import set_color_depth_override
 
     set_color_depth_override(db, sysop, "256")
-    session = FakeSession(["s", "w", "p", "b", "b", "b"])
+    # Trailing "x" dismisses the preview's own "Press any key to
+    # continue..." wait (dogfood fix: the preview used to be cleared by
+    # the menu's own immediate redraw before it could be read).
+    session = FakeSession(["s", "w", "p", "x", "b", "b", "b"])
     session.supports_truecolor = True
     _run(session, lane, sysop)
     text = _written_text(session)
@@ -3437,7 +3449,9 @@ def test_masthead_preview_screen_renders_resolved_content(db, lane, sysop):
     main_menu_banner_path(db).write_bytes(b"MY DISTINCTIVE MASTHEAD TEXT")
     set_main_menu_banner_enabled(db, True)
 
-    session = FakeSession(["s", "m", "p", "b", "b", "b"])
+    # Trailing "x" dismisses the preview's own "Press any key to
+    # continue..." wait, same fix as the welcome-banner preview above.
+    session = FakeSession(["s", "m", "p", "x", "b", "b", "b"])
     _run(session, lane, sysop)
     text = _written_text(session)
     assert "MY DISTINCTIVE MASTHEAD TEXT" in text
@@ -3445,7 +3459,9 @@ def test_masthead_preview_screen_renders_resolved_content(db, lane, sysop):
 
 
 def test_masthead_preview_screen_when_disabled_says_no_masthead_shown(db, lane, sysop):
-    session = FakeSession(["s", "m", "p", "b", "b", "b"])
+    # Trailing "x" dismisses the preview's own "Press any key to
+    # continue..." wait, same fix as the welcome-banner preview above.
+    session = FakeSession(["s", "m", "p", "x", "b", "b", "b"])
     _run(session, lane, sysop)
     text = _written_text(session)
     assert "no masthead would be shown" in text
