@@ -2354,7 +2354,31 @@ Use:
 Mocks are appropriate for isolated failures but do not replace tests of the
 boundary being claimed.
 
-### External verification still matters
+### Python 3.12's `asyncio.Server.wait_closed()` can hang a real-socket test forever if the client never closed its own side first
+
+A failed assertion mid-scenario in one of the many real-`TelnetServer`
+integration tests (`test_picker.py` and its siblings) skips the
+scenario's own `writer.close()`/`await writer.wait_closed()` lines --
+the exception jumps straight to `finally: await server.stop()`. On
+Python 3.12+, `asyncio.Server.wait_closed()` no longer returns once the
+listening socket itself closes; it waits for every still-open accepted
+connection to finish too (a deliberate CPython behavior change, not a
+bug). If the *client* side of that connection was never closed, this
+wait never resolves -- not a slow test, a genuine indefinite hang, with
+no traceback and no output even under `-s`, easily mistaken for a bug
+in whatever was actually being tested. Diagnosed here by instrumenting
+`server.stop()`'s own call site with flushed `print`s: the trace showed
+every other step (connect, negotiate, read, assert) completing, then
+silence forever right after entering `finally`.
+
+The actual lesson isn't "add a workaround" -- it's diagnostic: **when a
+real-transport integration test in this suite hangs with zero output,
+suspect a failed assertion upstream of an unclosed client socket
+first**, before assuming the code under test itself is stuck. A stale
+byte-exact assertion (this case: `netbbs.net.picker`'s stable-id
+references gained per-page alignment padding, issue #171, and one
+`test_picker.py` assertion still expected the old unpadded spacing) is
+a far more common cause than a real deadlock.
 
 Automated byte/transcript tests cannot establish visual or third-party
 interoperability. Before declaring affected areas production-ready, perform

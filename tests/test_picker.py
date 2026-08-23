@@ -1541,8 +1541,13 @@ def test_stable_absolute_index_is_displayed_alongside_page_relative_number():
             reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
             await skip_initial_negotiation(reader)
             data = await _read_until_quiet(reader)
-            assert b"01. (#1) item1" in _visible(data)
-            assert b"02. (#2) item2" in _visible(data)
+            # Issue #171 dogfood report: stable_id_of references now
+            # right-pad to the widest id on the page (item10's "(#10)"
+            # here), so single-digit ids get one extra trailing space --
+            # "(#1)  item1", not "(#1) item1" -- see picker.py's own
+            # comment on `max_id_width` for why.
+            assert b"01. (#1)  item1" in _visible(data)
+            assert b"02. (#2)  item2" in _visible(data)
             writer.write(b"b")
             await writer.drain()
             await _read_until_quiet(reader)
@@ -1660,9 +1665,12 @@ def test_display_shows_caller_supplied_stable_id_not_position():
             await skip_initial_negotiation(reader)
             data = await _read_until_quiet(reader)
             # Position 1 on screen ("01.") shows stable ID 205, not "1" —
-            # and position 2 ("02.") shows stable ID 7, not "2".
+            # and position 2 ("02.") shows stable ID 7, not "2". "(#7)"
+            # gets two extra trailing spaces (issue #171) so "alpha"
+            # still starts at the same column "gamma" does, despite its
+            # id being two digits narrower than "(#205)".
             assert b"01. (#205) gamma" in _visible(data)
-            assert b"02. (#7) alpha" in _visible(data)
+            assert b"02. (#7)   alpha" in _visible(data)
             writer.write(b"b")
             await writer.drain()
             await _read_until_quiet(reader)

@@ -266,6 +266,17 @@ async def pick_item(
                 clear=redraw_in_place,
                 unicode_style=unicode_style, collapsed=collapsed)
         )
+        # Dogfood report: stable_id_of is an arbitrary, permanent
+        # identifier (typically a DB id, see the module docstring) with
+        # no fixed digit count -- unlike `position` (always exactly
+        # 2 digits), a page mixing "(#1)" and "(#23)" left every name
+        # after a single-digit id one column further left than the
+        # rest. Right-pad each "(#N) " reference with however many
+        # trailing spaces its own id is short of the widest one *on
+        # this page* (not the whole list -- alignment only has to hold
+        # within one screen), so every name starts at the same column
+        # regardless of how many digits its own id happens to have.
+        max_id_width = max((len(str(stable_id_of(item))) for item in page_items), default=1)
         for position, item in enumerate(page_items, start=1):
             # Two numbers shown per line, deliberately: the 2-digit
             # prefix is what to press to select *this item, right now,
@@ -290,9 +301,11 @@ async def pick_item(
             # until the first arrow press, see this function's own
             # docstring.
             marker = "> " if highlighted == position - 1 else "  "
+            id_str = str(stable_id_of(item))
+            id_padding = " " * (max_id_width - len(id_str))
             segments: list[tuple[str, int | None]] = [
                 (f"{marker}{position:02d}. ", MENU_KEY_COLOR),
-                (f"(#{stable_id_of(item)}) ", MUTED_COLOR),
+                (f"(#{id_str}) {id_padding}", MUTED_COLOR),
                 (sanitize_text(name_of(item)), accent_color),
             ]
             if description:
