@@ -206,6 +206,76 @@ def test_registration_with_approval_required_leaves_account_unable_to_log_in(db)
     assert calls == ["in"]
 
 
+# -- GitHub issue #177: new-account (after) banner ---------------------
+
+
+def test_after_banner_shown_on_immediate_success(db):
+    from netbbs.net.new_account_banner_after import (
+        new_account_banner_after_path,
+        set_new_account_banner_after_enabled,
+    )
+
+    new_account_banner_after_path(db).write_bytes(b"YOU MADE IT")
+    set_new_account_banner_after_enabled(db, True)
+
+    async def scenario():
+        server = await _run_server(db, _noop_handler, throttle=_throttle())
+        try:
+            return await _attempt_kbdint_registration(
+                server.port, responses=["carol", "hunter2pw", "hunter2pw"]
+            )
+        finally:
+            await server.stop()
+
+    client = asyncio.run(scenario())
+    assert any("YOU MADE IT" in message for message in client.messages)
+
+
+def test_after_banner_shown_when_approval_is_required(db):
+    from netbbs.net.new_account_banner_after import (
+        new_account_banner_after_path,
+        set_new_account_banner_after_enabled,
+    )
+
+    set_registration_mode(db, RegistrationMode.APPROVAL_REQUIRED)
+    new_account_banner_after_path(db).write_bytes(b"YOU MADE IT")
+    set_new_account_banner_after_enabled(db, True)
+
+    async def scenario():
+        server = await _run_server(db, _noop_handler, throttle=_throttle())
+        try:
+            return await _attempt_kbdint_registration(
+                server.port, responses=["carol", "hunter2pw", "hunter2pw"]
+            )
+        finally:
+            await server.stop()
+
+    client = asyncio.run(scenario())
+    assert any("YOU MADE IT" in message for message in client.messages)
+
+
+def test_after_banner_not_shown_on_a_fixable_validation_failure(db):
+    from netbbs.net.new_account_banner_after import (
+        new_account_banner_after_path,
+        set_new_account_banner_after_enabled,
+    )
+
+    new_account_banner_after_path(db).write_bytes(b"YOU MADE IT")
+    set_new_account_banner_after_enabled(db, True)
+
+    async def scenario():
+        server = await _run_server(db, _noop_handler, throttle=_throttle())
+        try:
+            return await _attempt_kbdint_registration(
+                server.port, responses=["carol", "short", "short"]
+            )
+        finally:
+            await server.stop()
+
+    client = asyncio.run(scenario())
+    assert not any("YOU MADE IT" in message for message in client.messages)
+
+
 def test_closed_mode_never_offers_the_kbdint_registration_challenge(db):
     # `closed` mode hides registration entirely -- the server
     # never offers the kbdint challenge at all, so a client requesting

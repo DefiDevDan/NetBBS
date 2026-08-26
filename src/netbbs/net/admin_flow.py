@@ -311,6 +311,27 @@ from netbbs.net.main_menu_banner import (
     main_menu_banner_status,
     set_main_menu_banner_enabled,
 )
+from netbbs.net.logoff_banner import (
+    MAX_LOGOFF_BANNER_SIZE_BYTES,
+    load_logoff_banner,
+    logoff_banner_path,
+    logoff_banner_status,
+    set_logoff_banner_enabled,
+)
+from netbbs.net.new_account_banner_before import (
+    MAX_NEW_ACCOUNT_BANNER_BEFORE_SIZE_BYTES,
+    load_new_account_banner_before,
+    new_account_banner_before_path,
+    new_account_banner_before_status,
+    set_new_account_banner_before_enabled,
+)
+from netbbs.net.new_account_banner_after import (
+    MAX_NEW_ACCOUNT_BANNER_AFTER_SIZE_BYTES,
+    load_new_account_banner_after,
+    new_account_banner_after_path,
+    new_account_banner_after_status,
+    set_new_account_banner_after_enabled,
+)
 from netbbs.rendering import (
     ACCENT_COLOR,
     ALERT_COLOR,
@@ -879,6 +900,10 @@ async def _system_menu(
             await session.write_line("")
             await _node_name_screen(session, lane, actor)
             await _draw_system_menu(session, node_controls, link_context, description_level, redraw_in_place, unicode_style, header_color=header_color)
+        elif choice == "s":
+            await session.write_line("")
+            await _session_banners_menu(session, lane, actor)
+            await _draw_system_menu(session, node_controls, link_context, description_level, redraw_in_place, unicode_style, header_color=header_color)
         elif choice == "n" and node_controls is not None:
             await session.write_line("")
             await _node_menu(session, lane, actor, node_controls)
@@ -936,6 +961,7 @@ async def _draw_system_menu(
         MenuEntry(label=menu_key("M", "asthead"), brief="Custom art above the main menu"),
         MenuEntry(label=menu_key("C", "olors"), brief="Node-wide accent/header/clock branding"),
         MenuEntry(label=menu_key("a", "me", prefix="Node N"), brief="The name and gradient shown in every screen's own corner"),
+        MenuEntry(label=menu_key("S", "ession banners"), brief="Logoff and new-account banners"),
         MenuEntry(label=menu_key("U", "pdate"), brief="Software update settings"),
         MenuEntry(label=menu_key("T", "imestamp format"), brief="Node-wide date/time display"),
         MenuEntry(label=menu_key("P", "olicy trust"), brief="Federation trust policy"),
@@ -4979,6 +5005,552 @@ async def _main_menu_banner_filesystem_screen(
         target = await lane.run(_apply)
         await session.write_line(f"Loaded and enabled. Saved to {target}. Use [P]review to verify it looks right.")
         return
+
+
+# -- session banners (issue #177) ---------------------------------------
+#
+# Three more optional SysOp-authored banners, each its own independent
+# singleton exactly like the welcome banner/main-menu masthead above
+# (colocated .ans file, node_config enabled flag, size cap, silent
+# fallback) -- but grouped under one new "Session banners" Settings entry
+# rather than three more flat top-level rows, since there was no good
+# non-colliding mnemonic left for three more entries in an already-dense
+# Settings menu. No [G]allery/[F]rom disk here, unlike the welcome
+# banner/masthead above -- those depend on a curated preset library
+# (issue #169's bundled samples) that doesn't exist for these three yet;
+# preview/enable/disable/edit alone already covers issue #177's own
+# acceptance criteria. Where these ultimately live in the admin UI is
+# expected to change again once issue #178's own broader reorg (one
+# "Banners & Mastheads" entry covering every banner/masthead, existing
+# and new) lands -- this is a reasonable interim grouping, not a
+# commitment to keep this exact shape.
+
+
+async def _session_banners_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
+    description_level = await lane.run(menu_description_level, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
+    header_color = await lane.run(effective_header_color_256)
+    await _draw_session_banners_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+    while True:
+        choice = (await session.read_key()).lower()
+
+        if choice == "b":
+            await session.write_line("")
+            return
+        elif choice == "l":
+            await session.write_line("")
+            await _logoff_banner_menu(session, lane, actor)
+            await _draw_session_banners_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "e":
+            await session.write_line("")
+            await _new_account_banner_before_menu(session, lane, actor)
+            await _draw_session_banners_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "f":
+            await session.write_line("")
+            await _new_account_banner_after_menu(session, lane, actor)
+            await _draw_session_banners_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        else:
+            await session.write(reject_unhandled_key(choice))
+
+
+async def _draw_session_banners_menu(
+    session: Session, lane: DatabaseLane, description_level: str, redraw_in_place: bool,
+    unicode_style: bool, collapsed: bool, header_color: int | tuple[int, int, int],
+) -> None:
+    await session.write_line("\r\n" + screen_title("Session banners",
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place,
+            unicode_style=unicode_style, collapsed=collapsed, header_color=header_color,
+            node_name_gradient=session.node_name_gradient))
+    await session.write_line(
+        colored(
+            "Optional banners shown at specific points in a caller's session -- signing off, "
+            "and starting/finishing self-service signup.",
+            fg_color=MUTED_COLOR,
+        )
+    )
+    await session.write_line(
+        "\r\n" + _menu_row(
+            [
+                MenuEntry(label=menu_key("L", "ogoff banner"), brief="Shown on an intentional Log off"),
+                MenuEntry(label=menu_key("e", "fore signup", prefix="B"), brief="Shown once, before Create account"),
+                MenuEntry(label=menu_key("f", "ter signup", prefix="A"), brief="Shown once signup succeeds"),
+                MenuEntry(label=menu_key("B", "ack"), brief="Return to Settings"),
+            ],
+            description_level,
+            width=session.terminal_width,
+            height=session.terminal_height,
+        )
+    )
+    await session.write("Choice: ")
+
+
+# -- logoff banner --------------------------------------------------------
+
+
+async def _logoff_banner_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
+    description_level = await lane.run(menu_description_level, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
+    header_color = await lane.run(effective_header_color_256)
+    await _draw_logoff_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+    while True:
+        choice = (await session.read_key()).lower()
+
+        if choice == "b":
+            await session.write_line("")
+            return
+        elif choice == "p":
+            await session.write_line("")
+            await _preview_logoff_banner_screen(session, lane)
+            await _draw_logoff_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "e":
+            await session.write_line("")
+            await _enable_logoff_banner_screen(session, lane, actor)
+            await _draw_logoff_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "d":
+            await session.write_line("")
+            await _disable_logoff_banner_screen(session, lane, actor)
+            await _draw_logoff_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "i":
+            await session.write_line("")
+            await _edit_logoff_banner_screen(session, lane, actor)
+            await _draw_logoff_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        else:
+            await session.write(reject_unhandled_key(choice))
+
+
+async def _draw_logoff_banner_menu(
+    session: Session, lane: DatabaseLane, description_level: str, redraw_in_place: bool,
+    unicode_style: bool, collapsed: bool, header_color: int | tuple[int, int, int],
+) -> None:
+    status = await lane.run(logoff_banner_status)
+    state = "ENABLED" if status.enabled else "disabled"
+    file_state = f"{status.size_bytes} bytes" if status.exists else "missing"
+    state_color = SUCCESS_COLOR if status.enabled else MUTED_COLOR
+    file_color = METADATA_COLOR if status.exists else ERROR_COLOR
+    detail = (
+        colored(state, fg_color=state_color, bold=status.enabled)
+        + colored(" -- file: ", fg_color=LABEL_COLOR)
+        + colored(str(status.path), fg_color=METADATA_COLOR)
+        + colored(f" ({file_state})", fg_color=file_color)
+    )
+    await session.write_line("\r\n" + screen_title("Logoff banner",
+            breadcrumb=(session.node_display_name, "System", "Session banners"), width=session.terminal_width,
+            clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color,
+            node_name_gradient=session.node_name_gradient))
+    await session.write_line(
+        colored("Shown above the ordinary Goodbye message on an intentional Log off only -- never on an idle "
+                "timeout, kick, or account revocation.", fg_color=MUTED_COLOR)
+    )
+    await session.write_line(detail)
+    await session.write_line(
+        "\r\n" + _menu_row(
+            [
+                MenuEntry(label=menu_key("P", "review"), brief="Show the banner as callers see it"),
+                MenuEntry(label=menu_key("E", "nable"), brief="Turn the banner on"),
+                MenuEntry(label=menu_key("D", "isable"), brief="Turn the banner off"),
+                MenuEntry(label=menu_key("i", "t", prefix="Ed"), brief="Edit the banner text"),
+                MenuEntry(label=menu_key("B", "ack"), brief="Return to Session banners"),
+            ],
+            description_level,
+            width=session.terminal_width,
+            height=session.terminal_height,
+        )
+    )
+    await session.write("Choice: ")
+
+
+async def _preview_logoff_banner_screen(session: Session, lane: DatabaseLane) -> None:
+    status, banner_text = await lane.run(lambda db: (logoff_banner_status(db), load_logoff_banner(db)))
+    await session.write_line(colored("\r\nPreviewing logoff banner as shown on Log off:", fg_color=MUTED_COLOR))
+    if banner_text:
+        await session.write_line(banner_text)
+    else:
+        await session.write_line(
+            colored(
+                f"(no banner -- enabled={status.enabled}, file exists={status.exists})", fg_color=MUTED_COLOR
+            )
+        )
+    await session.write_line(colored("Press any key to continue...", fg_color=MUTED_COLOR))
+    await session.read_key()
+
+
+async def _enable_logoff_banner_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    status = await lane.run(logoff_banner_status)
+    if not status.exists:
+        await session.write_line(
+            colored(
+                f"No banner file found at {status.path}. Place a .ans file there first, then enable.",
+                fg_color=MUTED_COLOR,
+            )
+        )
+        return
+    if (status.size_bytes or 0) > MAX_LOGOFF_BANNER_SIZE_BYTES:
+        await session.write_line(
+            colored(
+                f"Banner file at {status.path} is {status.size_bytes} bytes, over the "
+                f"{MAX_LOGOFF_BANNER_SIZE_BYTES} byte limit -- not enabling.",
+                fg_color=MUTED_COLOR,
+            )
+        )
+        return
+
+    def _apply(db: Database) -> None:
+        set_logoff_banner_enabled(db, True)
+        record_action(db, actor=actor, action="enable_logoff_banner", detail=str(status.path))
+
+    await lane.run(_apply)
+    await session.write_line("Logoff banner enabled. Use [P]review to verify it looks right.")
+
+
+async def _disable_logoff_banner_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    def _apply(db: Database):
+        status = logoff_banner_status(db)
+        set_logoff_banner_enabled(db, False)
+        record_action(db, actor=actor, action="disable_logoff_banner", detail=str(status.path))
+        return status
+
+    status = await lane.run(_apply)
+    await session.write_line(f"Logoff banner disabled. Your file at {status.path} was left in place.")
+
+
+async def _edit_logoff_banner_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    path = await lane.run(logoff_banner_path)
+    initial_bytes = path.read_bytes() if path.exists() else None
+    draft_path = path.parent / f"{path.name}.draft"
+
+    result = await edit_ansi_art(
+        session, initial_bytes=initial_bytes, draft_path=draft_path,
+        redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+        unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+    )
+    if result is None:
+        await session.write_line(colored("\r\nNo changes saved.", fg_color=MUTED_COLOR))
+        return
+
+    path.write_bytes(result)
+    await lane.run(record_action, actor=actor, action="edit_logoff_banner", detail=str(path))
+    await session.write_line(f"\r\nSaved {path}. Use [P]review to verify it looks right.")
+
+
+# -- new-account banner (before signup) ------------------------------------
+
+
+async def _new_account_banner_before_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
+    description_level = await lane.run(menu_description_level, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
+    header_color = await lane.run(effective_header_color_256)
+    await _draw_new_account_banner_before_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+    while True:
+        choice = (await session.read_key()).lower()
+
+        if choice == "b":
+            await session.write_line("")
+            return
+        elif choice == "p":
+            await session.write_line("")
+            await _preview_new_account_banner_before_screen(session, lane)
+            await _draw_new_account_banner_before_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "e":
+            await session.write_line("")
+            await _enable_new_account_banner_before_screen(session, lane, actor)
+            await _draw_new_account_banner_before_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "d":
+            await session.write_line("")
+            await _disable_new_account_banner_before_screen(session, lane, actor)
+            await _draw_new_account_banner_before_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "i":
+            await session.write_line("")
+            await _edit_new_account_banner_before_screen(session, lane, actor)
+            await _draw_new_account_banner_before_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        else:
+            await session.write(reject_unhandled_key(choice))
+
+
+async def _draw_new_account_banner_before_menu(
+    session: Session, lane: DatabaseLane, description_level: str, redraw_in_place: bool,
+    unicode_style: bool, collapsed: bool, header_color: int | tuple[int, int, int],
+) -> None:
+    status = await lane.run(new_account_banner_before_status)
+    state = "ENABLED" if status.enabled else "disabled"
+    file_state = f"{status.size_bytes} bytes" if status.exists else "missing"
+    state_color = SUCCESS_COLOR if status.enabled else MUTED_COLOR
+    file_color = METADATA_COLOR if status.exists else ERROR_COLOR
+    detail = (
+        colored(state, fg_color=state_color, bold=status.enabled)
+        + colored(" -- file: ", fg_color=LABEL_COLOR)
+        + colored(str(status.path), fg_color=METADATA_COLOR)
+        + colored(f" ({file_state})", fg_color=file_color)
+    )
+    await session.write_line("\r\n" + screen_title("New account banner (before)",
+            breadcrumb=(session.node_display_name, "System", "Session banners"), width=session.terminal_width,
+            clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color,
+            node_name_gradient=session.node_name_gradient))
+    await session.write_line(
+        colored(
+            "Shown once, right when a caller starts self-service signup -- before the Create "
+            "account prompts, never repeated on a fixable retry.",
+            fg_color=MUTED_COLOR,
+        )
+    )
+    await session.write_line(detail)
+    await session.write_line(
+        "\r\n" + _menu_row(
+            [
+                MenuEntry(label=menu_key("P", "review"), brief="Show the banner as callers see it"),
+                MenuEntry(label=menu_key("E", "nable"), brief="Turn the banner on"),
+                MenuEntry(label=menu_key("D", "isable"), brief="Turn the banner off"),
+                MenuEntry(label=menu_key("i", "t", prefix="Ed"), brief="Edit the banner text"),
+                MenuEntry(label=menu_key("B", "ack"), brief="Return to Session banners"),
+            ],
+            description_level,
+            width=session.terminal_width,
+            height=session.terminal_height,
+        )
+    )
+    await session.write("Choice: ")
+
+
+async def _preview_new_account_banner_before_screen(session: Session, lane: DatabaseLane) -> None:
+    status, banner_text = await lane.run(
+        lambda db: (new_account_banner_before_status(db), load_new_account_banner_before(db))
+    )
+    await session.write_line(
+        colored("\r\nPreviewing new-account (before) banner as shown at signup:", fg_color=MUTED_COLOR)
+    )
+    if banner_text:
+        await session.write_line(banner_text)
+    else:
+        await session.write_line(
+            colored(
+                f"(no banner -- enabled={status.enabled}, file exists={status.exists})", fg_color=MUTED_COLOR
+            )
+        )
+    await session.write_line(colored("Press any key to continue...", fg_color=MUTED_COLOR))
+    await session.read_key()
+
+
+async def _enable_new_account_banner_before_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    status = await lane.run(new_account_banner_before_status)
+    if not status.exists:
+        await session.write_line(
+            colored(
+                f"No banner file found at {status.path}. Place a .ans file there first, then enable.",
+                fg_color=MUTED_COLOR,
+            )
+        )
+        return
+    if (status.size_bytes or 0) > MAX_NEW_ACCOUNT_BANNER_BEFORE_SIZE_BYTES:
+        await session.write_line(
+            colored(
+                f"Banner file at {status.path} is {status.size_bytes} bytes, over the "
+                f"{MAX_NEW_ACCOUNT_BANNER_BEFORE_SIZE_BYTES} byte limit -- not enabling.",
+                fg_color=MUTED_COLOR,
+            )
+        )
+        return
+
+    def _apply(db: Database) -> None:
+        set_new_account_banner_before_enabled(db, True)
+        record_action(db, actor=actor, action="enable_new_account_banner_before", detail=str(status.path))
+
+    await lane.run(_apply)
+    await session.write_line("New-account (before) banner enabled. Use [P]review to verify it looks right.")
+
+
+async def _disable_new_account_banner_before_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    def _apply(db: Database):
+        status = new_account_banner_before_status(db)
+        set_new_account_banner_before_enabled(db, False)
+        record_action(db, actor=actor, action="disable_new_account_banner_before", detail=str(status.path))
+        return status
+
+    status = await lane.run(_apply)
+    await session.write_line(f"New-account (before) banner disabled. Your file at {status.path} was left in place.")
+
+
+async def _edit_new_account_banner_before_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    path = await lane.run(new_account_banner_before_path)
+    initial_bytes = path.read_bytes() if path.exists() else None
+    draft_path = path.parent / f"{path.name}.draft"
+
+    result = await edit_ansi_art(
+        session, initial_bytes=initial_bytes, draft_path=draft_path,
+        redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+        unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+    )
+    if result is None:
+        await session.write_line(colored("\r\nNo changes saved.", fg_color=MUTED_COLOR))
+        return
+
+    path.write_bytes(result)
+    await lane.run(record_action, actor=actor, action="edit_new_account_banner_before", detail=str(path))
+    await session.write_line(f"\r\nSaved {path}. Use [P]review to verify it looks right.")
+
+
+# -- new-account banner (after signup) -------------------------------------
+
+
+async def _new_account_banner_after_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
+    description_level = await lane.run(menu_description_level, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
+    header_color = await lane.run(effective_header_color_256)
+    await _draw_new_account_banner_after_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+    while True:
+        choice = (await session.read_key()).lower()
+
+        if choice == "b":
+            await session.write_line("")
+            return
+        elif choice == "p":
+            await session.write_line("")
+            await _preview_new_account_banner_after_screen(session, lane)
+            await _draw_new_account_banner_after_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "e":
+            await session.write_line("")
+            await _enable_new_account_banner_after_screen(session, lane, actor)
+            await _draw_new_account_banner_after_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "d":
+            await session.write_line("")
+            await _disable_new_account_banner_after_screen(session, lane, actor)
+            await _draw_new_account_banner_after_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "i":
+            await session.write_line("")
+            await _edit_new_account_banner_after_screen(session, lane, actor)
+            await _draw_new_account_banner_after_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        else:
+            await session.write(reject_unhandled_key(choice))
+
+
+async def _draw_new_account_banner_after_menu(
+    session: Session, lane: DatabaseLane, description_level: str, redraw_in_place: bool,
+    unicode_style: bool, collapsed: bool, header_color: int | tuple[int, int, int],
+) -> None:
+    status = await lane.run(new_account_banner_after_status)
+    state = "ENABLED" if status.enabled else "disabled"
+    file_state = f"{status.size_bytes} bytes" if status.exists else "missing"
+    state_color = SUCCESS_COLOR if status.enabled else MUTED_COLOR
+    file_color = METADATA_COLOR if status.exists else ERROR_COLOR
+    detail = (
+        colored(state, fg_color=state_color, bold=status.enabled)
+        + colored(" -- file: ", fg_color=LABEL_COLOR)
+        + colored(str(status.path), fg_color=METADATA_COLOR)
+        + colored(f" ({file_state})", fg_color=file_color)
+    )
+    await session.write_line("\r\n" + screen_title("New account banner (after)",
+            breadcrumb=(session.node_display_name, "System", "Session banners"), width=session.terminal_width,
+            clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color,
+            node_name_gradient=session.node_name_gradient))
+    await session.write_line(
+        colored(
+            "Shown once self-service signup succeeds -- covers both an immediate login and a "
+            "pending-approval account, alongside the existing message either way.",
+            fg_color=MUTED_COLOR,
+        )
+    )
+    await session.write_line(detail)
+    await session.write_line(
+        "\r\n" + _menu_row(
+            [
+                MenuEntry(label=menu_key("P", "review"), brief="Show the banner as callers see it"),
+                MenuEntry(label=menu_key("E", "nable"), brief="Turn the banner on"),
+                MenuEntry(label=menu_key("D", "isable"), brief="Turn the banner off"),
+                MenuEntry(label=menu_key("i", "t", prefix="Ed"), brief="Edit the banner text"),
+                MenuEntry(label=menu_key("B", "ack"), brief="Return to Session banners"),
+            ],
+            description_level,
+            width=session.terminal_width,
+            height=session.terminal_height,
+        )
+    )
+    await session.write("Choice: ")
+
+
+async def _preview_new_account_banner_after_screen(session: Session, lane: DatabaseLane) -> None:
+    status, banner_text = await lane.run(
+        lambda db: (new_account_banner_after_status(db), load_new_account_banner_after(db))
+    )
+    await session.write_line(
+        colored("\r\nPreviewing new-account (after) banner as shown once signup succeeds:", fg_color=MUTED_COLOR)
+    )
+    if banner_text:
+        await session.write_line(banner_text)
+    else:
+        await session.write_line(
+            colored(
+                f"(no banner -- enabled={status.enabled}, file exists={status.exists})", fg_color=MUTED_COLOR
+            )
+        )
+    await session.write_line(colored("Press any key to continue...", fg_color=MUTED_COLOR))
+    await session.read_key()
+
+
+async def _enable_new_account_banner_after_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    status = await lane.run(new_account_banner_after_status)
+    if not status.exists:
+        await session.write_line(
+            colored(
+                f"No banner file found at {status.path}. Place a .ans file there first, then enable.",
+                fg_color=MUTED_COLOR,
+            )
+        )
+        return
+    if (status.size_bytes or 0) > MAX_NEW_ACCOUNT_BANNER_AFTER_SIZE_BYTES:
+        await session.write_line(
+            colored(
+                f"Banner file at {status.path} is {status.size_bytes} bytes, over the "
+                f"{MAX_NEW_ACCOUNT_BANNER_AFTER_SIZE_BYTES} byte limit -- not enabling.",
+                fg_color=MUTED_COLOR,
+            )
+        )
+        return
+
+    def _apply(db: Database) -> None:
+        set_new_account_banner_after_enabled(db, True)
+        record_action(db, actor=actor, action="enable_new_account_banner_after", detail=str(status.path))
+
+    await lane.run(_apply)
+    await session.write_line("New-account (after) banner enabled. Use [P]review to verify it looks right.")
+
+
+async def _disable_new_account_banner_after_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    def _apply(db: Database):
+        status = new_account_banner_after_status(db)
+        set_new_account_banner_after_enabled(db, False)
+        record_action(db, actor=actor, action="disable_new_account_banner_after", detail=str(status.path))
+        return status
+
+    status = await lane.run(_apply)
+    await session.write_line(f"New-account (after) banner disabled. Your file at {status.path} was left in place.")
+
+
+async def _edit_new_account_banner_after_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    path = await lane.run(new_account_banner_after_path)
+    initial_bytes = path.read_bytes() if path.exists() else None
+    draft_path = path.parent / f"{path.name}.draft"
+
+    result = await edit_ansi_art(
+        session, initial_bytes=initial_bytes, draft_path=draft_path,
+        redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+        unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+    )
+    if result is None:
+        await session.write_line(colored("\r\nNo changes saved.", fg_color=MUTED_COLOR))
+        return
+
+    path.write_bytes(result)
+    await lane.run(record_action, actor=actor, action="edit_new_account_banner_after", detail=str(path))
+    await session.write_line(f"\r\nSaved {path}. Use [P]review to verify it looks right.")
 
 
 # -- node colors (issue #162) ------------------------------------------

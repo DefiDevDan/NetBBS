@@ -338,6 +338,25 @@ password, application-level keypair, and SSH public-key authorization paths.
 
 Registration and login share throttling before expensive password hashing.
 
+SSH's own keyboard-interactive registration (`netbbs.net.ssh.
+_NetBBSSSHServer`) is single-shot, unlike Telnet/web's `netbbs.net.
+login_flow._register_new_account`: every *fixable* validation failure
+(password too short, mismatch) ends the whole attempt with "reconnect to
+try again" rather than looping in place. This isn't a missing feature to
+fix -- it follows from the auth-layer's own protocol shape (registration
+happens *during* an auth exchange that must always end by failing, so
+there is no live connection left to retry against) -- but any future
+change assuming SSH registration retries the way Telnet/web's does will
+be wrong. Two distinct text channels exist pre-auth over SSH, not one:
+`send_auth_banner` (called from `begin_auth`, before any auth method is
+tried) is the proven mechanism for real multi-line ANSI content -- the
+welcome banner itself uses it; a kbdint challenge's own `instruction`
+field (the second tuple element `get_kbdint_challenge`/
+`_finish_registration` return) is the only channel available *during*
+the kbdint exchange itself, once registration is already underway, and
+is more client-rendering-dependent for anything beyond a short
+paragraph.
+
 ### Transport authentication
 
 Authentication proof belongs at the layer which possesses it:

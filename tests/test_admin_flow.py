@@ -4194,6 +4194,218 @@ def test_node_name_gradient_change_is_audit_logged(db, lane, sysop):
     assert "blue" in rows[0]["detail"]
 
 
+# -- session banners (issue #177) ---------------------------------------
+
+
+def test_session_banners_option_appears_in_the_system_submenu(db, lane, sysop):
+    session = FakeSession(["s", "s", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "ession banners" in _written_text(session)
+
+
+def test_session_banners_menu_lists_all_three(db, lane, sysop):
+    session = FakeSession(["s", "s", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "ogoff banner" in text
+    assert "fore signup" in text
+    assert "ter signup" in text
+
+
+# -- logoff banner ------------------------------------------------------
+
+
+def test_logoff_banner_enable_with_no_file_present_shows_friendly_error(db, lane, sysop):
+    from netbbs.net.logoff_banner import is_logoff_banner_enabled
+
+    session = FakeSession(["s", "s", "l", "e", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "No banner file found" in _written_text(session)
+    assert is_logoff_banner_enabled(db) is False
+
+
+def test_logoff_banner_enable_with_oversized_file_shows_friendly_error(db, lane, sysop):
+    from netbbs.net.logoff_banner import MAX_LOGOFF_BANNER_SIZE_BYTES, logoff_banner_path
+
+    logoff_banner_path(db).write_bytes(b"x" * (MAX_LOGOFF_BANNER_SIZE_BYTES + 1))
+    session = FakeSession(["s", "s", "l", "e", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "over the" in text and "byte limit" in text
+
+
+def test_logoff_banner_enable_with_valid_file_succeeds_and_is_audit_logged(db, lane, sysop):
+    from netbbs.net.logoff_banner import is_logoff_banner_enabled, logoff_banner_path
+
+    logoff_banner_path(db).write_bytes(b"MY CUSTOM LOGOFF BANNER")
+    session = FakeSession(["s", "s", "l", "e", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Logoff banner enabled" in _written_text(session)
+    assert is_logoff_banner_enabled(db) is True
+
+    rows = db.connection.execute(
+        "SELECT actor_user_id FROM moderation_log WHERE action = 'enable_logoff_banner'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["actor_user_id"] == sysop.id
+
+
+def test_logoff_banner_disable_reverts_flag_without_deleting_file(db, lane, sysop):
+    from netbbs.net.logoff_banner import is_logoff_banner_enabled, logoff_banner_path, set_logoff_banner_enabled
+
+    logoff_banner_path(db).write_bytes(b"MY CUSTOM LOGOFF BANNER")
+    set_logoff_banner_enabled(db, True)
+
+    session = FakeSession(["s", "s", "l", "d", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "disabled" in _written_text(session).lower()
+    assert is_logoff_banner_enabled(db) is False
+    assert logoff_banner_path(db).read_bytes() == b"MY CUSTOM LOGOFF BANNER"
+
+
+def test_logoff_banner_preview_shows_resolved_content(db, lane, sysop):
+    from netbbs.net.logoff_banner import logoff_banner_path, set_logoff_banner_enabled
+
+    logoff_banner_path(db).write_bytes(b"MY DISTINCTIVE LOGOFF TEXT")
+    set_logoff_banner_enabled(db, True)
+
+    session = FakeSession(["s", "s", "l", "p", "x", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "MY DISTINCTIVE LOGOFF TEXT" in _written_text(session)
+
+
+def test_logoff_banner_preview_when_disabled_says_no_banner(db, lane, sysop):
+    session = FakeSession(["s", "s", "l", "p", "x", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "no banner" in text.lower()
+    assert "enabled=False" in text
+
+
+def test_logoff_banner_edit_round_trips_into_logoff_banner_path(db, lane, sysop):
+    from netbbs.net.logoff_banner import logoff_banner_path
+    from netbbs.rendering.ansi_art import decode_ansi_bytes
+    from netbbs.rendering.ansi_parse import parse_ansi_into_buffer
+    from netbbs.rendering.screen_buffer import ScreenBuffer
+
+    session = FakeSession(["s", "s", "l", "i", "A", "CTRL+O", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Saved" in _written_text(session)
+
+    saved = logoff_banner_path(db)
+    assert saved.exists()
+    buf = ScreenBuffer(80, 24)
+    parse_ansi_into_buffer(decode_ansi_bytes(saved.read_bytes()), buf)
+    assert buf.get_cell(0, 0).char == "A"
+
+    rows = db.connection.execute(
+        "SELECT actor_user_id FROM moderation_log WHERE action = 'edit_logoff_banner'"
+    ).fetchall()
+    assert len(rows) == 1
+
+
+# -- new-account banner (before signup) ----------------------------------
+
+
+def test_new_account_banner_before_enable_with_valid_file_succeeds(db, lane, sysop):
+    from netbbs.net.new_account_banner_before import (
+        is_new_account_banner_before_enabled,
+        new_account_banner_before_path,
+    )
+
+    new_account_banner_before_path(db).write_bytes(b"MY CUSTOM SIGNUP BANNER")
+    session = FakeSession(["s", "s", "e", "e", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "New-account (before) banner enabled" in _written_text(session)
+    assert is_new_account_banner_before_enabled(db) is True
+
+    rows = db.connection.execute(
+        "SELECT actor_user_id FROM moderation_log WHERE action = 'enable_new_account_banner_before'"
+    ).fetchall()
+    assert len(rows) == 1
+
+
+def test_new_account_banner_before_disable_reverts_flag_without_deleting_file(db, lane, sysop):
+    from netbbs.net.new_account_banner_before import (
+        is_new_account_banner_before_enabled,
+        new_account_banner_before_path,
+        set_new_account_banner_before_enabled,
+    )
+
+    new_account_banner_before_path(db).write_bytes(b"MY CUSTOM SIGNUP BANNER")
+    set_new_account_banner_before_enabled(db, True)
+
+    session = FakeSession(["s", "s", "e", "d", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert is_new_account_banner_before_enabled(db) is False
+    assert new_account_banner_before_path(db).read_bytes() == b"MY CUSTOM SIGNUP BANNER"
+
+
+def test_new_account_banner_before_preview_shows_resolved_content(db, lane, sysop):
+    from netbbs.net.new_account_banner_before import (
+        new_account_banner_before_path,
+        set_new_account_banner_before_enabled,
+    )
+
+    new_account_banner_before_path(db).write_bytes(b"DISTINCTIVE SIGNUP TEXT")
+    set_new_account_banner_before_enabled(db, True)
+
+    session = FakeSession(["s", "s", "e", "p", "x", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "DISTINCTIVE SIGNUP TEXT" in _written_text(session)
+
+
+# -- new-account banner (after signup) -----------------------------------
+
+
+def test_new_account_banner_after_enable_with_valid_file_succeeds(db, lane, sysop):
+    from netbbs.net.new_account_banner_after import (
+        is_new_account_banner_after_enabled,
+        new_account_banner_after_path,
+    )
+
+    new_account_banner_after_path(db).write_bytes(b"MY CUSTOM WELCOME BANNER")
+    session = FakeSession(["s", "s", "f", "e", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "New-account (after) banner enabled" in _written_text(session)
+    assert is_new_account_banner_after_enabled(db) is True
+
+    rows = db.connection.execute(
+        "SELECT actor_user_id FROM moderation_log WHERE action = 'enable_new_account_banner_after'"
+    ).fetchall()
+    assert len(rows) == 1
+
+
+def test_new_account_banner_after_disable_reverts_flag_without_deleting_file(db, lane, sysop):
+    from netbbs.net.new_account_banner_after import (
+        is_new_account_banner_after_enabled,
+        new_account_banner_after_path,
+        set_new_account_banner_after_enabled,
+    )
+
+    new_account_banner_after_path(db).write_bytes(b"MY CUSTOM WELCOME BANNER")
+    set_new_account_banner_after_enabled(db, True)
+
+    session = FakeSession(["s", "s", "f", "d", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert is_new_account_banner_after_enabled(db) is False
+    assert new_account_banner_after_path(db).read_bytes() == b"MY CUSTOM WELCOME BANNER"
+
+
+def test_new_account_banner_after_preview_shows_resolved_content(db, lane, sysop):
+    from netbbs.net.new_account_banner_after import (
+        new_account_banner_after_path,
+        set_new_account_banner_after_enabled,
+    )
+
+    new_account_banner_after_path(db).write_bytes(b"DISTINCTIVE WELCOME TEXT")
+    set_new_account_banner_after_enabled(db, True)
+
+    session = FakeSession(["s", "s", "f", "p", "x", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "DISTINCTIVE WELCOME TEXT" in _written_text(session)
+
+
 def test_theme_colors_menu_shows_default_status_for_all_three_slots(db, lane, sysop):
     session = FakeSession(["s", "c", "b", "b", "b"])
     _run(session, lane, sysop)

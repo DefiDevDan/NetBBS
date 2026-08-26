@@ -484,6 +484,139 @@ def test_ssh_pre_auth_banner_omits_the_registration_hint_when_registration_is_cl
     assert "'new'" not in banner
 
 
+class _BannerCapturingKbdIntClient(asyncssh.SSHClient):
+    """Same pre-auth-banner capture as `_BannerCapturingClient`, plus
+    enough kbdint scaffolding to reach `begin_auth` for the reserved
+    `new` username without hanging -- these tests only need `begin_auth`
+    to fire (it always does, before any auth method is tried), not a
+    completed registration (that's `test_ssh_registration.py`'s own
+    job), so every kbdint round is answered with an empty response."""
+
+    def __init__(self):
+        self.banners: list[str] = []
+
+    def auth_banner_received(self, msg: str, lang: str) -> None:
+        self.banners.append(msg)
+
+    def kbdint_auth_requested(self):
+        return ""
+
+    async def kbdint_challenge_received(self, name, instructions, lang, prompts):
+        return ["" for _ in prompts]
+
+
+def test_ssh_pre_auth_banner_includes_the_new_account_before_banner_for_the_reserved_username(db):
+    # GitHub issue #177: the "before" new-account banner, sent via
+    # send_auth_banner in begin_auth -- the same proven pre-auth-banner
+    # mechanism the welcome banner itself already uses -- exactly once,
+    # only when the connecting username is the reserved 'new' sentinel.
+    from netbbs.net.new_account_banner_before import (
+        new_account_banner_before_path,
+        set_new_account_banner_before_enabled,
+    )
+
+    new_account_banner_before_path(db).write_bytes(b"MY CUSTOM SIGNUP BANNER")
+    set_new_account_banner_before_enabled(db, True)
+    client = _BannerCapturingKbdIntClient()
+
+    async def handler(session: Session):
+        pass
+
+    async def scenario():
+        server = await _run_server(db, handler)
+        try:
+            with pytest.raises(asyncssh.PermissionDenied):
+                async with asyncssh.connect(
+                    "127.0.0.1",
+                    server.port,
+                    username="new",
+                    known_hosts=None,
+                    client_factory=lambda: client,
+                    public_key_auth=False,
+                    password_auth=False,
+                    kbdint_auth=True,
+                ):
+                    pass
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    banner = "\n".join(client.banners)
+    assert "MY CUSTOM SIGNUP BANNER" in banner
+
+
+def test_ssh_pre_auth_banner_omits_the_new_account_before_banner_for_an_ordinary_username(db):
+    from netbbs.net.new_account_banner_before import (
+        new_account_banner_before_path,
+        set_new_account_banner_before_enabled,
+    )
+
+    new_account_banner_before_path(db).write_bytes(b"MY CUSTOM SIGNUP BANNER")
+    set_new_account_banner_before_enabled(db, True)
+    create_user(db, "alice", password="hunter2", user_level=10)
+    client = _BannerCapturingClient()
+
+    async def handler(session: Session):
+        pass
+
+    async def scenario():
+        server = await _run_server(db, handler)
+        try:
+            async with asyncssh.connect(
+                "127.0.0.1",
+                server.port,
+                username="alice",
+                password="hunter2",
+                known_hosts=None,
+                client_factory=lambda: client,
+            ):
+                pass
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    banner = "\n".join(client.banners)
+    assert "MY CUSTOM SIGNUP BANNER" not in banner
+
+
+def test_ssh_pre_auth_banner_omits_the_new_account_before_banner_when_registration_is_closed(db):
+    from netbbs.config import RegistrationMode, set_registration_mode
+    from netbbs.net.new_account_banner_before import (
+        new_account_banner_before_path,
+        set_new_account_banner_before_enabled,
+    )
+
+    set_registration_mode(db, RegistrationMode.CLOSED)
+    new_account_banner_before_path(db).write_bytes(b"MY CUSTOM SIGNUP BANNER")
+    set_new_account_banner_before_enabled(db, True)
+    client = _BannerCapturingKbdIntClient()
+
+    async def handler(session: Session):
+        pass
+
+    async def scenario():
+        server = await _run_server(db, handler)
+        try:
+            with pytest.raises((asyncssh.PermissionDenied, asyncssh.ConnectionLost)):
+                async with asyncssh.connect(
+                    "127.0.0.1",
+                    server.port,
+                    username="new",
+                    known_hosts=None,
+                    client_factory=lambda: client,
+                    public_key_auth=False,
+                    password_auth=False,
+                    kbdint_auth=True,
+                ):
+                    pass
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    banner = "\n".join(client.banners)
+    assert "MY CUSTOM SIGNUP BANNER" not in banner
+
+
 # -- GitHub issue #25: no second login prompt over SSH ----------------------
 
 

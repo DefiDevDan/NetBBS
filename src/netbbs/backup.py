@@ -2,19 +2,20 @@
 Node backup and restore (design doc §13.4/§13.10, issue #60's first
 operational slice, hardened by issue #75).
 
-A node's recoverable state is six `db_path`-relative artifacts, not
+A node's recoverable state is nine `db_path`-relative artifacts, not
 just the database: content blobs (`netbbs.files.storage`), node
 identity (`netbbs.link.node_identity`), the SSH host key
-(`netbbs.net.ssh`), the welcome banner
-(`netbbs.net.welcome_banner`), and the main-menu masthead
-(`netbbs.net.main_menu_banner`, issue #161) all live at derived paths
-alongside the database, each with no independent config field of its
-own. A backup covering only the database silently loses the SSH host
-key (every client gets a MITM warning after restore) and, far more
-seriously, the Link node identity -- root-key custody is explicitly
-"part of ordinary node backup and restore" (design doc §4.5), not a
-separate ceremony. This module treats all six as one atomic backup
-operation, never a DB-only one.
+(`netbbs.net.ssh`), the welcome banner (`netbbs.net.welcome_banner`),
+the main-menu masthead (`netbbs.net.main_menu_banner`, issue #161), the
+logoff banner (`netbbs.net.logoff_banner`, issue #177), and the two
+new-account banners (`netbbs.net.new_account_banner_before`/`_after`,
+issue #177) all live at derived paths alongside the database, each with
+no independent config field of its own. A backup covering only the
+database silently loses the SSH host key (every client gets a MITM
+warning after restore) and, far more seriously, the Link node identity
+-- root-key custody is explicitly "part of ordinary node backup and
+restore" (design doc §4.5), not a separate ceremony. This module treats
+all nine as one atomic backup operation, never a DB-only one.
 
 Deliberately path-based, not `Database`-based: a backup must be safely
 takeable against a live, running node, and opening a second `Database`
@@ -131,6 +132,24 @@ def _main_menu_banner_path_for(db_path: Path) -> Path:
     return db_path.parent / f"{db_path.stem}_main_menu_banner.ans"
 
 
+def _logoff_banner_path_for(db_path: Path) -> Path:
+    """Mirrors `netbbs.net.logoff_banner.logoff_banner_path`'s own
+    derived path (issue #177)."""
+    return db_path.parent / f"{db_path.stem}_logoff_banner.ans"
+
+
+def _new_account_banner_before_path_for(db_path: Path) -> Path:
+    """Mirrors `netbbs.net.new_account_banner_before.
+    new_account_banner_before_path`'s own derived path (issue #177)."""
+    return db_path.parent / f"{db_path.stem}_new_account_banner_before.ans"
+
+
+def _new_account_banner_after_path_for(db_path: Path) -> Path:
+    """Mirrors `netbbs.net.new_account_banner_after.
+    new_account_banner_after_path`'s own derived path (issue #177)."""
+    return db_path.parent / f"{db_path.stem}_new_account_banner_after.ans"
+
+
 def _sha256_of_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -163,15 +182,16 @@ def create_backup(*, db_path: Path, identity_dir: Path, destination: Path) -> Pa
     snapshot_database`), and every other artifact is either static once
     created or already rewritten via its own atomic-replace pattern --
     see the module docstring for the accepted exceptions (the welcome
-    banner and the main-menu masthead have no atomicity guarantee on
-    their own writes; a backup landing mid-edit could capture a
-    half-written one, purely cosmetic, no correctness consequence).
+    banner, the main-menu masthead, the logoff banner, and both
+    new-account banners have no atomicity guarantee on their own writes;
+    a backup landing mid-edit could capture a half-written one, purely
+    cosmetic, no correctness consequence).
 
     The manifest's `checksums` (design doc §13.10, issue #75) cover
     every file captured *outside* the content-addressed `files/` tree
-    -- the database snapshot, each identity file, the SSH host key, the
-    welcome banner, and the main-menu masthead. The blob tree needs no
-    manifest entry at all:
+    -- the database snapshot, each identity file, the SSH host key, and
+    every banner/masthead singleton. The blob tree needs no manifest
+    entry at all:
     a blob's own path already *is* its claimed hash
     (`netbbs.files.storage`'s own layout), so restore verifies it by
     recomputing and comparing against the filename, not against
@@ -205,6 +225,9 @@ def create_backup(*, db_path: Path, identity_dir: Path, destination: Path) -> Pa
         _ssh_host_key_path_for(db_path),
         _welcome_banner_path_for(db_path),
         _main_menu_banner_path_for(db_path),
+        _logoff_banner_path_for(db_path),
+        _new_account_banner_before_path_for(db_path),
+        _new_account_banner_after_path_for(db_path),
     ):
         if extra_path.exists():
             shutil.copy2(extra_path, destination / extra_path.name)

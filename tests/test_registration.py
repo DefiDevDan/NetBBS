@@ -413,3 +413,82 @@ def test_registration_username_prompt_is_case_insensitive_for_the_sentinel(db):
     asyncio.run(_run_login(session, db))
 
     assert "Welcome, alice" in session.output
+
+
+# -- GitHub issue #177: new-account (before/after) banners -----------------
+
+
+def test_before_banner_shown_once_at_entry_not_on_every_retry(db):
+    from netbbs.net.new_account_banner_before import (
+        new_account_banner_before_path,
+        set_new_account_banner_before_enabled,
+    )
+
+    new_account_banner_before_path(db).write_bytes(b"SIGN UP BELOW")
+    set_new_account_banner_before_enabled(db, True)
+    # Attempt 1: too-short password (fixable, retries in place).
+    # Attempt 2: succeeds. "n" answers the Unicode-style prompt.
+    session = FakeSession(
+        ["new", "alice", "short", "short", "alice", "hunter2pw", "hunter2pw", "n", "y"], keys=["l"],
+    )
+
+    asyncio.run(_run_login(session, db))
+
+    assert session.output.count("SIGN UP BELOW") == 1
+    assert session.output.index("SIGN UP BELOW") < session.output.index("Create account")
+
+
+def test_after_banner_shown_on_immediate_success(db):
+    from netbbs.net.new_account_banner_after import (
+        new_account_banner_after_path,
+        set_new_account_banner_after_enabled,
+    )
+
+    new_account_banner_after_path(db).write_bytes(b"YOU ARE IN")
+    set_new_account_banner_after_enabled(db, True)
+    session = FakeSession(["new", "alice", "hunter2pw", "hunter2pw", "n", "y"], keys=["l"])
+
+    asyncio.run(_run_login(session, db))
+
+    assert "YOU ARE IN" in session.output
+    assert session.output.index("YOU ARE IN") < session.output.index("Welcome, alice")
+
+
+def test_after_banner_shown_when_approval_is_required(db):
+    from netbbs.net.new_account_banner_after import (
+        new_account_banner_after_path,
+        set_new_account_banner_after_enabled,
+    )
+
+    set_registration_mode(db, RegistrationMode.APPROVAL_REQUIRED)
+    new_account_banner_after_path(db).write_bytes(b"YOU ARE IN")
+    set_new_account_banner_after_enabled(db, True)
+    session = FakeSession(["new", "alice", "hunter2pw", "hunter2pw", "", "", "", ""])
+
+    asyncio.run(_run_login(session, db, _throttle_config(max_attempts_per_connection=2)))
+
+    assert "YOU ARE IN" in session.output
+
+
+def test_after_banner_not_shown_on_a_fixable_validation_failure(db):
+    from netbbs.net.new_account_banner_after import (
+        new_account_banner_after_path,
+        set_new_account_banner_after_enabled,
+    )
+
+    new_account_banner_after_path(db).write_bytes(b"YOU ARE IN")
+    set_new_account_banner_after_enabled(db, True)
+    session = FakeSession(["new", "alice", "short", "short", "", "", ""])
+
+    asyncio.run(_run_login(session, db, _throttle_config(max_attempts_per_connection=2)))
+
+    assert "YOU ARE IN" not in session.output
+
+
+def test_disabled_new_account_banners_leave_registration_byte_for_byte_unchanged(db):
+    # "n" answers the one-time post-login Unicode-style prompt.
+    session = FakeSession(["new", "alice", "hunter2pw", "hunter2pw", "n", "y"], keys=["l"])
+
+    asyncio.run(_run_login(session, db))
+
+    assert "Welcome, alice" in session.output

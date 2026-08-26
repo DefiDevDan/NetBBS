@@ -273,6 +273,23 @@ resolve-once lifecycle instead, since a SysOp's own change should take
 effect for new connections the same way a rename does, not live-update a
 session already in progress.
 
+The welcome-banner/masthead mechanism extends to three more session-
+lifecycle points (issue #177): a logoff banner, shown above the ordinary
+"Signed out"/"Goodbye!" message on an intentional Log off only (never on
+an idle timeout, kick, or account revocation); and a pair of new-account
+banners bracketing self-service registration, one shown once before the
+signup workflow begins and one once it completes successfully (covering
+both an immediate login and a pending-approval outcome). Both Telnet/web
+and SSH's own, separately-implemented registration paths show the
+before/after banners; SSH's version reaches them through `send_auth_
+banner` (before) and a kbdint challenge's own `instruction` field
+(after) rather than an interactive screen, since SSH authenticates at
+the protocol layer with no such screen of its own. Each of the three is
+its own independent singleton, reachable from Settings > Session
+banners, with no built-in default art -- disabled is a complete
+non-event, unlike the welcome banner's own always-renders-something
+default.
+
 The project intentionally provides two composition paths:
 
 - a robust simple/line-oriented editor available everywhere;
@@ -2905,7 +2922,7 @@ introduced.
 
 ### 13.4 Backup and restore (issue #60's first operational slice)
 
-A node's recoverable state is not only its database — it is six artifacts,
+A node's recoverable state is not only its database — it is nine artifacts,
 today scattered across derived, `db_path`-relative filenames with no single
 existing tool that treats them as one recoverable set:
 
@@ -2917,12 +2934,15 @@ existing tool that treats them as one recoverable set:
 | SSH host key | `db_path.parent / f"{db_path.stem}_ssh_host_key"` | `netbbs.net.ssh.ensure_host_key`, once, at first startup |
 | Welcome banner | `db_path.parent / f"{db_path.stem}_welcome_banner.ans"` | SysOp, via the welcome-banner menu screen |
 | Main-menu masthead | `db_path.parent / f"{db_path.stem}_main_menu_banner.ans"` | SysOp, via the masthead menu screen (issue #161) |
+| Logoff banner | `db_path.parent / f"{db_path.stem}_logoff_banner.ans"` | SysOp, via the logoff-banner menu screen (issue #177) |
+| New-account banner (before signup) | `db_path.parent / f"{db_path.stem}_new_account_banner_before.ans"` | SysOp, via its own menu screen (issue #177) |
+| New-account banner (after signup) | `db_path.parent / f"{db_path.stem}_new_account_banner_after.ans"` | SysOp, via its own menu screen (issue #177) |
 
 A backup covering only the database silently loses the SSH host key (every
 client gets a MITM warning on next connect after restore) and, far more
 seriously, the Link node identity (root-key custody is explicitly "part of
 ordinary node backup and restore" per §4.5's node identity model, not a
-separate ceremony) — so this design treats all five as one atomic backup
+separate ceremony) — so this design treats all nine as one atomic backup
 operation, never a DB-only one.
 
 **Mechanism**: a new `netbbs.backup` module (synchronous, path-based — no
@@ -2955,18 +2975,20 @@ of "the operator/an external trigger drives it, not a built-in timer").
    still reclaim, never a dangling reference). Reversing the order would
    risk the opposite, genuinely broken case: a DB snapshot referencing a
    blob the copy hadn't reached yet.
-3. **Node identity, SSH host key, welcome banner, main-menu masthead**: plain
-   file copies (each is either static after creation or already rewritten via
-   its own atomic-replace pattern — `node_identity.py`'s `transitions.json`,
-   notably — so no read-tearing hazard). The welcome banner and main-menu
-   masthead are the accepted exceptions, with no atomicity guarantee on their
-   own writes; a backup landing mid-edit could capture a half-written file.
-   Accepted as-is: purely cosmetic, no correctness consequence, not worth an
-   atomic-write retrofit just for backup's sake.
+3. **Node identity, SSH host key, and every banner/masthead singleton**
+   (welcome banner, main-menu masthead, logoff banner, both new-account
+   banners): plain file copies (each is either static after creation or
+   already rewritten via its own atomic-replace pattern — `node_identity.
+   py`'s `transitions.json`, notably — so no read-tearing hazard). Every
+   banner/masthead singleton is the accepted exception, with no atomicity
+   guarantee on its own writes; a backup landing mid-edit could capture a
+   half-written file. Accepted as-is: purely cosmetic, no correctness
+   consequence, not worth an atomic-write retrofit just for backup's sake.
 
 Writes `destination/manifest.json` last (timestamp, `netbbs.__version__`,
-the database's own `PRAGMA user_version`, and the five source paths as
-recorded) — lets an operator (or a future restore-time check) confirm what a
+the database's own `PRAGMA user_version`, and a checksum per captured
+artifact outside the content-addressed blob tree) — lets an operator (or a
+future restore-time check) confirm what a
 given backup directory actually is before trusting it. Also records
 `last_backup_at`/`last_backup_path` into the live node's own `node_config`
 table (same key-value store `netbbs.selfupdate`'s update-check state already
@@ -2975,8 +2997,9 @@ alongside `[W]elcome`/`[U]pdate`/`[T]imestamp`/`[L]ink status`; letter `K`
 for "bacKup", since `B` is already every submenu's universal `[B]ack`), not
 required for restore itself.
 
-`restore_backup(*, source, db_path, identity_dir)` reverses the five copies
--- **superseded by §13.10's staged/validated workflow (issue #75)**: the
+`restore_backup(*, source, db_path, identity_dir)` reverses each of the
+copies above -- **superseded by §13.10's staged/validated workflow (issue
+#75)**: the
 original mechanism restored each artifact in place, sequentially, with no
 validation before the first live path was overwritten and no recoverable
 state if interrupted partway. §13.10 replaces the restore side of this

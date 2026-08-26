@@ -196,6 +196,9 @@ back up all of it together, not just the database (see §5):
 | SSH host key | `<db-stem>_ssh_host_key` |
 | Welcome banner (if customized) | `<db-stem>_welcome_banner.ans` |
 | Main-menu masthead (if customized) | `<db-stem>_main_menu_banner.ans` |
+| Logoff banner (if customized) | `<db-stem>_logoff_banner.ans` |
+| New-account banner, before signup (if customized) | `<db-stem>_new_account_banner_before.ans` |
+| New-account banner, after signup (if customized) | `<db-stem>_new_account_banner_after.ans` |
 | Config file | wherever `--config` points (not derived from `--db`) |
 | Logs | `netbbs.log` next to the database, self-rotating at 10 MiB
   with 5 backups kept (50 MiB worst case, never unbounded) — also

@@ -175,9 +175,12 @@ from netbbs.net.draft_storage import delete_draft, drafts_directory, load_draft
 from netbbs.net.editor_preference import fullscreen_editor_enabled, set_fullscreen_editor_enabled
 from netbbs.net.door_flow import browse_doors, has_visible_doors
 from netbbs.net.file_flow import browse_file_areas, enter_file_area, has_visible_areas
+from netbbs.net.logoff_banner import load_logoff_banner
 from netbbs.net.mail_flow import browse_mail
 from netbbs.net.main_menu_banner import load_main_menu_banner
 from netbbs.net.maintenance import LOCKDOWN_MESSAGE, LOCKDOWN_NOTICE, MAINTENANCE_MESSAGE, MaintenanceMode
+from netbbs.net.new_account_banner_after import load_new_account_banner_after
+from netbbs.net.new_account_banner_before import load_new_account_banner_before
 from netbbs.net.nodeconfig import ThrottleConfig
 from netbbs.net.picker import pick_item
 from netbbs.net.prose_editor import edit_prose
@@ -852,6 +855,26 @@ async def run_authenticated_session(
             except asyncio.CancelledError:
                 pass
 
+    # GitHub issue #177: only reached when `_main_menu` returns normally,
+    # not when it (or anything nested under it) raises -- which covers
+    # the deliberate "Log off?" confirm this pre-existing "Signed out"/
+    # "Goodbye!" notice was already written for. `_watch_for_account_
+    # revocation`'s own disconnect (a task cancellation) bypasses this
+    # point entirely, straight out of the function, as does any
+    # `ActiveSessionRegistry.disconnect_all`-driven kick/drain -- neither
+    # ever sees this banner. One pre-existing wrinkle worth knowing about
+    # rather than silently inheriting: `_main_menu`'s own in-loop
+    # `account_still_active()` recheck (a revoked account caught on its
+    # *next* keystroke, before the watcher's periodic poll gets to it --
+    # see that watcher's own docstring) also returns normally rather than
+    # raising, so it already fell through to this same friendly "Signed
+    # out"/"Goodbye!" message before this banner existed, and will now
+    # show this banner too. Not a new gap this change introduces, and not
+    # fixed here -- out of scope for adding a banner to an existing,
+    # unrelated call site.
+    logoff_banner = load_logoff_banner(db)
+    if logoff_banner:
+        await session.write_line(logoff_banner)
     await _write_connection_notice(session, db, "Signed out", "Goodbye!", tone="success")
 
 
@@ -2259,7 +2282,18 @@ async def _register_new_account(
     blank username (an explicit cancel) or an idle timeout (the caller
     left) still exit immediately regardless of which attempt this is --
     neither is a "fixable mistake" to retry.
+
+    Shows `new_account_banner_before`'s own optional SysOp banner exactly
+    once, right here -- before the very first attempt, not repeated on
+    every retry (GitHub issue #177's own scoping decision): a fixable
+    typo shouldn't replay decorative art on every loop iteration. Shows
+    `new_account_banner_after`'s own banner once account creation
+    actually succeeds, covering *both* successful outcomes (immediate
+    login and pending-approval) -- see that call site below.
     """
+    before_banner = load_new_account_banner_before(db)
+    if before_banner:
+        await session.write_line(before_banner)
     for attempt in range(1, _REGISTRATION_MAX_ATTEMPTS + 1):
         await session.write_line(
             "\r\n"
@@ -2346,6 +2380,18 @@ async def _register_new_account(
             "In-place redraw is on by default -- turn it off anytime in Your profile if you'd rather scroll.",
             fg_color=MUTED_COLOR,
         )
+
+        # GitHub issue #177: covers both successful outcomes below (an
+        # account created and immediately usable, or created but pending
+        # SysOp approval) -- both are "signup completed successfully"
+        # from the caller's own perspective, just with different next
+        # steps, which the existing distinct messages right after this
+        # still convey. Never shown for a validation failure/cancel --
+        # those `continue`/`return None` above this point, never reaching
+        # here.
+        after_banner = load_new_account_banner_after(db)
+        if after_banner:
+            await session.write_line(after_banner)
 
         if require_approval:
             await session.write_line(

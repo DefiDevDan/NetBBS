@@ -49,6 +49,8 @@ from netbbs.auth.users import (
 )
 from netbbs.config import RegistrationMode, get_registration_mode
 from netbbs.net import char_input
+from netbbs.net.new_account_banner_after import load_new_account_banner_after
+from netbbs.net.new_account_banner_before import load_new_account_banner_before
 from netbbs.net.session import Session, SessionClosedError, clamp_terminal_size
 from netbbs.net.throttle import LoginThrottle
 from netbbs.net.welcome_banner import load_welcome_banner
@@ -305,8 +307,25 @@ class _NetBBSSSHServer(asyncssh.SSHServer):
         # negotiation, so it uses the safe fallback") -- same fix here.
         assert self._conn is not None  # connection_made always runs first
         lines = [load_welcome_banner(self._db, truecolor=False)]
-        if get_registration_mode(self._db) != RegistrationMode.CLOSED:
+        registration_open = get_registration_mode(self._db) != RegistrationMode.CLOSED
+        if registration_open:
             lines.append(f"New here? Connect as {NEW_ACCOUNT_SENTINEL!r} to register.")
+        # GitHub issue #177's own "before" banner, shown once per distinct
+        # username on this connection (this method's own docstring) --
+        # naturally exactly once for the whole registration attempt,
+        # since SSH's kbdint registration below is single-shot with no
+        # in-place retry loop the way Telnet/web's own `_register_new_
+        # account` has (any fixable failure there ends the attempt with
+        # "reconnect to try again" rather than looping). `send_auth_
+        # banner` here, not the kbdint challenge's own `instruction`
+        # field below -- this is the exact same proven mechanism
+        # `load_welcome_banner` above already uses for real multi-line
+        # ANSI content pre-auth, unlike a kbdint instruction string whose
+        # rendering is more client-dependent.
+        if registration_open and username.strip().lower() == NEW_ACCOUNT_SENTINEL:
+            before_banner = load_new_account_banner_before(self._db)
+            if before_banner:
+                lines.append(before_banner)
         self._conn.send_auth_banner("\r\n".join(lines) + "\r\n")
         return True
 
@@ -486,12 +505,27 @@ class _NetBBSSSHServer(asyncssh.SSHServer):
         except AuthError as exc:
             return await self._finish_registration(f"Could not create account: {exc}")
 
+        # GitHub issue #177's own "after" banner -- covers both successful
+        # outcomes below (immediate vs. pending-approval), matching
+        # Telnet/web's own `_register_new_account` scoping decision, and
+        # never reached for any of the fixable-failure `_finish_
+        # registration` calls above this point. Prepended to the same
+        # kbdint `instruction` field the initial "Create a new NetBBS
+        # account..." challenge already used successfully -- there's no
+        # `send_auth_banner`-equivalent hook available this late (that
+        # mechanism is pre-auth-only, called from `begin_auth`); this is
+        # the one channel `_finish_registration` has for showing the
+        # caller anything at all before the connection ends.
+        after_banner = load_new_account_banner_after(self._db)
+        after_prefix = f"{after_banner}\r\n" if after_banner else ""
         if require_approval:
             return await self._finish_registration(
-                f"Account {username!r} created. A SysOp must approve it before you can log "
+                f"{after_prefix}Account {username!r} created. A SysOp must approve it before you can log "
                 "in. Reconnect once approved."
             )
-        return await self._finish_registration(f"Account {username!r} created. Reconnect as {username!r} to log in.")
+        return await self._finish_registration(
+            f"{after_prefix}Account {username!r} created. Reconnect as {username!r} to log in."
+        )
 
     async def _finish_registration(self, message: str) -> tuple[str, str, str, list[tuple[str, bool]]]:
         """
