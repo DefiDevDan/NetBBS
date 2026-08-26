@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import importlib.util
 import json
-import shutil
+import os
 import sys
 import textwrap
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -232,14 +234,16 @@ def test_play_door_is_audit_logged(db, lane, player, tmp_path):
     assert "reason=exited" in play_entries[0].detail
 
 
-# -- the real demo door (examples/doors/retro_trivia.py) -------------------
+# -- the real demo door (netbbs.doors.bundled.retro_trivia) ----------------
 #
 # Not a throwaway test fixture like every script above -- the actual
 # shipped proof-of-concept door, run for real through this same
 # run_door pipeline, proving the whole vertical end to end rather than
-# just the sandbox mechanics in isolation.
+# just the sandbox mechanics in isolation. Ships as real installed
+# package data now (issue #172 follow-up), not a loose examples/ file.
 
-_RETRO_TRIVIA_PATH = Path(__file__).resolve().parent.parent / "examples" / "doors" / "retro_trivia.py"
+_BUNDLED_DOORS_DIR = Path(__file__).resolve().parent.parent / "src" / "netbbs" / "doors" / "bundled"
+_RETRO_TRIVIA_PATH = _BUNDLED_DOORS_DIR / "retro_trivia.py"
 
 
 def test_the_real_demo_door_plays_a_full_round_through_run_door(db, lane, player):
@@ -268,25 +272,68 @@ def test_the_real_demo_door_plays_a_full_round_through_run_door(db, lane, player
     assert "Final score:" in output
 
 
-# -- the space-trading door (examples/doors/voidrunner.py) -----------------
+# -- the space-trading door (netbbs.doors.bundled.voidrunner) --------------
 #
 # Same "run the real shipped file through the real pipeline" reasoning as
-# Retro Trivia above. Run against a tmp_path *copy* of the script rather
-# than the real examples/doors/voidrunner.py: voidrunner.py's save
-# directory defaults to a `voidrunner_saves/` folder next to its own
-# `__file__`, and `run_door` replaces a door's environment outright (only
-# NETBBS_DOOR_INFO is set -- no way to hand it VOIDRUNNER_SAVE_DIR through
-# the real launch path), so a test running the file in place would write a
-# throwaway save into the actual examples/ directory on every run.
+# Retro Trivia above -- run directly against the real installed file, no
+# tmp_path copy needed: voidrunner.py's default save directory is no
+# longer relative to its own __file__ (it ships as real installed package
+# data now, whose own directory is routinely read-only/wiped on upgrade
+# -- see that module's own docstring), so where the script itself lives
+# no longer affects where it saves.
+#
+# What that default *does* still depend on is a real user's home
+# directory, and `run_door` replaces a door's environment outright (only
+# NETBBS_DOOR_INFO survives) -- there's no way to hand it
+# VOIDRUNNER_SAVE_DIR through the real launch path, so this test cleans
+# up whatever the door's own `_default_save_dir()` actually resolves to
+# afterward, computed identically to how the door itself computes it
+# (correct regardless of which platform-specific fallback branch fires).
 
-_VOIDRUNNER_PATH = Path(__file__).resolve().parent.parent / "examples" / "doors" / "voidrunner.py"
+_VOIDRUNNER_PATH = _BUNDLED_DOORS_DIR / "voidrunner.py"
 
 
-def test_the_real_space_trading_door_plays_a_full_opening_loop_through_run_door(db, lane, player, tmp_path):
-    door_copy = tmp_path / "voidrunner.py"
-    shutil.copy(_VOIDRUNNER_PATH, door_copy)
-    door = create_door(db, "Voidrunner", sys.executable, args=(str(door_copy),), creator=player)
+def _load_voidrunner_default_save_dir() -> Path:
+    """Computed the same way the real door subprocess would actually see
+    it, not the test process's own normal environment -- `run_door`
+    replaces a door's entire environment (only `NETBBS_DOOR_INFO`
+    survives), which changes what `Path.home()` itself resolves to (see
+    that module's own Windows-specific fallback). `tempfile.tempdir` is
+    reset too, alongside `os.environ` -- `tempfile.gettempdir()` caches
+    its result at module level after the first call, so without this a
+    test process that already called it once (pytest itself routinely
+    does) would keep returning that *earlier*, unstripped-environment
+    answer, not what a genuinely fresh process (the real child) computes
+    once `TEMP`/`TMP` aren't present -- silently checked, verified to
+    diverge on this project's own Windows dev environment (`c:\\tmp`
+    fresh vs. the normal per-user temp directory cached)."""
+    spec = importlib.util.spec_from_file_location("voidrunner_under_test", _VOIDRUNNER_PATH)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module  # dataclasses needs this registered before exec_module
+    spec.loader.exec_module(module)
+    import tempfile
+
+    with mock.patch.dict(os.environ, {"NETBBS_DOOR_INFO": "unused"}, clear=True):
+        with mock.patch.object(tempfile, "tempdir", None):
+            return module._default_save_dir()
+
+
+def test_the_real_space_trading_door_plays_a_full_opening_loop_through_run_door(db, lane, player):
+    door = create_door(db, "Voidrunner", sys.executable, args=(str(_VOIDRUNNER_PATH),), creator=player)
     session = FakeSession()
+    save_path = _load_voidrunner_default_save_dir() / f"{player.id}.json"
+    # Belt-and-suspenders: a prior interrupted run of this same test
+    # (skipping its own `finally` cleanup below -- a hard process kill,
+    # not an ordinary assertion failure, which `finally` already
+    # survives) could leave a stale save behind at this same shared
+    # path, `player.id` being deterministically 1 for a fresh throwaway
+    # DB's first created user -- which desyncs this scripted keystroke
+    # sequence entirely (a *resumed* career skips the callsign/confirm-
+    # launch prompts a *new* one expects first). Caught for real: a
+    # leftover file from an earlier ad hoc manual repro of this exact
+    # scenario made this test fail intermittently.
+    save_path.unlink(missing_ok=True)
 
     async def scenario():
         task = asyncio.create_task(_run(session, lane, door, player))
@@ -296,13 +343,16 @@ def test_the_real_space_trading_door_plays_a_full_opening_loop_through_run_door(
         session.type_in("\rYMAB3\rQS Q")
         return await task
 
-    result = asyncio.run(scenario())
+    try:
+        result = asyncio.run(scenario())
 
-    assert result.reason == "exited"
-    assert result.exit_code == 0
-    output = bytes(session.written).decode()
-    assert "V O I D R U N N E R" in output  # the title screen's letter-spaced wordmark
-    assert "keeper" in output  # the real caller handle, from the drop-file
-    assert "Bought 3x Food" in output
-    assert "Docking clamps engaged" in output
-    assert (tmp_path / "voidrunner_saves").exists()  # the door manages its own save, unmediated by NetBBS
+        assert result.reason == "exited"
+        assert result.exit_code == 0
+        output = bytes(session.written).decode()
+        assert "V O I D R U N N E R" in output  # the title screen's letter-spaced wordmark
+        assert "keeper" in output  # the real caller handle, from the drop-file
+        assert "Bought 3x Food" in output
+        assert "Docking clamps engaged" in output
+        assert save_path.exists()  # the door manages its own save, unmediated by NetBBS
+    finally:
+        save_path.unlink(missing_ok=True)

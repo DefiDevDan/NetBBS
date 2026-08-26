@@ -3784,7 +3784,7 @@ def test_door_gallery_option_appears_in_the_door_menu(db, lane, sysop):
     assert "allery" in _written_text(session)
 
 
-def test_door_gallery_lists_bundled_example_doors_by_name(db, lane, sysop):
+def test_door_gallery_lists_bundled_doors_by_name(db, lane, sysop):
     session = FakeSession(["c", "d", "g", "b", "b", "b", "b"])
     _run(session, lane, sysop)
     text = _written_text(session)
@@ -3792,21 +3792,28 @@ def test_door_gallery_lists_bundled_example_doors_by_name(db, lane, sysop):
     assert "Voidrunner" in text
 
 
-def test_door_gallery_selecting_an_entry_shows_details_before_registering(db, lane, sysop):
+def test_door_gallery_selecting_an_entry_shows_details_then_opens_the_editor_directly(db, lane, sysop):
+    """Dogfood follow-up: selecting an entry used to show a "Register
+    X with these defaults now? [Y/N]" confirmation before opening the
+    editor -- copied from the banner galleries' own shape without
+    noticing it doesn't fit here (confirming there directly applies the
+    change; confirming here only ever opened an editor that already
+    requires its own [S]ave). Selecting now goes straight to the
+    prefilled editor; backing out of *that* with nothing changed
+    discards nothing and loops back to the gallery, same as before."""
     from netbbs.doors import list_doors
 
     # item 01 on the picker's first page -- catalog order, Retro Trivia.
-    # Declining loops back into the gallery's own picker (same dogfood
-    # fix as the banner galleries), so exiting cleanly needs one extra
-    # "b" beyond the usual 3.
-    session = FakeSession(["c", "d", "g", "0", "1", "n", "b", "b", "b", "b"])
+    # 5 b's to exit cleanly: the editor's own [B]ack (no changes made,
+    # so no "discard?" confirmation), then the gallery's own pick_item,
+    # then door menu, content menu, admin top.
+    session = FakeSession(["c", "d", "g", "0", "1", "b", "b", "b", "b", "b"])
     _run(session, lane, sysop)
     text = _written_text(session)
     assert "Retro Trivia" in text
     assert "Suggested min level: 0" in text
     assert "Interpreter (default, editable next):" in text
     assert "retro_trivia.py" in text
-    assert "Not registered." in text
     assert list_doors(db) == []
 
 
@@ -3816,7 +3823,7 @@ def test_door_gallery_description_is_word_wrapped_to_terminal_width(db, lane, sy
     description (224 chars) is item 02 -- well past FakeSession's 80
     columns, so it must actually be split across multiple lines, each
     of which fits."""
-    session = FakeSession(["c", "d", "g", "0", "2", "n", "b", "b", "b", "b"])
+    session = FakeSession(["c", "d", "g", "0", "2", "b", "b", "b", "b", "b"])
     _run(session, lane, sysop)
     text = _visible(_written_text(session))
     # "Voidrunner" also appears once already in the picker's own list row
@@ -3831,20 +3838,20 @@ def test_door_gallery_description_is_word_wrapped_to_terminal_width(db, lane, sy
     assert all(len(line) <= 80 for line in lines)
 
 
-def test_door_gallery_confirming_registration_opens_the_editor_prefilled_and_saves(db, lane, sysop):
+def test_door_gallery_selecting_and_saving_registers_it(db, lane, sysop):
     import sys
 
     from netbbs.doors import list_doors
-    from netbbs.doors.example_catalog import EXAMPLE_DOOR_CATALOG, resolve_example_door_path
+    from netbbs.doors.bundled import BUNDLED_DOORS, resolve_bundled_door_path
 
-    retro_trivia = EXAMPLE_DOOR_CATALOG[0]
-    resolved_path = resolve_example_door_path(retro_trivia)
-    assert resolved_path is not None  # sanity: this dev checkout really has the file
+    retro_trivia = BUNDLED_DOORS[0]
+    resolved_path = resolve_bundled_door_path(retro_trivia)
+    assert resolved_path is not None  # sanity: this really is installed
 
-    # Confirm ("y"), then a bare "s" saves immediately -- every required
-    # field (name, executable path) already arrived non-blank via the
-    # gallery's own prefill, so no further field edits are needed.
-    session = FakeSession(["c", "d", "g", "0", "1", "y", "s", "b", "b", "b", "b"])
+    # A bare "s" saves immediately -- every required field (name,
+    # executable path) already arrived non-blank via the gallery's own
+    # prefill, so no further field edits are needed.
+    session = FakeSession(["c", "d", "g", "0", "1", "s", "b", "b", "b", "b"])
     _run(session, lane, sysop)
     text = _written_text(session)
     assert f"Registered door {retro_trivia.name!r}." in text
@@ -3858,25 +3865,161 @@ def test_door_gallery_confirming_registration_opens_the_editor_prefilled_and_sav
     assert doors[0].min_play_level == retro_trivia.suggested_min_play_level
 
 
-def test_door_gallery_declining_then_registering_a_different_entry_preserves_cursor(db, lane, sysop):
-    """Same cursor-preservation fix as the banner galleries: declining
-    item 01 then immediately pressing Enter-equivalent (typing its own
-    number again isn't needed -- backing straight into item 02) proves
-    the picker didn't reset to page 1 unhighlighted."""
-    from netbbs.doors import list_doors
+def test_door_gallery_reports_no_bundled_doors_when_none_are_found_on_disk(db, lane, sysop, monkeypatch):
+    monkeypatch.setattr("netbbs.net.admin_flow.available_bundled_doors", lambda: [])
+    session = FakeSession(["c", "d", "g", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "No bundled doors found" in _written_text(session)
 
-    session = FakeSession(["c", "d", "g", "0", "1", "n", "0", "2", "y", "s", "b", "b", "b", "b"])
+
+# -- door gallery: re-selecting an already-registered entry (dogfood report)
+#
+# `name` has a real UNIQUE constraint (registry.py), so saving without
+# also renaming would already fail with "name already in use" -- but
+# silently handing back the exact same default name let a SysOp stumble
+# into that (or worse, into accidentally renaming while editing
+# something unrelated) rather than being asked what was actually meant.
+# Registering the same underlying script more than once is a legitimate
+# thing to want (the same game bound to a different Community, a
+# different tick rate) -- this surfaces the collision and asks.
+
+
+def test_door_gallery_reselecting_a_registered_entry_offers_a_choice(db, lane, sysop):
+    from netbbs.doors import create_door
+
+    create_door(db, "Retro Trivia", "/usr/bin/python3", creator=sysop)
+
+    session = FakeSession(["c", "d", "g", "0", "1", "c", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "'Retro Trivia' is already registered as a door." in text
+    assert "ew instance" in text
+    assert "dit the existing one" in text
+    assert "ancel" in text
+
+
+def test_door_gallery_reselecting_and_cancelling_leaves_the_registry_untouched(db, lane, sysop):
+    from netbbs.doors import create_door, list_doors
+
+    create_door(db, "Retro Trivia", "/usr/bin/python3", creator=sysop)
+
+    session = FakeSession(["c", "d", "g", "0", "1", "c", "b", "b", "b", "b"])
     _run(session, lane, sysop)
     doors = list_doors(db)
     assert len(doors) == 1
-    assert doors[0].name == "Voidrunner"
+    assert doors[0].executable_path == "/usr/bin/python3"  # untouched
 
 
-def test_door_gallery_reports_no_bundled_doors_when_none_are_found_on_disk(db, lane, sysop, monkeypatch):
-    monkeypatch.setattr("netbbs.net.admin_flow.available_example_doors", lambda: [])
-    session = FakeSession(["c", "d", "g", "b", "b", "b"])
+def test_door_gallery_reselecting_and_editing_opens_the_existing_doors_own_detail_screen(db, lane, sysop):
+    from netbbs.doors import create_door
+
+    create_door(db, "Retro Trivia", "/usr/bin/python3", creator=sysop)
+
+    # "e" jumps straight into the existing door's own detail screen
+    # (not the gallery's prefill editor) -- "b" backs out of that,
+    # landing back in the gallery's own picker.
+    session = FakeSession(["c", "d", "g", "0", "1", "e", "b", "b", "b", "b", "b"])
     _run(session, lane, sysop)
-    assert "No bundled example doors found" in _written_text(session)
+    text = _written_text(session)
+    assert "Executable: /usr/bin/python3" in text
+
+
+def test_door_gallery_reselecting_and_choosing_new_registers_a_second_instance(db, lane, sysop):
+    from netbbs.doors import create_door, list_doors
+
+    create_door(db, "Retro Trivia", "/usr/bin/python3", creator=sysop)
+
+    # "n" (new instance), typed name, then a bare "s" saves.
+    session = FakeSession(["c", "d", "g", "0", "1", "n", "Retro Trivia (Universe 2)\r", "s", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    doors = list_doors(db)
+    names = {d.name for d in doors}
+    assert names == {"Retro Trivia", "Retro Trivia (Universe 2)"}
+
+
+def test_door_gallery_reselecting_new_instance_with_a_blank_name_cancels(db, lane, sysop):
+    from netbbs.doors import create_door, list_doors
+
+    create_door(db, "Retro Trivia", "/usr/bin/python3", creator=sysop)
+
+    session = FakeSession(["c", "d", "g", "0", "1", "n", "\r", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    doors = list_doors(db)
+    assert len(doors) == 1  # nothing new registered
+
+
+# -- door filesystem picker: a SysOp's own scripts (locked design shared
+# with issue #170's welcome-banner/masthead picker, applied to
+# netbbs.doors.custom_doors_dir instead) -----------------------------------
+
+
+def test_door_from_disk_option_appears_in_the_door_menu(db, lane, sysop):
+    session = FakeSession(["c", "d", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "rom disk" in _written_text(session)
+
+
+def test_door_from_disk_with_no_directory_shows_an_empty_state_message(db, lane, sysop):
+    session = FakeSession(["c", "d", "f", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "No files found in" in text
+    assert "doors" in text
+
+
+def test_door_from_disk_lists_files_in_the_custom_doors_directory(db, lane, sysop):
+    from netbbs.doors import custom_doors_dir
+
+    directory = custom_doors_dir(db)
+    directory.mkdir(parents=True)
+    (directory / "mydoor.py").write_bytes(b"# a SysOp's own door script\n")
+
+    session = FakeSession(["c", "d", "f", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "mydoor.py" in _written_text(session)
+
+
+def test_door_from_disk_selecting_and_saving_registers_it_with_the_files_stem_as_name(db, lane, sysop):
+    import sys
+
+    from netbbs.doors import custom_doors_dir, list_doors
+
+    directory = custom_doors_dir(db)
+    directory.mkdir(parents=True)
+    (directory / "mydoor.py").write_bytes(b"# a SysOp's own door script\n")
+
+    # A bare "s" saves immediately -- name (the file's own stem) and
+    # executable path both already arrived non-blank via the prefill.
+    session = FakeSession(["c", "d", "f", "0", "1", "s", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "Registered door 'mydoor'." in text
+
+    doors = list_doors(db)
+    assert len(doors) == 1
+    assert doors[0].name == "mydoor"
+    assert doors[0].description is None
+    assert doors[0].executable_path == sys.executable
+    assert doors[0].args == ((directory / "mydoor.py").as_posix(),)
+    assert doors[0].min_play_level == 0
+
+
+def test_door_from_disk_reselecting_a_registered_entry_offers_a_choice(db, lane, sysop):
+    """Reuses the same _resolve_door_name_collision helper the gallery
+    itself uses -- see that block's own tests for full coverage of the
+    three choices; this just confirms it's actually wired in here too."""
+    from netbbs.doors import create_door, custom_doors_dir, list_doors
+
+    directory = custom_doors_dir(db)
+    directory.mkdir(parents=True)
+    (directory / "mydoor.py").write_bytes(b"# a SysOp's own door script\n")
+    create_door(db, "mydoor", "/usr/bin/python3", creator=sysop)
+
+    session = FakeSession(["c", "d", "f", "0", "1", "c", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "'mydoor' is already registered as a door." in text
+    assert len(list_doors(db)) == 1  # cancelled, nothing added
 
 
 def test_door_detail_screen_word_wraps_a_long_description(db, lane, sysop):
@@ -3909,6 +4052,63 @@ def test_colors_option_appears_in_the_system_submenu(db, lane, sysop):
     session = FakeSession(["s", "b", "b"])
     _run(session, lane, sysop)
     assert "olors" in _written_text(session)
+
+
+# -- node name (dogfood-caught gap: set_node_display_name had zero call
+# sites anywhere -- only ever reachable by calling it directly) ------------
+
+
+def test_node_name_option_appears_in_the_system_submenu(db, lane, sysop):
+    session = FakeSession(["s", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Node N" in _written_text(session)
+
+
+def test_node_name_screen_shows_the_current_name(db, lane, sysop):
+    session = FakeSession(["s", "a", "", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Node name: 'NetBBS'" in _written_text(session)
+
+
+def test_node_name_blank_entry_leaves_it_unchanged(db, lane, sysop):
+    from netbbs.config import get_node_display_name
+
+    session = FakeSession(["s", "a", "", "b", "b"])
+    _run(session, lane, sysop)
+    assert "No change." in _written_text(session)
+    assert get_node_display_name(db) == "NetBBS"
+
+
+def test_node_name_setting_a_new_name_persists_it(db, lane, sysop):
+    from netbbs.config import get_node_display_name
+
+    session = FakeSession(["s", "a", "My Cool BBS", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Node name set to 'My Cool BBS'." in _written_text(session)
+    assert get_node_display_name(db) == "My Cool BBS"
+
+
+def test_node_name_rejects_a_name_over_the_length_limit(db, lane, sysop):
+    from netbbs.config import MAX_NODE_DISPLAY_NAME_LENGTH, get_node_display_name
+
+    too_long = "x" * (MAX_NODE_DISPLAY_NAME_LENGTH + 1)
+    session = FakeSession(["s", "a", too_long, "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "cannot exceed" in text
+    assert get_node_display_name(db) == "NetBBS"  # unchanged
+
+
+def test_node_name_change_is_audit_logged(db, lane, sysop):
+    session = FakeSession(["s", "a", "My Cool BBS", "b", "b"])
+    _run(session, lane, sysop)
+
+    rows = db.connection.execute(
+        "SELECT actor_user_id, detail FROM moderation_log WHERE action = 'set_node_display_name'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["actor_user_id"] == sysop.id
+    assert "My Cool BBS" in rows[0]["detail"]
 
 
 def test_theme_colors_menu_shows_default_status_for_all_three_slots(db, lane, sysop):

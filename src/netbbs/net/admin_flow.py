@@ -109,9 +109,25 @@ from netbbs.communities import (
     list_communities,
     update_community,
 )
-from netbbs.config import RegistrationMode, get_registration_mode, set_registration_mode
-from netbbs.doors import Door, DoorError, create_door, delete_door, list_doors, update_door
-from netbbs.doors.example_catalog import available_example_doors
+from netbbs.config import (
+    MAX_NODE_DISPLAY_NAME_LENGTH,
+    RegistrationMode,
+    get_node_display_name,
+    get_registration_mode,
+    set_node_display_name,
+    set_registration_mode,
+)
+from netbbs.doors import (
+    Door,
+    DoorError,
+    create_door,
+    custom_doors_dir,
+    delete_door,
+    get_door_by_name,
+    list_doors,
+    update_door,
+)
+from netbbs.doors.bundled import available_bundled_doors
 from netbbs.files.areas import FileArea, FileAreaError, create_file_area, delete_file_area, list_file_areas, update_file_area
 from netbbs.files.categories import FileAreaCategory
 from netbbs.files.categories import FileAreaCategoryError as FileCategoryError
@@ -855,6 +871,10 @@ async def _system_menu(
             await session.write_line("")
             await _update_settings_screen(session, lane, actor)
             await _draw_system_menu(session, node_controls, link_context, description_level, redraw_in_place, unicode_style, header_color=header_color)
+        elif choice == "a":
+            await session.write_line("")
+            await _node_name_screen(session, lane, actor)
+            await _draw_system_menu(session, node_controls, link_context, description_level, redraw_in_place, unicode_style, header_color=header_color)
         elif choice == "n" and node_controls is not None:
             await session.write_line("")
             await _node_menu(session, lane, actor, node_controls)
@@ -911,6 +931,7 @@ async def _draw_system_menu(
         MenuEntry(label=menu_key("W", "elcome banner"), brief="First-login greeting text"),
         MenuEntry(label=menu_key("M", "asthead"), brief="Custom art above the main menu"),
         MenuEntry(label=menu_key("C", "olors"), brief="Node-wide accent/header/clock branding"),
+        MenuEntry(label=menu_key("a", "me", prefix="Node N"), brief="The name shown in every screen's own corner"),
         MenuEntry(label=menu_key("U", "pdate"), brief="Software update settings"),
         MenuEntry(label=menu_key("T", "imestamp format"), brief="Node-wide date/time display"),
         MenuEntry(label=menu_key("P", "olicy trust"), brief="Federation trust policy"),
@@ -920,6 +941,49 @@ async def _draw_system_menu(
         _menu_row(option_list, description_level, width=session.terminal_width, height=session.terminal_height)
     )
     await session.write("Choice: ")
+
+
+async def _node_name_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    """Wires up `netbbs.config.set_node_display_name` -- previously
+    reachable only by calling that function directly; nothing anywhere
+    in the running BBS actually called it (a real dogfood-caught gap:
+    the getter has driven `session.node_display_name`, shown in the
+    breadcrumb corner of every post-login screen, since that field
+    existed, but a SysOp had no way to actually set it to anything
+    other than the "NetBBS" fallback).
+
+    Deliberately just the name for now, not also a display color for it
+    -- see this screen's own git history/commit message for why that's
+    a separate, larger follow-up (threading a new parameter through
+    `screen_title`'s own ~40 call sites correctly, not a same-screen
+    add-on)."""
+    current = await lane.run(get_node_display_name)
+    await session.write_line(
+        colored(f"\r\nNode name: {current!r}", fg_color=await lane.run(effective_header_color_256), bold=True)
+    )
+    await session.write_line(
+        colored(
+            f"Shown in the upper-left corner of every screen, and to any door as its own "
+            f"drop-file 'node_name' field. Up to {MAX_NODE_DISPLAY_NAME_LENGTH} characters.",
+            fg_color=MUTED_COLOR,
+        )
+    )
+    await session.write(f"New name [{current}] (blank to leave unchanged): ")
+    new_name = (await session.read_line()).strip()
+    if not new_name:
+        await session.write_line("No change.")
+        return
+
+    def _apply(db: Database) -> None:
+        set_node_display_name(db, new_name)
+        record_action(db, actor=actor, action="set_node_display_name", detail=f"{current!r} -> {new_name!r}")
+
+    try:
+        await lane.run(_apply)
+    except ValueError as exc:
+        await session.write_line(colored(str(exc), fg_color=ERROR_COLOR))
+        return
+    await session.write_line(f"Node name set to {new_name!r}.")
 
 
 # -- trust policy (Phase 4, issue #129) -------------------------------------
@@ -7298,6 +7362,10 @@ async def _door_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
             await session.write_line("")
             await _door_gallery_screen(session, lane, actor, description_level, redraw_in_place, unicode_style, collapsed)
             await _draw_door_menu(session, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "f":
+            await session.write_line("")
+            await _door_filesystem_screen(session, lane, actor, description_level, redraw_in_place, unicode_style, collapsed)
+            await _draw_door_menu(session, description_level, redraw_in_place, unicode_style, collapsed, header_color)
         elif choice == "l":
             await session.write_line("")
             await _list_doors_screen(session, lane, actor)
@@ -7315,7 +7383,8 @@ async def _draw_door_menu(session: Session, description_level: str, redraw_in_pl
                 "",
                 [
                     MenuEntry(label=menu_key("C", "reate"), brief="Register a new door"),
-                    MenuEntry(label=menu_key("G", "allery"), brief="Register one of NetBBS's own example doors"),
+                    MenuEntry(label=menu_key("G", "allery"), brief="Register one of NetBBS's own doors"),
+                    MenuEntry(label=menu_key("F", "rom disk"), brief="Register your own script from this node"),
                     MenuEntry(label=menu_key("L", "ist"), brief="Browse and edit doors"),
                     MenuEntry(label=menu_key("B", "ack"), brief="Return to the Content menu"),
                 ],
@@ -7473,28 +7542,101 @@ async def _door_screen(
     return door
 
 
+def _find_door_by_name(db: Database, name: str) -> Door | None:
+    try:
+        return get_door_by_name(db, name)
+    except DoorError:
+        return None
+
+
+async def _resolve_door_name_collision(
+    session: Session, lane: DatabaseLane, actor: User, default_name: str,
+) -> str | None:
+    """Shared by every screen that prefills a *new* door registration
+    from a default name it didn't get to choose freely (the bundled-door
+    gallery, the SysOp's-own-scripts filesystem picker) -- `name` has a
+    real `UNIQUE` constraint (registry.py), so silently handing back a
+    name that's already taken would only ever surface as a save-time
+    "name already in use" error, or worse, get past that by the SysOp
+    incidentally renaming a field they were editing for an unrelated
+    reason. Asks explicitly instead: a new instance under a different
+    name, editing the existing registration directly, or cancelling.
+
+    Returns the name to prefill a fresh registration with (`default_name`
+    unchanged if there was no collision, or whatever the SysOp typed for
+    a new instance), or `None` if the caller has nothing left to do --
+    cancelled, or the existing door's own detail screen was opened
+    directly instead."""
+    existing = await lane.run(_find_door_by_name, default_name)
+    if existing is None:
+        return default_name
+    await session.write_line(
+        colored(f"\r\n{default_name!r} is already registered as a door.", fg_color=MUTED_COLOR)
+    )
+    await session.write(
+        f"{menu_key('N', 'ew instance under a different name')}  "
+        f"{menu_key('E', 'dit the existing one')}  {menu_key('C', 'ancel')}: "
+    )
+    choice = (await session.read_key()).lower()
+    await session.write_line(choice.upper())
+    if choice == "e":
+        await _door_detail_screen(session, lane, actor, existing)
+        return None
+    if choice != "n":
+        return None
+    await session.write("New name for this instance (blank to cancel): ")
+    new_name = sanitize_text((await session.read_line()).strip())
+    return new_name or None
+
+
 async def _door_gallery_screen(
     session: Session, lane: DatabaseLane, actor: User, description_level: str,
     redraw_in_place: bool, unicode_style: bool, collapsed: bool,
 ) -> None:
-    """Browse NetBBS's own bundled example doors (issue #172 follow-up)
-    and register one with sensible defaults pre-filled, instead of
-    starting `[C]reate`'s editor from an all-blank form. Unlike the
-    welcome-banner/masthead galleries this mirrors the shape of, there's
-    nothing here to actually preview -- a door is a program, not a
-    rendered banner -- so selecting an entry shows its details (what it
-    is, and what defaults would be used) rather than what it looks like.
+    """Browse NetBBS's own first-party doors (issue #172) and register
+    one with sensible defaults pre-filled, instead of starting
+    `[C]reate`'s editor from an all-blank form. These ship as real
+    installed package data (`netbbs.doors.bundled`, the same mechanism
+    `netbbs.net.banner_presets` already uses for bundled welcome-banner/
+    masthead samples) -- not sample code to point a door at, first-class
+    product content NetBBS ships with (Voidrunner alone is a genuinely
+    complete persistent game, not a toy). A SysOp's own, separately-
+    authored door is untouched by any of this -- still registered by
+    hand via `[C]reate`, still a filesystem path the SysOp supplies.
 
-    A door's `executable_path` genuinely does vary by node (a different
-    Python interpreter per platform/install), so this deliberately does
-    NOT register on selection alone the way the banner galleries apply
-    on confirm -- confirming here only opens the ordinary `_door_screen`
-    editor, pre-filled but still fully reviewable/editable, going
-    through the exact same validation and `create_door` call manual
-    `[C]reate` already does. The interpreter default is `sys.executable`
-    -- whatever Python is currently running NetBBS itself, almost always
-    correct for a stdlib-only door (see `examples/README.md`) -- rather
-    than a new stored "default interpreter" setting.
+    Unlike the welcome-banner/masthead galleries this otherwise mirrors
+    the shape of, there's nothing here to actually preview -- a door is
+    a program, not a rendered banner -- so selecting an entry shows its
+    details (what it is, and what defaults would be used) rather than
+    what it looks like.
+
+    Dogfood follow-up: selecting an entry goes *straight* to the
+    prefilled editor now, no confirmation step first. There used to be
+    one, copied from the banner galleries' own "preview -> confirm ->
+    apply" shape without noticing it doesn't actually fit here:
+    confirming there directly writes bytes to disk and enables the
+    banner, so a confirmation before that makes sense; confirming here
+    only ever opened the very same editor a confirmation-free `[C]reate`
+    already lets a SysOp enter freely, which still requires its own
+    explicit `[S]ave` and lets `[B]ack` discard the draft with nothing
+    persisted -- identical in risk to opening an *existing* door's own
+    detail/edit screen from the list, which already has no confirmation
+    gate either. The interpreter default is `sys.executable` -- whatever
+    Python is currently running NetBBS itself, almost always correct for
+    a stdlib-only door -- rather than a new stored "default interpreter"
+    setting.
+
+    Dogfood follow-up: if a door is already registered under this
+    entry's exact default name, selecting it again no longer silently
+    hands back that same name (which `create_door`'s own `UNIQUE`
+    constraint on `name` would then reject on save unless the SysOp
+    happened to also rename it while editing something unrelated --
+    an accidental path to "I meant to update the existing one, not
+    create a second" or vice versa). Registering the *same* underlying
+    script more than once is a real, legitimate thing to want (the same
+    game bound to a different Community, a different tick rate, a
+    different universe) -- so this surfaces the collision explicitly and
+    asks which was actually meant, rather than leaving it to chance.
 
     Declining, or backing out of the editor without saving, loops back
     into this same gallery (`pick_item`'s `start_stable_id` re-highlights
@@ -7502,12 +7644,13 @@ async def _door_gallery_screen(
     banner galleries) rather than exiting, so registering more than one
     bundled door in one visit doesn't mean re-entering `[G]allery` each
     time."""
-    available = available_example_doors()
+    available = available_bundled_doors()
     if not available:
         await session.write_line(
             colored(
-                "\r\nNo bundled example doors found on this filesystem -- this needs a source "
-                "checkout (examples/doors/), not a wheel install. See examples/README.md.",
+                "\r\nNo bundled doors found on this filesystem -- NetBBS's own doors ship as "
+                "real installed package data, so this suggests an incomplete install rather "
+                "than the normal case.",
                 fg_color=MUTED_COLOR,
             )
         )
@@ -7521,8 +7664,8 @@ async def _door_gallery_screen(
             name_of=lambda pair: pair[1][0].name,
             stable_id_of=lambda pair: pair[0],
             description_of=lambda pair: pair[1][0].description,
-            title="Example door gallery",
-            empty_message="No bundled example doors found on this filesystem.",
+            title="Door gallery",
+            empty_message="No bundled doors found.",
             description_level=description_level,
             redraw_in_place=redraw_in_place,
             unicode_style=unicode_style,
@@ -7542,12 +7685,12 @@ async def _door_gallery_screen(
         await session.write_line(colored(f"  Interpreter (default, editable next): {sys.executable}", fg_color=MUTED_COLOR))
         await session.write_line(colored(f"  Script: {path}", fg_color=MUTED_COLOR))
 
-        if not await prompt_yes_no(session, f"\r\nRegister {entry.name!r} with these defaults now?", default=False):
-            await session.write_line(colored("Not registered.", fg_color=MUTED_COLOR))
+        prefill_name = await _resolve_door_name_collision(session, lane, actor, entry.name)
+        if prefill_name is None:
             continue
 
         prefill = {
-            "name": entry.name, "description": entry.description,
+            "name": prefill_name, "description": entry.description,
             # `.as_posix()`, not `str(path)`: the args field is parsed
             # with `shlex.split` in POSIX mode (see `_door_field_specs`'
             # own docstring -- deliberately, for the same never-a-shell
@@ -7560,6 +7703,87 @@ async def _door_gallery_screen(
             # platform NetBBS runs on, Windows included.
             "executable_path": sys.executable, "args_line": path.as_posix(),
             "min_play_level": entry.suggested_min_play_level,
+        }
+        await _door_screen(session, lane, actor, prefill=prefill)
+
+
+async def _door_filesystem_screen(
+    session: Session, lane: DatabaseLane, actor: User, description_level: str,
+    redraw_in_place: bool, unicode_style: bool, collapsed: bool,
+) -> None:
+    """A SysOp's *own* door scripts, not NetBBS's -- the direct
+    counterpart to `[G]allery` for something a SysOp wrote or downloaded
+    themselves rather than one of NetBBS's own bundled doors. Same
+    locked design as issue #170's welcome-banner/masthead filesystem
+    picker, applied to a different directory: the browsable root is
+    `netbbs.doors.custom_doors_dir(db)`, a real, narrow, conventional
+    location under the node's own state directory -- not open-ended
+    traversal from `/` -- that this screen never creates on its own; it
+    simply reports nothing found until a SysOp places something there
+    (e.g. via SFTP/SCP). Unfiltered by extension, unlike the `.ans`-only
+    banner picker: a door can legitimately be any executable, not one
+    well-known format.
+
+    There is no metadata to show here the way a bundled door's own
+    catalog entry has (no description, no suggested play level) -- a
+    SysOp's own script is just a filename NetBBS knows nothing about.
+    The prefilled name defaults to the file's own stem, the interpreter
+    defaults to `sys.executable` the same guessed-default way the
+    gallery's own prefill does, and both remain fully editable in the
+    real create-door editor this opens next -- never auto-registered on
+    selection alone. Same duplicate-name handling as the gallery
+    (`_resolve_door_name_collision`) and the same cursor-preserving
+    loop-back on decline/cancel/save (`pick_item`'s `start_stable_id`)."""
+
+    def _list(db: Database) -> tuple[list[Path], Path]:
+        directory = custom_doors_dir(db)
+        if not directory.is_dir():
+            return [], directory
+        return sorted(p for p in directory.iterdir() if p.is_file()), directory
+
+    files, directory = await lane.run(_list)
+    if not files:
+        await session.write_line(colored(
+            f"\r\nNo files found in {directory}. Place your own door script there "
+            f"(e.g. via SFTP/SCP), then browse again.", fg_color=MUTED_COLOR,
+        ))
+        return
+
+    last_stable_id: int | None = None
+    while True:
+        selection = await pick_item(
+            session,
+            list(enumerate(files, start=1)),
+            name_of=lambda pair: pair[1].name,
+            stable_id_of=lambda pair: pair[0],
+            title="Doors -- your own scripts",
+            empty_message="No files found.",
+            description_level=description_level,
+            redraw_in_place=redraw_in_place,
+            unicode_style=unicode_style,
+            collapsed=collapsed,
+            start_stable_id=last_stable_id,
+        )
+        if selection is None:
+            return
+        last_stable_id = selection[0]
+        path = selection[1]
+
+        await session.write_line(colored(f"\r\n{path.name}", fg_color=MUTED_COLOR, bold=True))
+        await session.write_line(colored(f"  Interpreter (default, editable next): {sys.executable}", fg_color=MUTED_COLOR))
+        await session.write_line(colored(f"  Script: {path}", fg_color=MUTED_COLOR))
+
+        prefill_name = await _resolve_door_name_collision(session, lane, actor, path.stem)
+        if prefill_name is None:
+            continue
+
+        prefill = {
+            "name": prefill_name, "description": None,
+            # `.as_posix()`, not `str(path)` -- see the gallery's own
+            # identical comment above for why (shlex-mangled Windows
+            # backslashes).
+            "executable_path": sys.executable, "args_line": path.as_posix(),
+            "min_play_level": 0,
         }
         await _door_screen(session, lane, actor, prefill=prefill)
 

@@ -2992,8 +2992,11 @@ CLI flag folded into `args`, or a wrapper launcher script that sets env
 vars before exec'ing the real interpreter -- not a registry-level env
 override, because that mechanism doesn't exist in v1.
 
-`examples/doors/voidrunner.py` (a second, larger real door alongside
-Retro Trivia) persists a per-caller save file itself, since the sandbox
+`netbbs.doors.bundled.voidrunner` (a second, larger real door alongside
+Retro Trivia; both ship as real installed package data under
+`src/netbbs/doors/bundled/`, not loose `examples/` files -- see that
+package's own docstring) persists a per-caller save file itself, since
+the sandbox
 gives a door no database access and deletes its scratch working
 directory after every session (see this file's own entry above). Two
 invariants that follow, both load-bearing for anyone touching that file:

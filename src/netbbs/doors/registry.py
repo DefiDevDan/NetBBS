@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from pathlib import Path
 
 from netbbs.auth.users import User
 from netbbs.moderation.log import record_action
@@ -30,6 +31,25 @@ from netbbs.timeutil import utc_now_iso
 
 class DoorError(Exception):
     """Raised for door registration/lookup failures."""
+
+
+def custom_doors_dir(db: Database) -> Path:
+    """The conventional location for a SysOp's *own* door scripts --
+    `netbbs.net.admin_flow`'s door `[F]rom disk` picker browses exactly
+    this directory, bounded to it the same way issue #170's welcome-
+    banner/masthead filesystem picker is bounded to `banner_path(db)`'s
+    own parent: a real, narrow, already-established location under the
+    node's own state directory, not open-ended traversal from `/`. A
+    subdirectory rather than `db.path.parent` itself (unlike a single
+    banner file, there can reasonably be many custom door scripts, and
+    keeping them out of the same flat directory as the database/identity
+    keys/banner files is worth the one extra path segment). Doors here
+    are unfiltered by extension -- unlike banners' `.ans`-only picker, a
+    door can legitimately be any executable, not one well-known format
+    -- and this directory is never created automatically; it simply
+    doesn't exist (and the picker reports nothing found) until a SysOp
+    places something there."""
+    return db.path.parent / "doors"
 
 
 @dataclass(frozen=True)

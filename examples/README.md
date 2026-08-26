@@ -45,43 +45,46 @@ currently in place.
 See `src/netbbs/net/banner_presets/__init__.py` for the full preset
 list and descriptions.
 
-## Sample door game (issue #172)
+## NetBBS's own doors (issue #172)
 
-- `doors/retro_trivia.py` — a real, playable multiple-choice trivia
-  door: eight random questions per round, single-keystroke (A/B/C/D)
-  answers, a running score, and a colored final rank. Zero external
-  dependencies (stdlib only), and runnable completely standalone
-  outside NetBBS too (`python3 examples/doors/retro_trivia.py` from a
-  real terminal) for trying it before registering it.
+NetBBS ships two first-party doors — Retro Trivia and Voidrunner (below)
+— as real product content, not sample code. Like the banners/mastheads
+above, these no longer live in this directory as loose files: they're
+bundled as real installed package data under `src/netbbs/doors/bundled/`
+(the same mechanism, for the same reason — `examples/` isn't part of an
+installed release wheel, so a node running from one would otherwise have
+had nothing on disk to point a door registration at), and are browsable
+entirely from within the running BBS:
 
-Unlike the banners/mastheads above, a door genuinely *is* meant to be an
-external program a SysOp points at — it deliberately stays a loose file
-here rather than becoming installed package data; nothing about the
-door sandbox model expects NetBBS to ship or bundle doors itself.
+`[S]ysOp` → `[M]anage boards/areas/channels` (Content) → `[D]oors` →
+`[G]allery` lists both by name and description and registers whichever
+you pick with sensible defaults pre-filled (name, description, suggested
+play level, and the interpreter currently running NetBBS itself) — still
+opens the real `[C]reate` editor to review/adjust before saving, it just
+doesn't start from a blank form, and works identically from a wheel
+install or a source checkout.
 
-To register it: `[S]ysOp` → `[M]anage boards/areas/channels` (Content)
-→ `[D]oors` → `[C]reate`, then set **Executable path** to your `python3`
-interpreter and **Arguments** to the full path to `retro_trivia.py` on
-your node's own filesystem (e.g. wherever you cloned/installed NetBBS
-from). Callers can then find and play it from `[G]ames` in the normal
-board/file-area/chat browsing menu.
+A SysOp's *own*, separately-authored door is a different thing entirely,
+untouched by any of this: still an external program registered by hand
+via `[D]oors` → `[C]reate`, with **Executable path** set to your
+`python3` interpreter and **Arguments** to wherever you've placed your
+own script on the node's filesystem — nothing about the door sandbox
+model expects NetBBS to ship or bundle *those*.
 
-Faster on a source checkout: `[D]oors` → `[G]allery` lists both bundled
-example doors below and registers whichever you pick with sensible
-defaults pre-filled (name, description, suggested play level, and the
-interpreter currently running NetBBS itself) — still opens the same
-`[C]reate` editor to review/adjust before saving, it just doesn't start
-from a blank form. Only ever finds anything on a source checkout
-(`examples/doors/` isn't part of an installed release wheel — see this
-file's own "Sample door game" note above), same reach as manual
-`[C]reate` already required for these files.
-
-See `src/netbbs/doors/runtime.py` for the sandbox model this runs
+See `src/netbbs/doors/runtime.py` for the sandbox model every door runs
 under — same-OS-user subprocess isolation with enforced resource/time
 limits, not a container, and door output is trusted and shown exactly
 as generated (see that module's own docstring for the full reasoning).
 
-- `doors/voidrunner.py` — a persistent single-player space trading and
+- **Retro Trivia** — a real, playable multiple-choice trivia door: eight
+  random questions per round, single-keystroke (A/B/C/D) answers, a
+  running score, and a colored final rank. Zero external dependencies
+  (stdlib only), and runnable completely standalone outside NetBBS too
+  (`python3 -m netbbs.doors.bundled.retro_trivia` from a real terminal,
+  or point directly at the installed file) for trying it before
+  registering it.
+
+- **Voidrunner** — a persistent single-player space trading and
   exploration door: a seeded, deterministically-generated ~48-system
   galaxy with fog-of-war exploration, a market with per-system supply/
   demand and price drift (plus a contraband black market at Haven
@@ -89,20 +92,19 @@ as generated (see that module's own docstring for the full reasoning).
   a mission board (delivery/bounty/scan contracts), Concord Navy vs.
   Blackwake Cartel reputation, shipyard upgrades, and a late-game
   Carrier-class flagship refit. Same zero-dependency, drop-file,
-  raw-stdio model as Retro Trivia — also runnable standalone
-  (`python3 examples/doors/voidrunner.py`).
+  raw-stdio model as Retro Trivia — also runnable standalone.
 
   Unlike Retro Trivia, a caller's progress is meant to persist across
   logins: NetBBS's door sandbox gives a door no database access and
   deletes its scratch working directory after every session (see
   `netbbs.doors.runtime`'s own docstring), so this door manages its own
   save file per caller (keyed by the drop-file's stable numeric user ID)
-  under a `voidrunner_saves/` directory it creates next to its own
-  script path, written after every action rather than only on quit —
-  see the module's own docstring for the full reasoning, including why
-  this is still strictly single-player/session-scoped (issue #172's
-  locked v1 door design) and not a shared galaxy.
+  under `~/.netbbs/voidrunner_saves/` by default (or `VOIDRUNNER_
+  SAVE_DIR`, for a node whose service account layout needs something
+  else), written after every action rather than only on quit — see the
+  module's own docstring for the full reasoning, including why this is
+  still strictly single-player/session-scoped (issue #172's locked v1
+  door design) and not a shared galaxy.
 
-  Register it exactly like Retro Trivia above (**Executable path** =
-  your `python3`, **Arguments** = the full path to `voidrunner.py`), or
-  via `[D]oors` → `[G]allery` the same way.
+See `src/netbbs/doors/bundled/__init__.py` for the full bundled-door
+list and descriptions.
