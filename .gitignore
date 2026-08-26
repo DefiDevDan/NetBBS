@@ -21,6 +21,9 @@ netbbs_identity/
 node.key
 node.pub
 
+# Voidrunner door -- player save files, self-managed (issue #172)
+examples/doors/voidrunner_saves/
+
 # Editors
 .vscode/
 .idea/

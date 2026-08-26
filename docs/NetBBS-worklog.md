@@ -2978,3 +2978,37 @@ NetBSD/Linux node enforces; only the async wall-time watchdog (pure
 `asyncio`, cross-platform) applies unconditionally. Real verification of
 the `resource.setrlimit` ceilings themselves needs to happen on an
 actual POSIX target, not this Windows dev box.
+
+`netbbs.doors.runtime.run_door` builds the child's environment as a
+literal `{"NETBBS_DOOR_INFO": str(info_path)}` and passes it straight to
+`asyncio.create_subprocess_exec`'s `env=` -- which *replaces* the child's
+environment outright rather than merging with NetBBS's own. A door gets
+exactly that one variable, nothing inherited from the parent process and
+no way for a SysOp to hand it custom configuration through the door
+registry (`Door` has no env/config field at all, only
+`executable_path`/`args`). Any door wanting an operator-tunable setting
+either needs a config file at a fixed path relative to its own script, a
+CLI flag folded into `args`, or a wrapper launcher script that sets env
+vars before exec'ing the real interpreter -- not a registry-level env
+override, because that mechanism doesn't exist in v1.
+
+`examples/doors/voidrunner.py` (a second, larger real door alongside
+Retro Trivia) persists a per-caller save file itself, since the sandbox
+gives a door no database access and deletes its scratch working
+directory after every session (see this file's own entry above). Two
+invariants that follow, both load-bearing for anyone touching that file:
+(1) its save only stores the galaxy's random seed, not the galaxy
+itself, and reconstructs the ~48-system map by replaying
+`generate_galaxy(seed)` on every load -- which only stays correct if the
+*exact sequence* of `random.Random` calls inside that function never
+changes; reordering, adding, or removing a call anywhere before the end
+of that function would silently regenerate a different galaxy for every
+existing save (system ids drifting to different names/economies/
+connections underneath a `discovered`-ids list that no longer matches).
+New randomness there is safe to add only at the very end of the
+function. (2) state is written to disk after every player action, not
+only on quit -- a door can be killed at any moment (caller disconnect,
+the wall-time watchdog) with no graceful-shutdown guarantee, so
+save-on-quit-only would routinely lose real progress; the write itself
+is a temp-file-plus-`os.replace` to stay atomic against exactly that
+kind of mid-write kill.

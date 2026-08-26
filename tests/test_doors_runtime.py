@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import json
+import shutil
 import sys
 import textwrap
 from pathlib import Path
@@ -265,3 +266,43 @@ def test_the_real_demo_door_plays_a_full_round_through_run_door(db, lane, player
     assert "Question 1/8" in output
     assert "Question 8/8" in output
     assert "Final score:" in output
+
+
+# -- the space-trading door (examples/doors/voidrunner.py) -----------------
+#
+# Same "run the real shipped file through the real pipeline" reasoning as
+# Retro Trivia above. Run against a tmp_path *copy* of the script rather
+# than the real examples/doors/voidrunner.py: voidrunner.py's save
+# directory defaults to a `voidrunner_saves/` folder next to its own
+# `__file__`, and `run_door` replaces a door's environment outright (only
+# NETBBS_DOOR_INFO is set -- no way to hand it VOIDRUNNER_SAVE_DIR through
+# the real launch path), so a test running the file in place would write a
+# throwaway save into the actual examples/ directory on every run.
+
+_VOIDRUNNER_PATH = Path(__file__).resolve().parent.parent / "examples" / "doors" / "voidrunner.py"
+
+
+def test_the_real_space_trading_door_plays_a_full_opening_loop_through_run_door(db, lane, player, tmp_path):
+    door_copy = tmp_path / "voidrunner.py"
+    shutil.copy(_VOIDRUNNER_PATH, door_copy)
+    door = create_door(db, "Voidrunner", sys.executable, args=(str(door_copy),), creator=player)
+    session = FakeSession()
+
+    async def scenario():
+        task = asyncio.create_task(_run(session, lane, door, player))
+        await asyncio.sleep(0.2)
+        # Accept the default callsign, confirm career start, buy 3 Food
+        # in the market, back out, check the status screen, then quit.
+        session.type_in("\rYMAB3\rQS Q")
+        return await task
+
+    result = asyncio.run(scenario())
+
+    assert result.reason == "exited"
+    assert result.exit_code == 0
+    output = bytes(session.written).decode()
+    assert "V O I D R U N N E R" in output  # the title screen's letter-spaced wordmark
+    assert "keeper" in output  # the real caller handle, from the drop-file
+    assert "Bought 3x Food" in output
+    assert "Docking clamps engaged" in output
+    assert (tmp_path / "voidrunner_saves").exists()  # the door manages its own save, unmediated by NetBBS

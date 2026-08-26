@@ -70,3 +70,28 @@ See `src/netbbs/doors/runtime.py` for the sandbox model this runs
 under — same-OS-user subprocess isolation with enforced resource/time
 limits, not a container, and door output is trusted and shown exactly
 as generated (see that module's own docstring for the full reasoning).
+
+- `doors/voidrunner.py` — a persistent single-player space trading and
+  exploration door: a seeded, deterministically-generated ~48-system
+  galaxy with fog-of-war exploration, a market with per-system supply/
+  demand and price drift (plus a contraband black market at Haven
+  systems), turn-based raider encounters (fight/evade/dump cargo/bribe),
+  a mission board (delivery/bounty/scan contracts), Concord Navy vs.
+  Blackwake Cartel reputation, shipyard upgrades, and a late-game
+  Carrier-class flagship refit. Same zero-dependency, drop-file,
+  raw-stdio model as Retro Trivia — also runnable standalone
+  (`python3 examples/doors/voidrunner.py`).
+
+  Unlike Retro Trivia, a caller's progress is meant to persist across
+  logins: NetBBS's door sandbox gives a door no database access and
+  deletes its scratch working directory after every session (see
+  `netbbs.doors.runtime`'s own docstring), so this door manages its own
+  save file per caller (keyed by the drop-file's stable numeric user ID)
+  under a `voidrunner_saves/` directory it creates next to its own
+  script path, written after every action rather than only on quit —
+  see the module's own docstring for the full reasoning, including why
+  this is still strictly single-player/session-scoped (issue #172's
+  locked v1 door design) and not a shared galaxy.
+
+  Register it exactly like Retro Trivia above (**Executable path** =
+  your `python3`, **Arguments** = the full path to `voidrunner.py`).
