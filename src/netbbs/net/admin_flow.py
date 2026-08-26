@@ -7535,7 +7535,9 @@ async def _door_gallery_screen(
         entry, path = selection[1]
 
         await session.write_line(colored(f"\r\n{entry.name}", fg_color=MUTED_COLOR, bold=True))
-        await session.write_line(colored(entry.description, fg_color=MUTED_COLOR))
+        await session.write_line(colored(
+            reflow(sanitize_text(entry.description), width=session.terminal_width), fg_color=MUTED_COLOR,
+        ))
         await session.write_line(colored(f"  Suggested min level: {entry.suggested_min_play_level}", fg_color=MUTED_COLOR))
         await session.write_line(colored(f"  Interpreter (default, editable next): {sys.executable}", fg_color=MUTED_COLOR))
         await session.write_line(colored(f"  Script: {path}", fg_color=MUTED_COLOR))
@@ -7618,7 +7620,9 @@ async def _draw_door_detail(
             breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
             header_color=await lane.run(effective_header_color_256))
     )
-    await session.write_line(f"Description: {sanitize_text(door.description) if door.description else '(none)'}")
+    description_text = sanitize_text(door.description) if door.description else "(none)"
+    await session.write_line("Description:")
+    await session.write_line(reflow(description_text, width=session.terminal_width))
     await session.write_line(f"Executable: {sanitize_text(door.executable_path)}")
     await session.write_line(f"Arguments: {' '.join(door.args) if door.args else '(none)'}")
     await session.write_line(f"Community: {await lane.run(_community_label, door.community_id)}")

@@ -3810,6 +3810,27 @@ def test_door_gallery_selecting_an_entry_shows_details_before_registering(db, la
     assert list_doors(db) == []
 
 
+def test_door_gallery_description_is_word_wrapped_to_terminal_width(db, lane, sysop):
+    """Dogfood report: a catalog entry's description used to print as a
+    single unwrapped line regardless of terminal width. Voidrunner's own
+    description (224 chars) is item 02 -- well past FakeSession's 80
+    columns, so it must actually be split across multiple lines, each
+    of which fits."""
+    session = FakeSession(["c", "d", "g", "0", "2", "n", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _visible(_written_text(session))
+    # "Voidrunner" also appears once already in the picker's own list row
+    # (its name, immediately followed by pick_item's own truncated-not-
+    # wrapped description preview on the same line -- a different,
+    # already-correct thing) -- rsplit to land on the *last* occurrence,
+    # the detail view's own name header, not that list row.
+    prefix = text.split("Suggested min level:")[0]
+    block = prefix.rsplit("Voidrunner", 1)[1]
+    lines = [line for line in block.splitlines() if line.strip()]
+    assert len(lines) > 1
+    assert all(len(line) <= 80 for line in lines)
+
+
 def test_door_gallery_confirming_registration_opens_the_editor_prefilled_and_saves(db, lane, sysop):
     import sys
 
@@ -3856,6 +3877,29 @@ def test_door_gallery_reports_no_bundled_doors_when_none_are_found_on_disk(db, l
     session = FakeSession(["c", "d", "g", "b", "b", "b"])
     _run(session, lane, sysop)
     assert "No bundled example doors found" in _written_text(session)
+
+
+def test_door_detail_screen_word_wraps_a_long_description(db, lane, sysop):
+    """Dogfood report: a registered door's own description used to print
+    as a single unwrapped line on the detail screen too, regardless of
+    terminal width."""
+    from netbbs.doors import create_door
+
+    long_description = (
+        "A genuinely long, free-text description a SysOp might write about "
+        "their own door, well past eighty columns on any ordinary terminal, "
+        "written specifically to prove it gets wrapped instead of running "
+        "off the edge of the screen as one continuous line."
+    )
+    create_door(db, "Longdesc", "/usr/bin/python3", description=long_description, creator=sysop)
+
+    session = FakeSession(["c", "d", "l", "0", "1", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _visible(_written_text(session))
+    block = text.split("Description:")[1].split("Executable:")[0]
+    lines = [line for line in block.splitlines() if line.strip()]
+    assert len(lines) > 1
+    assert all(len(line) <= 80 for line in lines)
 
 
 # -- node colors (issue #162) ------------------------------------------------
