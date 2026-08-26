@@ -52,6 +52,7 @@ import asyncio
 import json
 import logging
 import math
+import shlex
 from pathlib import Path
 from typing import Awaitable, Callable, Sequence
 
@@ -108,6 +109,7 @@ from netbbs.communities import (
     update_community,
 )
 from netbbs.config import RegistrationMode, get_registration_mode, set_registration_mode
+from netbbs.doors import Door, DoorError, create_door, delete_door, list_doors, update_door
 from netbbs.files.areas import FileArea, FileAreaError, create_file_area, delete_file_area, list_file_areas, update_file_area
 from netbbs.files.categories import FileAreaCategory
 from netbbs.files.categories import FileAreaCategoryError as FileCategoryError
@@ -4840,6 +4842,10 @@ async def _content_menu(
             await session.write_line("")
             await _area_menu(session, lane, actor, link_context=link_context)
             await _draw_content_menu(session, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "d":
+            await session.write_line("")
+            await _door_menu(session, lane, actor)
+            await _draw_content_menu(session, description_level, redraw_in_place, unicode_style, collapsed, header_color)
         elif choice == "n":
             await session.write_line("")
             await _channel_menu(session, lane, actor, link_context=link_context)
@@ -4874,6 +4880,7 @@ async def _draw_content_menu(session: Session, description_level: str, redraw_in
             [
                 MenuEntry(label=menu_key("M", "essage boards"), brief="Create/edit message boards"),
                 MenuEntry(label=menu_key("F", "ile areas"), brief="Create/edit file areas"),
+                MenuEntry(label=menu_key("D", "oors"), brief="Register/edit door games"),
                 MenuEntry(label=menu_key("n", "nels", prefix="Chat cha"), brief="Create/edit chat channels"),
                 MenuEntry(label=menu_key("C", "ategories"), brief="Organize boards/areas/channels"),
                 MenuEntry(label=menu_key("O", "mmunities", prefix="C"), brief="Manage Communities"),
@@ -7066,6 +7073,278 @@ async def _file_action_screen(session: Session, lane: DatabaseLane, actor: User,
             await _draw_file_action(session, entry, description_level, redraw_in_place, unicode_style, collapsed, header_color)
         else:
             await session.write(reject_unhandled_key(choice))
+
+
+# -- doors (issue #172) ------------------------------------------------------
+#
+# Deliberately flat -- no categories, no age/name-requirement gates, no
+# Community-inheritance for its one level field (see netbbs.doors.
+# registry's own docstring for why: doors have neither a stated Link
+# future nor a read/write split, so this section is noticeably shorter
+# than boards'/areas' own.
+
+
+async def _door_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
+    description_level = await lane.run(menu_description_level, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
+    header_color = await lane.run(effective_header_color_256)
+    await _draw_door_menu(session, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+    while True:
+        choice = (await session.read_key()).lower()
+
+        if choice == "b":
+            await session.write_line("")
+            return
+        elif choice == "c":
+            await session.write_line("")
+            await _door_screen(session, lane, actor)
+            await _draw_door_menu(session, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "l":
+            await session.write_line("")
+            await _list_doors_screen(session, lane, actor)
+            await _draw_door_menu(session, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        else:
+            await session.write(reject_unhandled_key(choice))
+
+
+async def _draw_door_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool, collapsed: bool, header_color: int | tuple[int, int, int] = HEADER_COLOR) -> None:
+    await session.write_line("\r\n" + screen_title("Doors",
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color))
+    await session.write_line(
+        menu_grid(
+            [(
+                "",
+                [
+                    MenuEntry(label=menu_key("C", "reate"), brief="Register a new door"),
+                    MenuEntry(label=menu_key("L", "ist"), brief="Browse and edit doors"),
+                    MenuEntry(label=menu_key("B", "ack"), brief="Return to the Content menu"),
+                ],
+            )],
+            width=session.terminal_width,
+            height=session.terminal_height,
+            description_level=description_level,
+        )
+    )
+    await session.write("Choice: ")
+
+
+def _door_field_specs() -> list[FieldSpec]:
+    """One shared field list drives both create and edit, same "single
+    source of truth" precedent as `_area_field_specs`/`_board_field_
+    specs`. `args` is edited as one space-separated line and split with
+    `shlex.split` -- still always launched via `create_subprocess_exec`'s
+    argv-list form (see `netbbs.doors.runtime`), never a shell; this is
+    just a friendlier way for a SysOp to type several arguments on one
+    line than re-entering the field once per argument."""
+    return [
+        FieldSpec(
+            key="name", hotkey="n", menu_text=menu_key("N", "ame"), label="Name",
+            render=lambda d: d.get("name") or "(blank)",
+            prompt=text_field("name", required=True),
+            brief="The door's display name",
+            help="The door's display name, shown wherever it's listed. Must be non-blank.",
+        ),
+        FieldSpec(
+            key="description", hotkey="d", menu_text=menu_key("D", "escription"), label="Description",
+            render=lambda d: d.get("description") or "(none)",
+            prompt=text_field("description"),
+            brief="Shown when browsing doors",
+            help="A short explanation of what this door is, shown when browsing/selecting it.",
+        ),
+        FieldSpec(
+            key="executable_path", hotkey="e", menu_text=menu_key("E", "xecutable path"), label="Executable path",
+            render=lambda d: d.get("executable_path") or "(blank)",
+            prompt=text_field("executable_path", required=True),
+            brief="Path to the program to launch",
+            help=(
+                "The full filesystem path to the door's own executable. Runs as the same OS "
+                "user as NetBBS itself, with CPU/memory/process-count limits enforced "
+                "regardless of what the door does -- see the operator guide for the full "
+                "sandbox model."
+            ),
+        ),
+        FieldSpec(
+            key="args_line", hotkey="a", menu_text=menu_key("A", "rgs"), label="Arguments",
+            render=lambda d: d.get("args_line") or "(none)",
+            prompt=text_field("args_line"),
+            brief="Fixed command-line arguments",
+            help="Fixed arguments always passed to the door, space-separated on one line. Leave blank for none.",
+        ),
+        FieldSpec(
+            key="min_play_level", hotkey="p", menu_text=menu_key("P", "lay level"), label="Min play level",
+            render=lambda d: str(d.get("min_play_level")),
+            prompt=_int_field("min_play_level", "Minimum play level"),
+            brief="Level required to launch it",
+            help="The permission level a caller needs to launch/play this door.",
+        ),
+        FieldSpec(
+            key="community_id", hotkey="u", menu_text=menu_key("U", "nity", prefix="Comm"), label="Community",
+            render=lambda d: d.get("community_id_label") or "(none)",
+            prompt=_community_field(),
+            brief="Where it's offered from",
+            help="The Community this door is offered from, if any. 'none' keeps it outside every Community.",
+        ),
+        FieldSpec(
+            key="pinned", hotkey="i", menu_text=menu_key("i", "nned", prefix="P"), label="Pinned",
+            render=lambda d: "yes" if d.get("pinned") else "no",
+            prompt=bool_field("pinned", "Pinned?"),
+            brief="Shown at the top of listings",
+            help="Shown at the top of door listings, above unpinned doors, regardless of sort order.",
+        ),
+    ]
+
+
+async def _door_screen(session: Session, lane: DatabaseLane, actor: User, *, existing: Door | None = None) -> Door | None:
+    """Unified create/edit screen -- see `_area_screen`'s own docstring
+    for the general shape and reasoning, identical here."""
+    if existing is not None:
+        draft = {
+            "name": existing.name, "description": existing.description,
+            "executable_path": existing.executable_path, "args_line": " ".join(existing.args),
+            "min_play_level": existing.min_play_level, "community_id": existing.community_id,
+            "pinned": existing.pinned,
+        }
+        draft["community_id_label"] = (
+            (await lane.run(get_community, existing.community_id)).name
+            if existing.community_id is not None else None
+        )
+    else:
+        draft = {
+            "name": "", "description": None, "executable_path": "", "args_line": "",
+            "min_play_level": 0, "community_id": None, "pinned": False, "community_id_label": None,
+        }
+
+    async def save(draft: dict) -> Door:
+        if not draft["name"]:
+            raise DoorError("name cannot be blank")
+        if not draft["executable_path"]:
+            raise DoorError("executable path cannot be blank")
+        try:
+            args = tuple(shlex.split(draft["args_line"]))
+        except ValueError as exc:
+            raise DoorError(f"could not parse arguments -- {exc}") from exc
+        if existing is None:
+            return await lane.run(
+                create_door,
+                draft["name"], draft["executable_path"], description=draft["description"], args=args,
+                min_play_level=draft["min_play_level"], pinned=draft["pinned"],
+                community_id=draft["community_id"], creator=actor,
+            )
+        return await lane.run(
+            update_door,
+            existing, name=draft["name"], description=draft["description"],
+            executable_path=draft["executable_path"], args=args, min_play_level=draft["min_play_level"],
+            pinned=draft["pinned"], community_id=draft["community_id"], changed_by=actor,
+        )
+
+    redraw_in_place, redraw_hint = await lane.run(_resolve_redraw_preference, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
+    door = await edit_resource_draft(
+        session, lane,
+        title="Edit door" if existing is not None else "Register door",
+        fields=_door_field_specs(),
+        draft=draft, save=save, error_type=DoorError,
+        save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        description_level=await lane.run(menu_description_level, actor),
+        redraw_in_place=redraw_in_place, redraw_hint=redraw_hint,
+        unicode_style=unicode_style,
+        collapsed=collapsed,
+        accent_color=await lane.run(effective_accent_color_256),
+        header_color=await lane.run(effective_header_color_256),
+    )
+    if door is not None:
+        verb = "Updated" if existing is not None else "Registered door"
+        await session.write_line(f"{verb} {door.name!r}.")
+    return door
+
+
+async def _list_doors_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    doors = await lane.run(list_doors)
+    selected = await pick_item(
+        session, doors,
+        name_of=lambda d: d.name,
+        stable_id_of=lambda d: d.id,
+        description_of=lambda d: d.description,
+        title="Doors",
+        empty_message="No doors yet.",
+        redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+        unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+        accent_color=await lane.run(effective_accent_color_256),
+        header_color=await lane.run(effective_header_color_256),
+    )
+    if selected is not None:
+        await _door_detail_screen(session, lane, actor, selected)
+
+
+async def _door_detail_screen(session: Session, lane: DatabaseLane, actor: User, door: Door) -> None:
+    description_level = await lane.run(menu_description_level, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
+    await _draw_door_detail(session, lane, door, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
+    while True:
+        choice = (await session.read_key()).lower()
+
+        if choice == "b":
+            await session.write_line("")
+            return
+        elif choice == "e":
+            await session.write_line("")
+            updated = await _door_screen(session, lane, actor, existing=door)
+            if updated is not None:
+                door = updated
+            await _draw_door_detail(session, lane, door, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
+        elif choice == "d":
+            await session.write_line("")
+            deleted = await _delete_door_screen(session, lane, actor, door)
+            if deleted:
+                return
+            await _draw_door_detail(session, lane, door, description_level=description_level, redraw_in_place=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed)
+        else:
+            await session.write(reject_unhandled_key(choice))
+
+
+async def _draw_door_detail(
+    session: Session, lane: DatabaseLane, door: Door, *,
+    description_level: str = "off", redraw_in_place: bool = False, unicode_style: bool = False, collapsed: bool = False,
+) -> None:
+    await session.write_line(
+        "\r\n" + screen_title(sanitize_text(door.name),
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
+            header_color=await lane.run(effective_header_color_256))
+    )
+    await session.write_line(f"Description: {sanitize_text(door.description) if door.description else '(none)'}")
+    await session.write_line(f"Executable: {sanitize_text(door.executable_path)}")
+    await session.write_line(f"Arguments: {' '.join(door.args) if door.args else '(none)'}")
+    await session.write_line(f"Community: {await lane.run(_community_label, door.community_id)}")
+    await session.write_line(f"Play level: {door.min_play_level}  Pinned: {'yes' if door.pinned else 'no'}")
+    options = [
+        MenuEntry(label=menu_key("E", "dit"), brief="Change this door's settings"),
+        MenuEntry(label=menu_key("D", "elete"), brief="Permanently remove this door"),
+        MenuEntry(label=menu_key("B", "ack"), brief="Return to the list"),
+    ]
+    await session.write_line(
+        "\r\n" + _menu_row(options, description_level, width=session.terminal_width, height=session.terminal_height)
+    )
+    await session.write("Choice: ")
+
+
+async def _delete_door_screen(session: Session, lane: DatabaseLane, actor: User, door: Door) -> bool:
+    await session.write_line(
+        colored("\r\nThis permanently removes the door from the catalogue. This cannot be undone.", fg_color=MUTED_COLOR)
+    )
+    await session.write(f"Type the door name {door.name!r} to confirm, or anything else to cancel: ")
+    confirmation = (await session.read_line()).strip()
+    if confirmation != door.name:
+        await session.write_line("Cancelled.")
+        return False
+    await lane.run(delete_door, door, deleted_by=actor)
+    await session.write_line(f"{door.name!r} deleted.")
+    return True
 
 
 # -- channels (design doc) --------------------------------------------------

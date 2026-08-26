@@ -172,6 +172,7 @@ from netbbs.net.unicode_style_preference import (
 from netbbs.net.composition import ReviewAction, edit_line_body, review_composition
 from netbbs.net.draft_storage import delete_draft, drafts_directory, load_draft
 from netbbs.net.editor_preference import fullscreen_editor_enabled, set_fullscreen_editor_enabled
+from netbbs.net.door_flow import browse_doors, has_visible_doors
 from netbbs.net.file_flow import browse_file_areas, enter_file_area, has_visible_areas
 from netbbs.net.mail_flow import browse_mail
 from netbbs.net.main_menu_banner import load_main_menu_banner
@@ -2448,6 +2449,9 @@ async def _resource_type_menu(
         show_areas = not community_scoped or has_visible_areas(
             db, user, community_id=community_id, community_scoped=community_scoped
         )
+        show_doors = not community_scoped or has_visible_doors(
+            db, user, community_id=community_id, community_scoped=community_scoped
+        )
 
         option_list = []
         if show_boards:
@@ -2456,6 +2460,8 @@ async def _resource_type_menu(
             option_list.append(MenuEntry(label=menu_key("C", "hat"), brief="Browse chat channels"))
         if show_areas:
             option_list.append(MenuEntry(label=menu_key("F", "ile areas"), brief="Browse file areas"))
+        if show_doors:
+            option_list.append(MenuEntry(label=menu_key("G", "ames"), brief="Play a door game"))
         option_list.append(MenuEntry(label=menu_key("B", "ack"), brief="Return to the previous menu"))
         heading = screen_title(
             menu_header,
@@ -2515,6 +2521,22 @@ async def _resource_type_menu(
             else:
                 await session.write_line(
                     colored("File areas are not available in this context.", fg_color=MUTED_COLOR)
+                )
+        elif choice == "g" and show_doors:
+            await session.write_line("")
+            # design doc: doors are one of the features migrated onto
+            # the two-lane database execution model from the start (see
+            # netbbs.net.door_flow's own docstring) -- see the "e" (mail)
+            # branch above for the identical lane-is-None
+            # degrade-gracefully reasoning.
+            if lane is not None:
+                await browse_doors(
+                    session, lane, user,
+                    community_id=community_id, community_scoped=community_scoped, title_prefix=title_prefix,
+                )
+            else:
+                await session.write_line(
+                    colored("Doors are not available in this context.", fg_color=MUTED_COLOR)
                 )
         else:
             await session.write(reject_unhandled_key(choice))

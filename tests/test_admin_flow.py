@@ -2896,6 +2896,91 @@ def test_grant_blanket_across_all_boards(db, lane, sysop):
     assert has_permission(db, alice, object_type="board", object_id=board.id, permission=BoardPermission.DELETE)
 
 
+# -- doors (issue #172) ------------------------------------------------------
+
+
+def _quick_exit_door_script(tmp_path):
+    script = tmp_path / "quick_exit_door.py"
+    script.write_text("pass\n", encoding="utf-8")
+    return script
+
+
+def test_create_and_delete_door_flow(db, lane, sysop, tmp_path):
+    import sys
+
+    script = _quick_exit_door_script(tmp_path)
+
+    # m,d -> Doors menu; c -> the shared draft editor -- n(ame)/e(xecutable
+    # path) select fields, then [S]ave.
+    inputs = [
+        "m", "d", "c",
+        "n", "Lotto",
+        "e", sys.executable,
+        "a", str(script),
+        "s",
+        "l", "0", "1", "d", "Lotto",
+        "b", "b", "b",
+    ]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+    from netbbs.doors import list_doors
+
+    text = _written_text(session)
+    assert "Registered door 'Lotto'." in text
+    assert "'Lotto' deleted." in text
+    assert list_doors(db) == []
+
+
+def test_create_door_ctrl_h_shows_real_help_text_for_every_field(db, lane, sysop):
+    inputs = ["m", "d", "c", "CTRL+H", " ", "b", "b", "b", "b"]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "No help is available" not in text
+    assert "cpu/memory/process-count limits" in text.lower()
+
+
+def test_create_door_can_be_cancelled_without_registering_anything(db, lane, sysop):
+    inputs = ["m", "d", "c", "n", "Abandoned", "b", "y", "b", "b", "b"]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+    from netbbs.doors import list_doors
+
+    assert list_doors(db) == []
+
+
+def test_edit_door_flow(db, lane, sysop, tmp_path):
+    import sys
+
+    from netbbs.doors import create_door, get_door_by_name
+
+    script = _quick_exit_door_script(tmp_path)
+    create_door(db, "Lotto", sys.executable, args=(str(script),), creator=sysop)
+
+    # list -> pick(01) -> e(dit) -> rename via the field menu -> [S]ave.
+    inputs = ["m", "d", "l", "0", "1", "e", "n", "Lotto2", "s", "b", "b", "b", "b"]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+
+    assert "Updated 'Lotto2'." in _written_text(session)
+    renamed = get_door_by_name(db, "Lotto2")
+    assert renamed.executable_path == sys.executable
+
+
+def test_door_requires_a_non_blank_executable_path(db, lane, sysop):
+    # n(ame) filled in, executable path left blank -- [S]ave should reject
+    # rather than register a door that can never actually launch. Save
+    # failure loops back to the field editor (no extra dismissal
+    # keystroke needed); 'b' then discards the now-changed draft.
+    inputs = ["m", "d", "c", "n", "Broken", "s", "b", "y", "b", "b", "b"]
+    session = FakeSession(inputs)
+    _run(session, lane, sysop)
+    from netbbs.doors import list_doors
+
+    assert "executable path cannot be blank" in _written_text(session).lower()
+    assert list_doors(db) == []
+
+
 # -- channels -------------------------------------------------------------
 
 
