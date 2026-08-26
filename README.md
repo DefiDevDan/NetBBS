@@ -1,5 +1,8 @@
 # NetBBS
 
+**[www.netbbs.org](https://www.netbbs.org)** — the project site, with a
+fuller pitch and real screenshots from a running node.
+
 NetBBS is a bulletin board system (BBS) — the dial-up-era style of
 text-based, multi-user server where people read message boards, chat in
 real time, exchange mail, and trade files — rebuilt for the modern
