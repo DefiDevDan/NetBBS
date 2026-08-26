@@ -11,6 +11,7 @@ import collections
 import json
 import sys
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -228,3 +229,39 @@ def test_play_door_is_audit_logged(db, lane, player, tmp_path):
     assert len(play_entries) == 1
     assert play_entries[0].actor_user_id == player.id
     assert "reason=exited" in play_entries[0].detail
+
+
+# -- the real demo door (examples/doors/retro_trivia.py) -------------------
+#
+# Not a throwaway test fixture like every script above -- the actual
+# shipped proof-of-concept door, run for real through this same
+# run_door pipeline, proving the whole vertical end to end rather than
+# just the sandbox mechanics in isolation.
+
+_RETRO_TRIVIA_PATH = Path(__file__).resolve().parent.parent / "examples" / "doors" / "retro_trivia.py"
+
+
+def test_the_real_demo_door_plays_a_full_round_through_run_door(db, lane, player):
+    door = create_door(db, "Retro Trivia", sys.executable, args=(str(_RETRO_TRIVIA_PATH),), creator=player)
+    session = FakeSession()
+
+    async def scenario():
+        task = asyncio.create_task(_run(session, lane, door, player))
+        # 8 questions this round, one keystroke each, then one more to
+        # dismiss the final "press any key to leave" prompt.
+        for _ in range(9):
+            await asyncio.sleep(0.05)
+            session.type_in("A")
+        return await task
+
+    result = asyncio.run(scenario())
+
+    assert result.reason == "exited"
+    assert result.exit_code == 0
+    output = bytes(session.written).decode()
+    assert "R E T R O" in output  # the title screen's letter-spaced wordmark
+    assert "Welcome, " in output
+    assert "keeper" in output  # the real caller handle, from the drop-file
+    assert "Question 1/8" in output
+    assert "Question 8/8" in output
+    assert "Final score:" in output

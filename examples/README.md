@@ -44,3 +44,29 @@ currently in place.
 
 See `src/netbbs/net/banner_presets/__init__.py` for the full preset
 list and descriptions.
+
+## Sample door game (issue #172)
+
+- `doors/retro_trivia.py` — a real, playable multiple-choice trivia
+  door: eight random questions per round, single-keystroke (A/B/C/D)
+  answers, a running score, and a colored final rank. Zero external
+  dependencies (stdlib only), and runnable completely standalone
+  outside NetBBS too (`python3 examples/doors/retro_trivia.py` from a
+  real terminal) for trying it before registering it.
+
+Unlike the banners/mastheads above, a door genuinely *is* meant to be an
+external program a SysOp points at — it deliberately stays a loose file
+here rather than becoming installed package data; nothing about the
+door sandbox model expects NetBBS to ship or bundle doors itself.
+
+To register it: `[S]ysOp` → `[M]anage boards/areas/channels` (Content)
+→ `[D]oors` → `[C]reate`, then set **Executable path** to your `python3`
+interpreter and **Arguments** to the full path to `retro_trivia.py` on
+your node's own filesystem (e.g. wherever you cloned/installed NetBBS
+from). Callers can then find and play it from `[G]ames` in the normal
+board/file-area/chat browsing menu.
+
+See `src/netbbs/doors/runtime.py` for the sandbox model this runs
+under — same-OS-user subprocess isolation with enforced resource/time
+limits, not a container, and door output is trusted and shown exactly
+as generated (see that module's own docstring for the full reasoning).
