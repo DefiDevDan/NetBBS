@@ -88,8 +88,8 @@ def test_single_key_confirmation_echoes_uppercase_and_ends_its_row():
     output = asyncio.run(scenario())
     assert results == [True, False]
     assert output == [
-        "Confirm? \x1b[1m\x1b[38;5;46m[\x1b[0my/\x1b[1m\x1b[38;5;46mN\x1b[0m\x1b[1m\x1b[38;5;46m]\x1b[0m: ", "Y\r\n",
-        "Again? \x1b[1m\x1b[38;5;46m[\x1b[0m\x1b[1m\x1b[38;5;46mY\x1b[0m/n\x1b[1m\x1b[38;5;46m]\x1b[0m: ", "N\r\n", "NEXT\r\n",
+        "Confirm? \x1b[1m\x1b[38;5;75m[\x1b[0my/\x1b[1m\x1b[38;5;46mN\x1b[0m\x1b[1m\x1b[38;5;75m]\x1b[0m: ", "Y\r\n",
+        "Again? \x1b[1m\x1b[38;5;75m[\x1b[0m\x1b[1m\x1b[38;5;46mY\x1b[0m/n\x1b[1m\x1b[38;5;75m]\x1b[0m: ", "N\r\n", "NEXT\r\n",
     ]
 
 

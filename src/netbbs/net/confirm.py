@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from netbbs.net.char_input import EditorKeyKind
 from netbbs.net.session import Session
-from netbbs.rendering import MENU_KEY_COLOR, colored
+from netbbs.rendering import LABEL_COLOR, MENU_KEY_COLOR, colored
 
 
 def _highlighted(letter: str) -> str:
@@ -24,12 +24,20 @@ def _highlighted(letter: str) -> str:
     return colored(letter, fg_color=MENU_KEY_COLOR, bold=True)
 
 
-# Dogfood request: the surrounding "[" "]" are colored the same as the
-# highlighted letter they hold -- the bracket pair itself is what marks
-# "a keystroke is expected here" at a glance, not just the one letter
-# inside it, matching the "stand out more" ask directly.
-_BRACKET_OPEN = colored("[", fg_color=MENU_KEY_COLOR, bold=True)
-_BRACKET_CLOSE = colored("]", fg_color=MENU_KEY_COLOR, bold=True)
+# Dogfood follow-up: a prior dogfood request colored these brackets the
+# same MENU_KEY_COLOR-bold as the highlighted default letter they hold,
+# so the whole pair would "read as a keystroke zone at a glance." In
+# practice that made the bracket and the letter blend into one solid-
+# color block, defeating the thing that actually matters here: telling
+# *the default* apart from its surrounding punctuation. The brackets
+# still get their own bold emphasis -- that part of the original ask
+# was right -- just in `LABEL_COLOR`, not `MENU_KEY_COLOR`: the same
+# color already reserved for framing/labeling text around a value
+# (`netbbs.net.mail_flow`'s "From:"/"Date:", `netbbs.net.resource_
+# editor`'s own field labels) rather than the color reserved for "this
+# is the actual keystroke" everywhere else in the app.
+_BRACKET_OPEN = colored("[", fg_color=LABEL_COLOR, bold=True)
+_BRACKET_CLOSE = colored("]", fg_color=LABEL_COLOR, bold=True)
 
 
 async def read_confirmation_choice(session: Session) -> bool | None:
