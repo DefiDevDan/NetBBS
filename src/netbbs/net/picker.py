@@ -101,6 +101,7 @@ async def pick_item(
     collapsed: bool = False,
     accent_color: int = ACCENT_COLOR,
     header_color: int | tuple[int, int, int] = HEADER_COLOR,
+    start_stable_id: int | None = None,
 ) -> T | None:
     """
     Let the user browse/search/jump through `items` and pick one, or
@@ -228,6 +229,23 @@ async def pick_item(
     "caller resolves the preference once, this function just trusts it"
     shape as `description_level`. `False` by default, so an existing
     caller that doesn't pass it renders exactly as before.
+
+    `start_stable_id` (dogfood report): opens directly on the page
+    containing the item with this `stable_id_of` value, pre-highlighted,
+    instead of always starting at page 1 with nothing highlighted. Built
+    for a caller re-entering this same picker right after the user just
+    left it (e.g. previewed an item, declined to apply it, and is now
+    back at the picker) -- without this, "decline" silently discarded
+    not just the choice but the browsing position that produced it,
+    forcing a re-page/re-search through a possibly long list to get back
+    to where you were. A one-shot initial placement only: it does not
+    affect `working_set` (still starts as the full `items`) and is not
+    re-applied after a later search/sort/refresh resets the highlight --
+    those already have their own, deliberate "drop back to unhighlighted"
+    behavior (see this docstring's own Issue #171 section). Silently
+    ignored if no item's `stable_id_of` matches (e.g. the item was
+    deleted between calls) -- falls back to the ordinary page-1,
+    nothing-highlighted start.
     """
     if not items and refresh is None:
         await session.write_line(colored(f"\r\n{empty_message}", fg_color=MUTED_COLOR))
@@ -236,6 +254,13 @@ async def pick_item(
     working_set: Sequence[T] = items
     page_index = 0
     highlighted: int | None = None
+    if start_stable_id is not None:
+        for start_index, item in enumerate(working_set):
+            if stable_id_of(item) == start_stable_id:
+                start_page_size = _page_size(session, on_sort, description_level)
+                page_index = start_index // start_page_size
+                highlighted = start_index % start_page_size
+                break
 
     def _total_pages() -> int:
         return max(1, math.ceil(len(working_set) / _page_size(session, on_sort, description_level)))

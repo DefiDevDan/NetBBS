@@ -3656,6 +3656,95 @@ def test_masthead_gallery_declining_the_apply_prompt_leaves_the_masthead_disable
     assert is_main_menu_banner_enabled(db) is False
 
 
+# -- door gallery (issue #172 follow-up) -------------------------------------
+#
+# Unlike the welcome-banner/masthead galleries above, there's nothing to
+# "apply" on decline here -- registering a door always goes through the
+# real create-door editor (`_door_screen`), so these exercise the picker
+# entry point, the details-before-registering step, and one full
+# select -> confirm -> save round trip through the real registry.
+
+
+def test_door_gallery_option_appears_in_the_door_menu(db, lane, sysop):
+    session = FakeSession(["c", "d", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "allery" in _written_text(session)
+
+
+def test_door_gallery_lists_bundled_example_doors_by_name(db, lane, sysop):
+    session = FakeSession(["c", "d", "g", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "Retro Trivia" in text
+    assert "Voidrunner" in text
+
+
+def test_door_gallery_selecting_an_entry_shows_details_before_registering(db, lane, sysop):
+    from netbbs.doors import list_doors
+
+    # item 01 on the picker's first page -- catalog order, Retro Trivia.
+    # Declining loops back into the gallery's own picker (same dogfood
+    # fix as the banner galleries), so exiting cleanly needs one extra
+    # "b" beyond the usual 3.
+    session = FakeSession(["c", "d", "g", "0", "1", "n", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "Retro Trivia" in text
+    assert "Suggested min level: 0" in text
+    assert "Interpreter (default, editable next):" in text
+    assert "retro_trivia.py" in text
+    assert "Not registered." in text
+    assert list_doors(db) == []
+
+
+def test_door_gallery_confirming_registration_opens_the_editor_prefilled_and_saves(db, lane, sysop):
+    import sys
+
+    from netbbs.doors import list_doors
+    from netbbs.doors.example_catalog import EXAMPLE_DOOR_CATALOG, resolve_example_door_path
+
+    retro_trivia = EXAMPLE_DOOR_CATALOG[0]
+    resolved_path = resolve_example_door_path(retro_trivia)
+    assert resolved_path is not None  # sanity: this dev checkout really has the file
+
+    # Confirm ("y"), then a bare "s" saves immediately -- every required
+    # field (name, executable path) already arrived non-blank via the
+    # gallery's own prefill, so no further field edits are needed.
+    session = FakeSession(["c", "d", "g", "0", "1", "y", "s", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert f"Registered door {retro_trivia.name!r}." in text
+
+    doors = list_doors(db)
+    assert len(doors) == 1
+    assert doors[0].name == retro_trivia.name
+    assert doors[0].description == retro_trivia.description
+    assert doors[0].executable_path == sys.executable
+    assert doors[0].args == (resolved_path.as_posix(),)
+    assert doors[0].min_play_level == retro_trivia.suggested_min_play_level
+
+
+def test_door_gallery_declining_then_registering_a_different_entry_preserves_cursor(db, lane, sysop):
+    """Same cursor-preservation fix as the banner galleries: declining
+    item 01 then immediately pressing Enter-equivalent (typing its own
+    number again isn't needed -- backing straight into item 02) proves
+    the picker didn't reset to page 1 unhighlighted."""
+    from netbbs.doors import list_doors
+
+    session = FakeSession(["c", "d", "g", "0", "1", "n", "0", "2", "y", "s", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    doors = list_doors(db)
+    assert len(doors) == 1
+    assert doors[0].name == "Voidrunner"
+
+
+def test_door_gallery_reports_no_bundled_doors_when_none_are_found_on_disk(db, lane, sysop, monkeypatch):
+    monkeypatch.setattr("netbbs.net.admin_flow.available_example_doors", lambda: [])
+    session = FakeSession(["c", "d", "g", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "No bundled example doors found" in _written_text(session)
+
+
 # -- node colors (issue #162) ------------------------------------------------
 
 

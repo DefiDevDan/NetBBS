@@ -66,6 +66,16 @@ your node's own filesystem (e.g. wherever you cloned/installed NetBBS
 from). Callers can then find and play it from `[G]ames` in the normal
 board/file-area/chat browsing menu.
 
+Faster on a source checkout: `[D]oors` → `[G]allery` lists both bundled
+example doors below and registers whichever you pick with sensible
+defaults pre-filled (name, description, suggested play level, and the
+interpreter currently running NetBBS itself) — still opens the same
+`[C]reate` editor to review/adjust before saving, it just doesn't start
+from a blank form. Only ever finds anything on a source checkout
+(`examples/doors/` isn't part of an installed release wheel — see this
+file's own "Sample door game" note above), same reach as manual
+`[C]reate` already required for these files.
+
 See `src/netbbs/doors/runtime.py` for the sandbox model this runs
 under — same-OS-user subprocess isolation with enforced resource/time
 limits, not a container, and door output is trusted and shown exactly
@@ -94,4 +104,5 @@ as generated (see that module's own docstring for the full reasoning).
   locked v1 door design) and not a shared galaxy.
 
   Register it exactly like Retro Trivia above (**Executable path** =
-  your `python3`, **Arguments** = the full path to `voidrunner.py`).
+  your `python3`, **Arguments** = the full path to `voidrunner.py`), or
+  via `[D]oors` → `[G]allery` the same way.

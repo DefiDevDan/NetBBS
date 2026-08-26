@@ -1429,6 +1429,104 @@ def test_highlight_resets_to_unhighlighted_after_paging():
     assert result["value"] is None
 
 
+# -- start_stable_id (dogfood report: preview-then-decline lost your place) -
+
+
+def test_start_stable_id_reopens_already_highlighted_on_the_matching_row():
+    result = {}
+    items = ["alpha", "beta", "gamma"]
+
+    async def handler(session: Session):
+        result["value"] = await pick_item(
+            session, items, name_of=lambda x: x, stable_id_of=lambda x: items.index(x) + 1,
+            title="Items", empty_message="none", start_stable_id=2,  # "beta"
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await skip_initial_negotiation(reader)
+            data = _visible(await _read_until_quiet(reader))
+            assert b"> 02." in data  # highlighted on first render, no arrow press needed
+            assert b"beta" in data
+
+            writer.write(_ENTER)  # Enter immediately selects the pre-highlighted row
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert result["value"] == "beta"
+
+
+def test_start_stable_id_opens_directly_on_the_page_containing_that_item():
+    result = {}
+    items = [f"item{i:02d}" for i in range(1, 21)]  # 2 pages at the default 18-per-page size
+
+    async def handler(session: Session):
+        result["value"] = await pick_item(
+            session, items, name_of=lambda x: x, stable_id_of=lambda x: items.index(x) + 1,
+            title="Items", empty_message="none", start_stable_id=19,  # item19, page 2's first row
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await skip_initial_negotiation(reader)
+            data = _visible(await _read_until_quiet(reader))
+            assert re.search(rb"page 2/2", data)
+            assert b"> 01." in data
+            assert b"item19" in data
+
+            writer.write(b"b")
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+    assert result["value"] is None
+
+
+def test_start_stable_id_with_no_match_falls_back_to_ordinary_start():
+    """The item a caller last looked at can legitimately be gone by the
+    time it re-enters the picker (deleted, filtered out) -- an unmatched
+    `start_stable_id` must not crash or leave the picker in a broken
+    state, just behave exactly as if it had been omitted."""
+    items = ["alpha", "beta", "gamma"]
+
+    async def handler(session: Session):
+        await pick_item(
+            session, items, name_of=lambda x: x, stable_id_of=lambda x: items.index(x) + 1,
+            title="Items", empty_message="none", start_stable_id=999,
+        )
+
+    async def scenario():
+        server = await _run_server(handler)
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await skip_initial_negotiation(reader)
+            data = _visible(await _read_until_quiet(reader))
+            assert b"  01. " in data
+            assert b">" not in data.split(b"Choice:")[0]
+            writer.write(b"b")
+            await writer.drain()
+            await _read_until_quiet(reader)
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
 # -- description column & truncation ---------------------------------------
 
 

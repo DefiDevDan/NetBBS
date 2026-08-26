@@ -3012,3 +3012,20 @@ the wall-time watchdog) with no graceful-shutdown guarantee, so
 save-on-quit-only would routinely lose real progress; the write itself
 is a temp-file-plus-`os.replace` to stay atomic against exactly that
 kind of mid-write kill.
+
+`netbbs.net.admin_flow._door_field_specs`' `args` field is parsed with
+`shlex.split(draft["args_line"])` -- deliberately POSIX-mode (the
+default), matching the "never a shell, always an argv list" posture
+`netbbs.doors.runtime` already documents. POSIX-mode `shlex` treats a
+bare backslash as an escape character and silently drops it, which
+mangles a raw Windows path the instant it contains one (`C:\Users\...`
+round-trips as `C:Users...`) -- caught building the doors gallery
+(`_door_gallery_screen`), which prefills this field with a resolved
+`Path`: `str(path)` on this project's own Windows dev box corrupted
+immediately, `path.as_posix()` doesn't (forward slashes are inert to
+that escaping, and both Windows and every POSIX target accept them as
+real path separators). Anything that programmatically fills this field
+from a `Path` -- now or later -- needs `.as_posix()`, never `str()`.
+This is a real latent trap for a SysOp manually typing a Windows path
+into this field too, not just this call site, but that's out of scope
+of what prefilling could fix and is unchanged here.

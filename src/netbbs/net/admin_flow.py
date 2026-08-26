@@ -53,6 +53,7 @@ import json
 import logging
 import math
 import shlex
+import sys
 from pathlib import Path
 from typing import Awaitable, Callable, Sequence
 
@@ -110,6 +111,7 @@ from netbbs.communities import (
 )
 from netbbs.config import RegistrationMode, get_registration_mode, set_registration_mode
 from netbbs.doors import Door, DoorError, create_door, delete_door, list_doors, update_door
+from netbbs.doors.example_catalog import available_example_doors
 from netbbs.files.areas import FileArea, FileAreaError, create_file_area, delete_file_area, list_file_areas, update_file_area
 from netbbs.files.categories import FileAreaCategory
 from netbbs.files.categories import FileAreaCategoryError as FileCategoryError
@@ -4342,7 +4344,14 @@ async def _welcome_banner_gallery_screen(
     Dogfood follow-up: declining the apply prompt loops back into this
     same gallery picker instead of exiting to the welcome-banner menu --
     browsing several samples in a row used to mean re-entering
-    `[G]allery` after every single one just to look at the next."""
+    `[G]allery` after every single one just to look at the next.
+
+    Second dogfood follow-up: that loop-back used to always reopen the
+    picker at page 1 with nothing highlighted, discarding exactly the
+    browsing position a decline is supposed to return you to -- `pick_
+    item`'s `start_stable_id` now re-highlights whichever sample was
+    just declined."""
+    last_stable_id: int | None = None
     while True:
         selection = await pick_item(
             session,
@@ -4356,9 +4365,11 @@ async def _welcome_banner_gallery_screen(
             redraw_in_place=redraw_in_place,
             unicode_style=unicode_style,
             collapsed=collapsed,
+            start_stable_id=last_stable_id,
         )
         if selection is None:
             return
+        last_stable_id = selection[0]
         preset = selection[1]
         data = load_welcome_banner_preset(preset)
         await session.write_line(colored(f"\r\nPreviewing {preset.name!r}:", fg_color=MUTED_COLOR))
@@ -4575,7 +4586,9 @@ async def _main_menu_banner_gallery_screen(
 ) -> None:
     """Same bundled-sample gallery as `_welcome_banner_gallery_screen`
     (issue #169), against `main_menu_banner_path` instead -- including
-    its identical "decline loops back into the gallery" dogfood fix."""
+    its identical "decline loops back into the gallery, re-highlighted"
+    dogfood fixes."""
+    last_stable_id: int | None = None
     while True:
         selection = await pick_item(
             session,
@@ -4589,9 +4602,11 @@ async def _main_menu_banner_gallery_screen(
             redraw_in_place=redraw_in_place,
             unicode_style=unicode_style,
             collapsed=collapsed,
+            start_stable_id=last_stable_id,
         )
         if selection is None:
             return
+        last_stable_id = selection[0]
         preset = selection[1]
         data = load_main_menu_banner_preset(preset)
         await session.write_line(colored(f"\r\nPreviewing {preset.name!r}:", fg_color=MUTED_COLOR))
@@ -7101,6 +7116,10 @@ async def _door_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
             await session.write_line("")
             await _door_screen(session, lane, actor)
             await _draw_door_menu(session, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "g":
+            await session.write_line("")
+            await _door_gallery_screen(session, lane, actor, description_level, redraw_in_place, unicode_style, collapsed)
+            await _draw_door_menu(session, description_level, redraw_in_place, unicode_style, collapsed, header_color)
         elif choice == "l":
             await session.write_line("")
             await _list_doors_screen(session, lane, actor)
@@ -7118,6 +7137,7 @@ async def _draw_door_menu(session: Session, description_level: str, redraw_in_pl
                 "",
                 [
                     MenuEntry(label=menu_key("C", "reate"), brief="Register a new door"),
+                    MenuEntry(label=menu_key("G", "allery"), brief="Register one of NetBBS's own example doors"),
                     MenuEntry(label=menu_key("L", "ist"), brief="Browse and edit doors"),
                     MenuEntry(label=menu_key("B", "ack"), brief="Return to the Content menu"),
                 ],
@@ -7196,9 +7216,21 @@ def _door_field_specs() -> list[FieldSpec]:
     ]
 
 
-async def _door_screen(session: Session, lane: DatabaseLane, actor: User, *, existing: Door | None = None) -> Door | None:
+async def _door_screen(
+    session: Session, lane: DatabaseLane, actor: User, *,
+    existing: Door | None = None, prefill: dict | None = None,
+) -> Door | None:
     """Unified create/edit screen -- see `_area_screen`'s own docstring
-    for the general shape and reasoning, identical here."""
+    for the general shape and reasoning, identical here.
+
+    `prefill` (issue #172's door-gallery follow-up): starting field
+    values for a brand-new door, merged over the ordinary blank draft --
+    still the exact same editor, save validation, and `create_door` call
+    as manual `[C]reate`, just not starting from an all-blank form. Only
+    meaningful when `existing` is `None`; silently ignored otherwise --
+    editing an existing door already has real values to start from, and
+    a caller select-then-edit flow (`_door_gallery_screen`) only ever
+    reaches this with `existing=None` in the first place."""
     if existing is not None:
         draft = {
             "name": existing.name, "description": existing.description,
@@ -7215,6 +7247,8 @@ async def _door_screen(session: Session, lane: DatabaseLane, actor: User, *, exi
             "name": "", "description": None, "executable_path": "", "args_line": "",
             "min_play_level": 0, "community_id": None, "pinned": False, "community_id_label": None,
         }
+        if prefill is not None:
+            draft.update(prefill)
 
     async def save(draft: dict) -> Door:
         if not draft["name"]:
@@ -7259,6 +7293,95 @@ async def _door_screen(session: Session, lane: DatabaseLane, actor: User, *, exi
         verb = "Updated" if existing is not None else "Registered door"
         await session.write_line(f"{verb} {door.name!r}.")
     return door
+
+
+async def _door_gallery_screen(
+    session: Session, lane: DatabaseLane, actor: User, description_level: str,
+    redraw_in_place: bool, unicode_style: bool, collapsed: bool,
+) -> None:
+    """Browse NetBBS's own bundled example doors (issue #172 follow-up)
+    and register one with sensible defaults pre-filled, instead of
+    starting `[C]reate`'s editor from an all-blank form. Unlike the
+    welcome-banner/masthead galleries this mirrors the shape of, there's
+    nothing here to actually preview -- a door is a program, not a
+    rendered banner -- so selecting an entry shows its details (what it
+    is, and what defaults would be used) rather than what it looks like.
+
+    A door's `executable_path` genuinely does vary by node (a different
+    Python interpreter per platform/install), so this deliberately does
+    NOT register on selection alone the way the banner galleries apply
+    on confirm -- confirming here only opens the ordinary `_door_screen`
+    editor, pre-filled but still fully reviewable/editable, going
+    through the exact same validation and `create_door` call manual
+    `[C]reate` already does. The interpreter default is `sys.executable`
+    -- whatever Python is currently running NetBBS itself, almost always
+    correct for a stdlib-only door (see `examples/README.md`) -- rather
+    than a new stored "default interpreter" setting.
+
+    Declining, or backing out of the editor without saving, loops back
+    into this same gallery (`pick_item`'s `start_stable_id` re-highlights
+    the entry just looked at -- the same dogfood fix applied to the
+    banner galleries) rather than exiting, so registering more than one
+    bundled door in one visit doesn't mean re-entering `[G]allery` each
+    time."""
+    available = available_example_doors()
+    if not available:
+        await session.write_line(
+            colored(
+                "\r\nNo bundled example doors found on this filesystem -- this needs a source "
+                "checkout (examples/doors/), not a wheel install. See examples/README.md.",
+                fg_color=MUTED_COLOR,
+            )
+        )
+        return
+
+    last_stable_id: int | None = None
+    while True:
+        selection = await pick_item(
+            session,
+            list(enumerate(available, start=1)),
+            name_of=lambda pair: pair[1][0].name,
+            stable_id_of=lambda pair: pair[0],
+            description_of=lambda pair: pair[1][0].description,
+            title="Example door gallery",
+            empty_message="No bundled example doors found on this filesystem.",
+            description_level=description_level,
+            redraw_in_place=redraw_in_place,
+            unicode_style=unicode_style,
+            collapsed=collapsed,
+            start_stable_id=last_stable_id,
+        )
+        if selection is None:
+            return
+        last_stable_id = selection[0]
+        entry, path = selection[1]
+
+        await session.write_line(colored(f"\r\n{entry.name}", fg_color=MUTED_COLOR, bold=True))
+        await session.write_line(colored(entry.description, fg_color=MUTED_COLOR))
+        await session.write_line(colored(f"  Suggested min level: {entry.suggested_min_play_level}", fg_color=MUTED_COLOR))
+        await session.write_line(colored(f"  Interpreter (default, editable next): {sys.executable}", fg_color=MUTED_COLOR))
+        await session.write_line(colored(f"  Script: {path}", fg_color=MUTED_COLOR))
+
+        if not await prompt_yes_no(session, f"\r\nRegister {entry.name!r} with these defaults now?", default=False):
+            await session.write_line(colored("Not registered.", fg_color=MUTED_COLOR))
+            continue
+
+        prefill = {
+            "name": entry.name, "description": entry.description,
+            # `.as_posix()`, not `str(path)`: the args field is parsed
+            # with `shlex.split` in POSIX mode (see `_door_field_specs`'
+            # own docstring -- deliberately, for the same never-a-shell
+            # safety reasoning as everywhere else args reach a
+            # subprocess argv list), which treats a bare backslash as an
+            # escape character and silently eats it -- a raw Windows
+            # path (`C:\Users\...`) round-trips through that as mangled
+            # garbage (`C:Users...`). Forward slashes are unaffected by
+            # that escaping and are accepted as path separators on every
+            # platform NetBBS runs on, Windows included.
+            "executable_path": sys.executable, "args_line": path.as_posix(),
+            "min_play_level": entry.suggested_min_play_level,
+        }
+        await _door_screen(session, lane, actor, prefill=prefill)
 
 
 async def _list_doors_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
@@ -7762,6 +7885,7 @@ async def _channel_restrictions_screen(session: Session, lane: DatabaseLane, act
         reason = f" -- {sanitize_text(r.reason)}" if r.reason else ""
         return f"{expiry} ({by}){reason}"
 
+    last_stable_id: int | None = None
     while True:
         restrictions, usernames, display_format, display_timezone = await lane.run(_load)
 
@@ -7777,9 +7901,11 @@ async def _channel_restrictions_screen(session: Session, lane: DatabaseLane, act
             collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
             accent_color=await lane.run(effective_accent_color_256),
             header_color=await lane.run(effective_header_color_256),
+            start_stable_id=last_stable_id,
         )
         if selected is None:
             return
+        last_stable_id = selected.id
 
         target_label = usernames[selected.user_id]
         if not await prompt_yes_no(session, f"Lift this {selected.kind} on {target_label!r}?", default=False):
