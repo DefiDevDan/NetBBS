@@ -169,6 +169,61 @@ def test_screen_title_cuts_cjk_text_at_a_display_column_boundary():
     assert title_line == text[:5]  # 5 CJK chars = exactly 10 columns
 
 
+# -- node-name gradient (GitHub issue #175) ----------------------------
+
+
+def test_screen_title_node_name_gradient_is_a_no_op_by_default():
+    """`node_name_gradient=None` (the default) must render byte-for-byte
+    as before this parameter existed -- pinned against a few of the
+    scenarios already covered above."""
+    for kwargs in (
+        {"breadcrumb": ("NetBBS", "System"), "width": 80},
+        {"breadcrumb": ("NetBBS", "System"), "width": 80, "unicode_style": True},
+        {"breadcrumb": (), "width": 80},
+    ):
+        with_default_arg = screen_title("Trust policy", **kwargs)
+        without_the_arg = screen_title("Trust policy", node_name_gradient=None, **kwargs)
+        assert with_default_arg == without_the_arg
+
+
+def test_screen_title_node_name_gradient_colors_the_first_breadcrumb_segment_plain_style():
+    from netbbs.rendering.gradient import gradient_text
+
+    result = screen_title("Trust policy", breadcrumb=("NetBBS", "System"), width=80, node_name_gradient="rainbow")
+    expected_node_name = gradient_text("NetBBS", "rainbow", bold=True, truecolor=False)
+    assert expected_node_name in result
+    assert visible(result).split("\r\n")[0] == "NetBBS / System / Trust policy"
+
+
+def test_screen_title_node_name_gradient_colors_the_first_breadcrumb_segment_unicode_style():
+    from netbbs.rendering.gradient import gradient_text
+
+    result = screen_title(
+        "Trust policy", breadcrumb=("NetBBS", "System"), width=80, unicode_style=True, node_name_gradient="gold",
+    )
+    expected_node_name = gradient_text("NetBBS", "gold", truecolor=False)
+    assert expected_node_name in result
+    assert visible(result).split("\r\n")[0] == "NetBBS › System › Trust policy"
+
+
+def test_screen_title_node_name_gradient_has_no_effect_with_a_single_segment():
+    """`breadcrumb=()` leaves nothing but `title` itself -- there is no
+    separate node-name segment to color, so the gradient is a no-op."""
+    plain = screen_title("Home", breadcrumb=(), width=80)
+    gradiented = screen_title("Home", breadcrumb=(), width=80, node_name_gradient="rainbow")
+    assert plain == gradiented
+
+
+def test_screen_title_node_name_gradient_has_no_effect_when_collapsed():
+    """The collapsed/too-narrow form shows only the current-location
+    segment, not the node name -- nothing for the gradient to color."""
+    plain = screen_title("Trust policy", breadcrumb=("NetBBS", "System"), width=80, collapsed=True)
+    gradiented = screen_title(
+        "Trust policy", breadcrumb=("NetBBS", "System"), width=80, collapsed=True, node_name_gradient="rainbow",
+    )
+    assert plain == gradiented
+
+
 def test_menu_grid_uses_two_columns_at_classic_width():
     result = visible(menu_grid([
         ("Explore", [menu_key("C", "ommunities"), menu_key("F", "ind")]),

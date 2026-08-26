@@ -263,7 +263,7 @@ async def edit_resource_draft(
             "\r\n" + screen_title(
                 title,
             breadcrumb=(session.node_display_name,), subtitle=subtitle, width=session.terminal_width, clear=redraw_in_place,
-                unicode_style=unicode_style, collapsed=collapsed, header_color=header_color)
+                unicode_style=unicode_style, collapsed=collapsed, header_color=header_color, node_name_gradient=session.node_name_gradient)
         )
         preamble_text = preamble(draft) if callable(preamble) else preamble
         if preamble_text:

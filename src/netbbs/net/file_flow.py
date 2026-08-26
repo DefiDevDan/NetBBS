@@ -530,7 +530,7 @@ async def _show_area(
         heading = screen_title(
             area_name, breadcrumb=(session.node_display_name, "Files"), width=session.terminal_width, clear=redraw_in_place,
             unicode_style=unicode_style, collapsed=collapsed, header_color=header_color,
-        )
+        node_name_gradient=session.node_name_gradient)
         await session.write_line(f"\r\n{heading}")
         state = empty_state(
             "This file area has no files yet",
@@ -629,7 +629,7 @@ async def _browse_remote_files(
             width=session.terminal_width,
             clear=redraw_in_place,
             unicode_style=unicode_style, collapsed=collapsed, header_color=header_color,
-        )
+        node_name_gradient=session.node_name_gradient)
         await session.write_line(f"\r\n{heading}")
         state = empty_state(
             "This file area has no remote catalogue entries",
@@ -738,7 +738,7 @@ async def _fetch_remote_file(
         clear=redraw_in_place,
         unicode_style=unicode_style, collapsed=collapsed,
         header_color=await lane.run(effective_header_color_256),
-    )
+    node_name_gradient=session.node_name_gradient)
     await session.write_line(f"\r\n{heading}")
     transfer = None
     try:
@@ -807,7 +807,7 @@ async def _render_file_page(
         clear=redraw_in_place,
         unicode_style=unicode_style, collapsed=collapsed,
         header_color=await lane.run(effective_header_color_256),
-    )
+    node_name_gradient=session.node_name_gradient)
     await session.write_line(f"\r\n{header}")
     display_format, display_timezone = await lane.run(resolve_display_preferences)
     accent = await lane.run(effective_accent_color_256)
@@ -846,7 +846,7 @@ async def _handle_upload(session: Session, lane: DatabaseLane, area: FileArea, u
         unicode_style=await lane.run(unicode_style_enabled, user),
         collapsed=await lane.run(breadcrumb_collapsed_enabled, user),
         header_color=await lane.run(effective_header_color_256),
-    )
+    node_name_gradient=session.node_name_gradient)
     await session.write_line(f"\r\n{heading}")
     await session.write_line("Start your terminal's Zmodem send (sz) now. Waiting for the transfer to begin...")
     temp_path = await lane.run(new_incoming_temp_path)
@@ -903,7 +903,7 @@ async def _handle_download(session: Session, lane: DatabaseLane, area: FileArea,
         unicode_style=await lane.run(unicode_style_enabled, user),
         collapsed=await lane.run(breadcrumb_collapsed_enabled, user),
         header_color=await lane.run(effective_header_color_256),
-    )
+    node_name_gradient=session.node_name_gradient)
     await session.write_line(f"\r\n{heading}")
     await session.write_line(f"Starting Zmodem send of {entry_filename!r} — accept the transfer in your terminal.")
     try:

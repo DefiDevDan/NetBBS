@@ -4065,15 +4065,21 @@ def test_node_name_option_appears_in_the_system_submenu(db, lane, sysop):
 
 
 def test_node_name_screen_shows_the_current_name(db, lane, sysop):
-    session = FakeSession(["s", "a", "", "b", "b"])
+    session = FakeSession(["s", "a", "b", "b", "b"])
     _run(session, lane, sysop)
-    assert "Node name: 'NetBBS'" in _written_text(session)
+    assert "Name: 'NetBBS'" in _written_text(session)
+
+
+def test_node_name_screen_shows_solid_by_default(db, lane, sysop):
+    session = FakeSession(["s", "a", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "solid (no gradient)" in _written_text(session)
 
 
 def test_node_name_blank_entry_leaves_it_unchanged(db, lane, sysop):
     from netbbs.config import get_node_display_name
 
-    session = FakeSession(["s", "a", "", "b", "b"])
+    session = FakeSession(["s", "a", "n", "", "b", "b", "b"])
     _run(session, lane, sysop)
     assert "No change." in _written_text(session)
     assert get_node_display_name(db) == "NetBBS"
@@ -4082,7 +4088,7 @@ def test_node_name_blank_entry_leaves_it_unchanged(db, lane, sysop):
 def test_node_name_setting_a_new_name_persists_it(db, lane, sysop):
     from netbbs.config import get_node_display_name
 
-    session = FakeSession(["s", "a", "My Cool BBS", "b", "b"])
+    session = FakeSession(["s", "a", "n", "My Cool BBS", "b", "b", "b"])
     _run(session, lane, sysop)
     assert "Node name set to 'My Cool BBS'." in _written_text(session)
     assert get_node_display_name(db) == "My Cool BBS"
@@ -4092,7 +4098,7 @@ def test_node_name_rejects_a_name_over_the_length_limit(db, lane, sysop):
     from netbbs.config import MAX_NODE_DISPLAY_NAME_LENGTH, get_node_display_name
 
     too_long = "x" * (MAX_NODE_DISPLAY_NAME_LENGTH + 1)
-    session = FakeSession(["s", "a", too_long, "b", "b"])
+    session = FakeSession(["s", "a", "n", too_long, "b", "b", "b"])
     _run(session, lane, sysop)
     text = _written_text(session)
     assert "cannot exceed" in text
@@ -4100,7 +4106,7 @@ def test_node_name_rejects_a_name_over_the_length_limit(db, lane, sysop):
 
 
 def test_node_name_change_is_audit_logged(db, lane, sysop):
-    session = FakeSession(["s", "a", "My Cool BBS", "b", "b"])
+    session = FakeSession(["s", "a", "n", "My Cool BBS", "b", "b", "b"])
     _run(session, lane, sysop)
 
     rows = db.connection.execute(
@@ -4109,6 +4115,83 @@ def test_node_name_change_is_audit_logged(db, lane, sysop):
     assert len(rows) == 1
     assert rows[0]["actor_user_id"] == sysop.id
     assert "My Cool BBS" in rows[0]["detail"]
+
+
+def test_node_name_menu_invalid_key_is_rejected(db, lane, sysop):
+    session = FakeSession(["s", "a", "z", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "\b \b\a" in session.written
+
+
+def test_node_name_gradient_option_appears_in_the_node_name_menu(db, lane, sysop):
+    session = FakeSession(["s", "a", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "radient" in _written_text(session)
+
+
+def test_node_name_gradient_lists_every_preset(db, lane, sysop):
+    from netbbs.rendering.gradient import GRADIENTS
+
+    session = FakeSession(["s", "a", "g", "", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "solid" in text
+    for name in GRADIENTS:
+        assert name in text
+
+
+def test_node_name_gradient_can_be_set_and_persists(db, lane, sysop):
+    from netbbs.net.node_theme import node_name_gradient_override
+    from netbbs.rendering.gradient import GRADIENTS
+
+    index = 1 + sorted(GRADIENTS).index("rainbow")
+    session = FakeSession(["s", "a", "g", str(index), "y", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Node name gradient set to 'rainbow'." in _written_text(session)
+    assert node_name_gradient_override(db) == "rainbow"
+
+
+def test_node_name_gradient_can_be_cleared_back_to_solid(db, lane, sysop):
+    from netbbs.net.node_theme import node_name_gradient_override, set_node_name_gradient_override
+
+    set_node_name_gradient_override(db, "gold")
+    session = FakeSession(["s", "a", "g", "0", "y", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Node name gradient set to 'solid'." in _written_text(session)
+    assert node_name_gradient_override(db) is None
+
+
+def test_node_name_gradient_declining_confirmation_makes_no_change(db, lane, sysop):
+    from netbbs.rendering.gradient import GRADIENTS
+
+    from netbbs.net.node_theme import node_name_gradient_override
+
+    index = 1 + sorted(GRADIENTS).index("red")
+    session = FakeSession(["s", "a", "g", str(index), "n", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Not applied." in _written_text(session)
+    assert node_name_gradient_override(db) is None
+
+
+def test_node_name_gradient_invalid_choice_makes_no_change(db, lane, sysop):
+    session = FakeSession(["s", "a", "g", "99", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Not a valid choice" in _written_text(session)
+
+
+def test_node_name_gradient_change_is_audit_logged(db, lane, sysop):
+    from netbbs.rendering.gradient import GRADIENTS
+
+    index = 1 + sorted(GRADIENTS).index("blue")
+    session = FakeSession(["s", "a", "g", str(index), "y", "b", "b", "b"])
+    _run(session, lane, sysop)
+
+    rows = db.connection.execute(
+        "SELECT actor_user_id, detail FROM moderation_log WHERE action = 'set_node_name_gradient'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["actor_user_id"] == sysop.id
+    assert "blue" in rows[0]["detail"]
 
 
 def test_theme_colors_menu_shows_default_status_for_all_three_slots(db, lane, sysop):

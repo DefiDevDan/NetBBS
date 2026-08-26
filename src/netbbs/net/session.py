@@ -121,6 +121,19 @@ class Session(ABC):
     #: `run_authenticated_session`) still sees.
     node_display_name: str = "NetBBS"
 
+    #: Preset gradient name (`netbbs.rendering.gradient.GRADIENTS`) to
+    #: recolor `node_display_name` with wherever it's shown as a
+    #: breadcrumb segment, or `None` for a flat `header_color` (GitHub
+    #: issue #175). Same resolve-once-at-login lifecycle as
+    #: `node_display_name` itself -- `netbbs.net.login_flow.
+    #: run_authenticated_session` sets both from `netbbs.net.node_theme.
+    #: effective_node_name_gradient` in the same place, right after
+    #: `db` first becomes available. The class-level default (`None`)
+    #: is what every screen rendered before login, or by a test/direct
+    #: call site that never reaches `run_authenticated_session`, still
+    #: sees -- and renders byte-for-byte as before this field existed.
+    node_name_gradient: str | None = None
+
     #: Best-known remote address (host only, no port) for this
     #: connection, or `None` if a transport genuinely has no such
     #: concept. Used for per-source login throttling (see

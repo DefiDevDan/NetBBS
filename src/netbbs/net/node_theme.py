@@ -41,11 +41,13 @@ from __future__ import annotations
 from netbbs.config import get_config, set_config
 from netbbs.net.session import Session
 from netbbs.rendering import ACCENT_COLOR, CLOCK_COLOR, HEADER_COLOR, nearest_256
+from netbbs.rendering.gradient import GRADIENTS
 from netbbs.storage.database import Database
 
 _ACCENT_CONFIG_KEY = "theme_accent_rgb"
 _HEADER_CONFIG_KEY = "theme_header_rgb"
 _CLOCK_CONFIG_KEY = "theme_clock_rgb"
+_NODE_NAME_GRADIENT_CONFIG_KEY = "node_name_gradient"
 
 
 def _parse_rgb(value: str | None) -> tuple[int, int, int] | None:
@@ -169,3 +171,54 @@ def effective_clock_color_256(db: Database) -> int:
     it via `lane.run`, matching the accent/header wiring's own shape."""
     override = clock_color_override(db)
     return CLOCK_COLOR if override is None else nearest_256(override)
+
+
+# -- node-name gradient (GitHub issue #175) ----------------------------
+#
+# Deliberately not one of the three RGB "branding color" slots above --
+# this doesn't override any single semantic color, it recolors one
+# specific piece of text (the node name breadcrumb segment,
+# `netbbs.net.session.Session.node_display_name`) with a per-character
+# gradient the same way `netbbs.net.welcome_banner`'s wordmark already
+# gets one. A preset name only for now (`netbbs.rendering.gradient.
+# GRADIENTS`'s own keys), not a custom multi-stop RGB list -- issue
+# #175's own suggested shape, kept simple until a real request for
+# custom stops shows up.
+#
+# Resolved once per session, alongside `node_display_name` itself, in
+# `netbbs.net.login_flow.run_authenticated_session` -- not re-fetched
+# per screen via `lane.run` the way the three RGB slots above are.
+# Those need a fresh per-screen `db` lookup because their own SysOp
+# preview flow (`_set_theme_color_screen`) predates `node_display_name`
+# ever being cached on `Session` at all; `node_display_name` itself
+# established the "cache once at login, a SysOp's change takes effect
+# for new connections, not sessions already in progress" trade-off
+# first (`netbbs.config`'s own docstring on that field) and the
+# gradient preference shares that exact value's lifecycle, so it
+# follows that precedent instead of re-deriving the older one.
+
+
+def node_name_gradient_override(db: Database) -> str | None:
+    """`None` means no override -- the node name renders as plain
+    `header_color`, unchanged from before this feature existed."""
+    value = get_config(db, _NODE_NAME_GRADIENT_CONFIG_KEY)
+    return value or None
+
+
+def set_node_name_gradient_override(db: Database, gradient: str | None) -> None:
+    """`gradient=None` clears the override, reverting to a flat node
+    name. Otherwise must be one of `netbbs.rendering.gradient.
+    GRADIENTS`'s own preset names."""
+    if gradient is not None and gradient not in GRADIENTS:
+        raise ValueError(f"unknown gradient {gradient!r}, expected one of {sorted(GRADIENTS)} or None")
+    set_config(db, _NODE_NAME_GRADIENT_CONFIG_KEY, gradient or "")
+
+
+def effective_node_name_gradient(db: Database) -> str | None:
+    """The gradient preset every `screen_title(node_name_gradient=...)`
+    call site should thread through -- the SysOp's override if set,
+    `None` (flat `header_color`, today's behavior) otherwise. Always
+    resolved once and cached on `Session.node_name_gradient`, not
+    looked up fresh per screen -- see this module's own section
+    docstring above."""
+    return node_name_gradient_override(db)

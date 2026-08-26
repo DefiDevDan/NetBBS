@@ -17,7 +17,7 @@ underlying wrapper swap).
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Callable, Sequence
 
 from netbbs.rendering.ansi import colored
 from netbbs.rendering.width import cut_to_width, display_width, truncate_to_width, wrap_to_width
@@ -62,8 +62,17 @@ def truncate(text: str, width: int, *, ellipsis: str = "...") -> str:
     return truncate_to_width(text, width, ellipsis=ellipsis)
 
 
+_SegmentColor = int | tuple[int, int, int] | None | Callable[[str], str]
+
+
+def _render_segment(text: str, color: _SegmentColor) -> str:
+    if callable(color):
+        return color(text)
+    return colored(text, fg_color=color)
+
+
 def colored_truncate(
-    segments: Sequence[tuple[str, int | tuple[int, int, int] | None]], width: int, *, ellipsis: str = "..."
+    segments: Sequence[tuple[str, _SegmentColor]], width: int, *, ellipsis: str = "..."
 ) -> str:
     """
     Like `truncate`, but for a line built from several differently-
@@ -72,6 +81,16 @@ def colored_truncate(
     node-wide accent-color override) -- coloring each segment only
     *after* the truncation budget is decided against the plain,
     unescaped text.
+
+    `fg_color` also accepts an arbitrary `Callable[[str], str]` instead
+    of a plain color (issue #175's node-name gradient breadcrumb
+    segment) -- the already-width-budgeted plain text for that segment
+    is handed to the callable, which renders it however it likes (e.g.
+    `netbbs.rendering.gradient.gradient_text`) instead of a single flat
+    `colored()` span. Everything about the truncation budget itself is
+    computed from the plain, unstyled text either way, so a gradiented
+    segment truncates at the same real column boundary a solid-colored
+    one would.
 
     Coloring first and truncating the ANSI-escaped result the way
     `truncate()` alone would is unsafe: SGR escape sequences count
@@ -93,7 +112,7 @@ def colored_truncate(
 
     plain = "".join(text for text, _ in segments)
     if display_width(plain) <= width:
-        return "".join(colored(text, fg_color=color) for text, color in segments if text)
+        return "".join(_render_segment(text, color) for text, color in segments if text)
     ellipsis_width = display_width(ellipsis)
     if width <= ellipsis_width:
         return cut_to_width(ellipsis, width)
@@ -105,7 +124,7 @@ def colored_truncate(
             break
         piece = cut_to_width(text, budget)
         if piece:
-            rendered.append(colored(piece, fg_color=color))
+            rendered.append(_render_segment(piece, color))
         budget -= display_width(piece)
     rendered.append(ellipsis)
     return "".join(rendered)

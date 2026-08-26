@@ -3229,7 +3229,7 @@ async def _chat_loop(
             clear=await lane.run(redraw_in_place_enabled, user),
             unicode_style=unicode_style, collapsed=collapsed,
             header_color=await lane.run(effective_header_color_256),
-        )
+        node_name_gradient=session.node_name_gradient)
         await session.write_line(f"\r\n{heading}")
 
         scrollback = await lane.run(get_scrollback, channel)
@@ -4064,7 +4064,7 @@ async def run_direct_chat_loop(
             clear=redraw_in_place,
             unicode_style=unicode_style, collapsed=collapsed,
             header_color=header_color,
-        )
+        node_name_gradient=session.node_name_gradient)
         await session.write_line(f"\r\n{heading}")
         await session.write_line(f"Type {close_hint}.")
         if pinned_ui_enabled:
@@ -4265,7 +4265,7 @@ async def run_direct_chat_invite_flow(
         unicode_style=await lane.run(unicode_style_enabled, user),
         collapsed=await lane.run(breadcrumb_collapsed_enabled, user),
         header_color=await lane.run(effective_header_color_256),
-    )
+    node_name_gradient=session.node_name_gradient)
     await session.write_line(f"\r\n{heading}")
     await session.write(f"{menu_key('C', 'ancel')}: ")
 

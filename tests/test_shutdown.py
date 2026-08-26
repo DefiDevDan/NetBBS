@@ -39,6 +39,11 @@ class _FakeSession:
     # broadcast_to_all reads this directly, and neither fake here is a
     # real Session subclass to inherit it from.
     pinned_notice_hook = None
+    # Matches Session.node_name_gradient's own class-level default, same
+    # reasoning -- read directly by screen_title()'s pre-login callers
+    # (breadcrumb=() notices included) even though it has no visible
+    # effect there.
+    node_name_gradient: str | None = None
 
     def __init__(self):
         self.written: list[str] = []
@@ -1094,6 +1099,7 @@ class _ScriptedLoginSession:
         self.written = []
         self.terminal_width = 80
         self.node_display_name = "NetBBS"
+        self.node_name_gradient = None
         self.terminal_height = 24
         self.peer_address = "203.0.113.5"
         self.supports_truecolor = False

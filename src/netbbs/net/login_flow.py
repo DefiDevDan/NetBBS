@@ -161,6 +161,7 @@ from netbbs.net.node_theme import (
     effective_clock_color_256,
     effective_header_color,
     effective_header_color_256,
+    effective_node_name_gradient,
 )
 from netbbs.net.menu_description_preference import menu_description_level, set_menu_description_level
 from netbbs.net.redraw_preference import redraw_in_place_enabled, set_redraw_in_place_enabled
@@ -302,7 +303,18 @@ async def _write_connection_notice(
     (`test_shutdown.py`) to never dereference `db` at all, so a
     maintenance rejection still works cleanly even if the db connection
     itself is the thing in a bad state. `None` falls back to the bare
-    `theme.HEADER_COLOR` constant instead of resolving an override."""
+    `theme.HEADER_COLOR` constant instead of resolving an override.
+
+    No `node_name_gradient=` either: `breadcrumb=()` means `screen_title`
+    has no separate node-name segment to color here regardless (its own
+    `len(segments) > 1` guard), so passing one through would be dead
+    weight -- and doing so unconditionally would mean an unguarded
+    `session.node_name_gradient` attribute access, unlike `width` just
+    above, which already tolerates a minimal test double via `getattr`
+    rather than assuming every field every real `Session` subclass
+    carries. Some of this function's own real pre-login/minimal test
+    callers (`test_shutdown.py`'s connection-notice fakes in particular)
+    predate this field and aren't guaranteed to carry it."""
     width = getattr(session, "terminal_width", 80)
     header_color = effective_header_color_256(db) if db is not None else HEADER_COLOR
     await session.write_line(
@@ -634,7 +646,7 @@ async def _confirm_unicode_style(session: Session, db: Database, user: User) -> 
         screen_title(
             "Example", breadcrumb=(session.node_display_name, "System"), width=session.terminal_width,
             unicode_style=True, header_color=effective_header_color_256(db),
-        ).split("\r\n")[0]
+        node_name_gradient=session.node_name_gradient).split("\r\n")[0]
     )
     switch_off = await prompt_yes_no(
         session, "Does that look garbled or wrong? Switch to plain ASCII instead?", default=False
@@ -699,8 +711,13 @@ async def run_authenticated_session(
     # node_display_name's own docstring): the same value for every
     # caller on the node, so a session-lifetime cache is enough -- a
     # SysOp renaming the node takes effect for new connections, not
-    # this one already in progress.
+    # this one already in progress. `node_name_gradient` (issue #175)
+    # shares this exact same lifecycle -- resolved alongside the name
+    # it recolors, not looked up fresh per screen the way the node's
+    # other branding colors are (see `netbbs.net.node_theme`'s own
+    # node-name-gradient section docstring for why).
     session.node_display_name = get_node_display_name(db)
+    session.node_name_gradient = effective_node_name_gradient(db)
 
     if (
         node_controls is not None
@@ -1248,7 +1265,7 @@ async def _draw_main_menu(
         # clear is issued by hand below instead in that case (issue #161).
         clear=False if masthead else redraw,
         unicode_style=unicode_style, collapsed=collapsed,
-        header_color=effective_header_color(session, db))
+        header_color=effective_header_color(session, db), node_name_gradient=session.node_name_gradient)
     options = menu_grid(
         [("Explore", explore_options), ("You", personal_options), ("System", system_options)],
         width=session.terminal_width,
@@ -1892,7 +1909,7 @@ async def _find_screen(
             width=session.terminal_width,
             clear=redraw_in_place_enabled(db, user),
             unicode_style=unicode_style_enabled(db, user), collapsed=breadcrumb_collapsed_enabled(db, user),
-            header_color=effective_header_color_256(db))
+            header_color=effective_header_color_256(db), node_name_gradient=session.node_name_gradient)
     )
     await session.write("Search terms (Enter cancels): ")
     query = (await session.read_line()).strip()
@@ -2471,7 +2488,7 @@ async def _resource_type_menu(
             clear=redraw_in_place,
             unicode_style=unicode_style, collapsed=collapsed,
             header_color=effective_header_color_256(db),
-        )
+        node_name_gradient=session.node_name_gradient)
         await session.write_line(f"\r\n{heading}")
         await session.write_line(
             f"\r\n{_menu_row(option_list, width=session.terminal_width, height=session.terminal_height, description_level=description_level)}"
@@ -3177,7 +3194,7 @@ async def _show_board(
         # same explicit choice before composing anything.
         header_color = effective_header_color_256(db)
         await session.write_line(
-            f"\r\n{screen_title(board_name, breadcrumb=(session.node_display_name, 'Message boards'), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color)}"
+            f"\r\n{screen_title(board_name, breadcrumb=(session.node_display_name, 'Message boards'), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color, node_name_gradient=session.node_name_gradient)}"
         )
         await session.write_line(
             f"\r\n{empty_state('This message board has no posts yet', detail='It is ready for its first conversation.', width=session.terminal_width, header_color=header_color)}"
@@ -3474,7 +3491,7 @@ async def _render_post_page(
         clear=redraw_in_place,
         unicode_style=unicode_style, collapsed=collapsed,
         header_color=effective_header_color(session, db),
-    )
+    node_name_gradient=session.node_name_gradient)
     await session.write_line(f"\r\n{header}")
     accent = effective_accent_color(session, db)
     for position, post in enumerate(page.posts, start=1):
@@ -3591,7 +3608,7 @@ async def _show_vcard(session: Session, db: Database, target: User, requesting_u
             unicode_style=unicode_style_enabled(db, requesting_user),
             collapsed=breadcrumb_collapsed_enabled(db, requesting_user),
             header_color=effective_header_color(session, db),
-        )
+        node_name_gradient=session.node_name_gradient)
     )
     await session.write_line(
         colored("Member since: ", fg_color=LABEL_COLOR)
@@ -3773,7 +3790,7 @@ async def _caller_who_screen(
             unicode_style=unicode_style_enabled(db, user),
             collapsed=breadcrumb_collapsed_enabled(db, user),
             header_color=effective_header_color(session, db),
-        )
+        node_name_gradient=session.node_name_gradient)
     )
     options = [MenuEntry(label=menu_key("M", "essage"), brief="Send a one-off message")]
     if offer_invite:
@@ -3900,7 +3917,7 @@ async def _last_sessions_screen(session: Session, db: Database, user: User) -> N
             unicode_style=unicode_style_enabled(db, user),
             collapsed=breadcrumb_collapsed_enabled(db, user),
             header_color=effective_header_color(session, db),
-        )
+        node_name_gradient=session.node_name_gradient)
     )
     if not entries:
         await session.write_line(colored("No session history yet.", fg_color=MUTED_COLOR))

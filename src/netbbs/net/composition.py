@@ -392,7 +392,7 @@ async def review_composition(
             clear=redraw_in_place,
             unicode_style=unicode_style, collapsed=collapsed,
             header_color=header_color,
-        )
+        node_name_gradient=session.node_name_gradient)
         await session.write_line(f"\r\n{heading}")
         if recipient is not None:
             await session.write_line(

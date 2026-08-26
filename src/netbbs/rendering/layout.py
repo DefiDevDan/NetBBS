@@ -10,8 +10,10 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Callable
 
 from netbbs.rendering.ansi import clear_screen, colored
+from netbbs.rendering.gradient import gradient_text
 from netbbs.rendering.reflow import colored_truncate
 from netbbs.rendering.theme import (
     ACCENT_COLOR,
@@ -207,6 +209,18 @@ def action_bar(options: Sequence[str], *, width: int = 80) -> str:
     return "\r\n".join(lines)
 
 
+def _node_name_renderer(gradient: str, *, bold: bool) -> Callable[[str], str]:
+    """A `colored_truncate` segment renderer that applies `gradient` to
+    its already-width-budgeted text -- factored out so `screen_title`'s
+    two branches that color the node-name segment (issue #175) don't
+    each hand-roll their own closure."""
+
+    def _render(text: str) -> str:
+        return gradient_text(text, gradient, bold=bold, truecolor=False)
+
+    return _render
+
+
 def screen_title(
     title: str,
     *,
@@ -217,6 +231,7 @@ def screen_title(
     unicode_style: bool = False,
     collapsed: bool = False,
     header_color: int | tuple[int, int, int] = HEADER_COLOR,
+    node_name_gradient: str | None = None,
 ) -> str:
     """Render a compact location/title block with a divider.
 
@@ -278,6 +293,22 @@ def screen_title(
     breadcrumb *would* fit -- a caller who just doesn't want the
     ancestor noise. `False` by default, same "safe local default"
     reasoning as `unicode_style` above.
+
+    `node_name_gradient` (GitHub issue #175, a preset name from
+    `netbbs.rendering.gradient.GRADIENTS`, resolved once by the caller
+    via `session.node_name_gradient` -- see that field's own docstring)
+    recolors `breadcrumb[0]` -- always the node name by this module's
+    own established convention, every real call site's first breadcrumb
+    element -- with `gradient_text`'s per-character gradient instead of
+    a flat color, the same flair the welcome banner's own wordmark
+    already gets. Only applies when there's a genuine separate node-name
+    segment to color (`len(segments) > 1`; the rare `breadcrumb=()` shape
+    leaves nothing but `title` itself, which stays plain). Always
+    rendered at 256-color depth (`gradient_text(..., truecolor=False)`),
+    matching `header_color`'s own `effective_header_color_256` "no
+    `Session` in scope, one depth for the whole screen" reasoning --
+    this stays a pure rendering function with no session/db access of
+    its own. `None` by default, rendering exactly as before.
     """
     if width < 1:
         raise ValueError("width must be >= 1")
@@ -289,15 +320,34 @@ def screen_title(
         location_line = colored(cut_to_width(segments[-1], width), fg_color=header_color, bold=True)
     elif unicode_style and len(segments) > 1:
         divider_basis = plain_location
-        colored_segments: list[tuple[str, int | tuple[int, int, int] | None]] = []
-        for segment in segments[:-1]:
-            colored_segments.append((segment, METADATA_COLOR))
+        colored_segments: list[tuple[str, int | tuple[int, int, int] | None | Callable[[str], str]]] = []
+        for i, segment in enumerate(segments[:-1]):
+            is_node_name = i == 0 and node_name_gradient is not None
+            color: int | tuple[int, int, int] | None | Callable[[str], str] = (
+                _node_name_renderer(node_name_gradient, bold=False) if is_node_name else METADATA_COLOR
+            )
+            colored_segments.append((segment, color))
             colored_segments.append((" › ", METADATA_COLOR))
         colored_segments.append((segments[-1], header_color))
         location_line = colored_truncate(colored_segments, width, ellipsis="")
     else:
         divider_basis = plain_location
-        location_line = colored(cut_to_width(plain_location, width), fg_color=header_color, bold=True)
+        if node_name_gradient and len(segments) > 1:
+            node_name = segments[0]
+
+            def _rest_renderer(text: str) -> str:
+                return colored(text, fg_color=header_color, bold=True)
+
+            location_line = colored_truncate(
+                [
+                    (node_name, _node_name_renderer(node_name_gradient, bold=True)),
+                    (plain_location[len(node_name) :], _rest_renderer),
+                ],
+                width,
+                ellipsis="",
+            )
+        else:
+            location_line = colored(cut_to_width(plain_location, width), fg_color=header_color, bold=True)
     lines = [location_line]
     divider_basis_width = display_width(divider_basis)
     if subtitle:

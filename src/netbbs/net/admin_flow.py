@@ -267,9 +267,11 @@ from netbbs.net.node_theme import (
     effective_accent_color_256,
     effective_header_color_256,
     header_color_override,
+    node_name_gradient_override,
     set_accent_color_override,
     set_clock_color_override,
     set_header_color_override,
+    set_node_name_gradient_override,
 )
 from netbbs.net.unicode_style_preference import unicode_style_enabled
 from netbbs.operational_history import list_operational_run_history
@@ -330,10 +332,12 @@ from netbbs.rendering import (
     colored_truncate,
     counts_row,
     cut_to_width,
+    GRADIENTS,
     decode_ansi_bytes,
     double_frame,
     empty_state,
     field_row,
+    gradient_text,
     menu_grid,
     menu_key,
     nearest_256,
@@ -535,7 +539,7 @@ async def _draw_admin_menu(
             clear=state["redraw_in_place"],
             unicode_style=unicode_style, collapsed=collapsed,
             header_color=state["header_color"],
-        )
+        node_name_gradient=session.node_name_gradient)
     )
 
     node_badge = status_badge(
@@ -735,7 +739,7 @@ async def _users_menu(
 
 async def _draw_users_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool, collapsed: bool, header_color: int | tuple[int, int, int] = HEADER_COLOR) -> None:
     await session.write_line("\r\n" + screen_title("Users",
-            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color))
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color, node_name_gradient=session.node_name_gradient))
     await session.write_line(
         _menu_row(
             [
@@ -782,7 +786,7 @@ async def _operations_menu(
                 clear=redraw_in_place,
                 unicode_style=unicode_style, collapsed=collapsed,
                 header_color=header_color,
-            )
+            node_name_gradient=session.node_name_gradient)
         )
         options = [
             MenuEntry(label=menu_key("K", "up status", prefix="Bac"), brief="Last backup status and history"),
@@ -926,12 +930,12 @@ async def _draw_system_menu(
     header_color: int | tuple[int, int, int] = HEADER_COLOR,
 ) -> None:
     await session.write_line("\r\n" + screen_title("Settings",
-            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color))
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color, node_name_gradient=session.node_name_gradient))
     option_list = [
         MenuEntry(label=menu_key("W", "elcome banner"), brief="First-login greeting text"),
         MenuEntry(label=menu_key("M", "asthead"), brief="Custom art above the main menu"),
         MenuEntry(label=menu_key("C", "olors"), brief="Node-wide accent/header/clock branding"),
-        MenuEntry(label=menu_key("a", "me", prefix="Node N"), brief="The name shown in every screen's own corner"),
+        MenuEntry(label=menu_key("a", "me", prefix="Node N"), brief="The name and gradient shown in every screen's own corner"),
         MenuEntry(label=menu_key("U", "pdate"), brief="Software update settings"),
         MenuEntry(label=menu_key("T", "imestamp format"), brief="Node-wide date/time display"),
         MenuEntry(label=menu_key("P", "olicy trust"), brief="Federation trust policy"),
@@ -943,31 +947,85 @@ async def _draw_system_menu(
     await session.write("Choice: ")
 
 
-async def _node_name_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
-    """Wires up `netbbs.config.set_node_display_name` -- previously
-    reachable only by calling that function directly; nothing anywhere
-    in the running BBS actually called it (a real dogfood-caught gap:
-    the getter has driven `session.node_display_name`, shown in the
-    breadcrumb corner of every post-login screen, since that field
-    existed, but a SysOp had no way to actually set it to anything
-    other than the "NetBBS" fallback).
-
-    Deliberately just the name for now, not also a display color for it
-    -- see this screen's own git history/commit message for why that's
-    a separate, larger follow-up (threading a new parameter through
-    `screen_title`'s own ~40 call sites correctly, not a same-screen
-    add-on)."""
-    current = await lane.run(get_node_display_name)
+async def _draw_node_name_screen(
+    session: Session, lane: DatabaseLane, description_level: str, redraw_in_place: bool,
+    unicode_style: bool, collapsed: bool, header_color: int | tuple[int, int, int],
+) -> None:
+    name = await lane.run(get_node_display_name)
+    gradient = await lane.run(node_name_gradient_override)
     await session.write_line(
-        colored(f"\r\nNode name: {current!r}", fg_color=await lane.run(effective_header_color_256), bold=True)
+        "\r\n" + screen_title(
+            "Node name",
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place,
+            unicode_style=unicode_style, collapsed=collapsed, header_color=header_color,
+            node_name_gradient=session.node_name_gradient,
+        )
+    )
+    await session.write_line(colored(f"Name: {name!r}", fg_color=header_color, bold=True))
+    preview = gradient_text(name, gradient, truecolor=False) if gradient is not None else colored(name, fg_color=header_color, bold=True)
+    gradient_label = gradient if gradient is not None else "solid (no gradient)"
+    await session.write_line(
+        colored("Gradient: ", fg_color=LABEL_COLOR) + colored(gradient_label, fg_color=MUTED_COLOR) + "   " + preview
     )
     await session.write_line(
         colored(
-            f"Shown in the upper-left corner of every screen, and to any door as its own "
-            f"drop-file 'node_name' field. Up to {MAX_NODE_DISPLAY_NAME_LENGTH} characters.",
+            f"The name is shown in the upper-left corner of every screen, and to any door as its own "
+            f"drop-file 'node_name' field (always plain there, never with gradient codes). Up to "
+            f"{MAX_NODE_DISPLAY_NAME_LENGTH} characters.",
             fg_color=MUTED_COLOR,
         )
     )
+    await session.write_line(
+        "\r\n" + _menu_row(
+            [
+                MenuEntry(label=menu_key("N", "ame"), brief="Rename the node"),
+                MenuEntry(label=menu_key("G", "radient"), brief="Recolor the node name"),
+                MenuEntry(label=menu_key("B", "ack"), brief="Return to Settings"),
+            ],
+            description_level,
+            width=session.terminal_width,
+            height=session.terminal_height,
+        )
+    )
+    await session.write("Choice: ")
+
+
+async def _node_name_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    """Settings home for everything about the node's own display name:
+    the text itself (`netbbs.config.set_node_display_name`, wired up as
+    a dogfood-caught gap -- the getter drove `session.node_display_name`,
+    shown in the breadcrumb corner of every post-login screen, since
+    that field existed, but a SysOp had no way to actually set it) and,
+    as of issue #175, a per-character gradient for it
+    (`netbbs.net.node_theme.set_node_name_gradient_override`) -- the
+    same flair `netbbs.net.welcome_banner`'s own wordmark already gets.
+    Split into a menu, not a single-action screen, once there were two
+    genuinely different things to change here."""
+    description_level = await lane.run(menu_description_level, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
+    header_color = await lane.run(effective_header_color_256)
+    await _draw_node_name_screen(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+    while True:
+        choice = (await session.read_key()).lower()
+        if choice == "b":
+            await session.write_line("")
+            return
+        elif choice == "n":
+            await session.write_line("")
+            await _rename_node_screen(session, lane, actor)
+            await _draw_node_name_screen(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "g":
+            await session.write_line("")
+            await _set_node_name_gradient_screen(session, lane, actor, header_color)
+            await _draw_node_name_screen(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        else:
+            await session.write(reject_unhandled_key(choice))
+
+
+async def _rename_node_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    current = await lane.run(get_node_display_name)
     await session.write(f"New name [{current}] (blank to leave unchanged): ")
     new_name = (await session.read_line()).strip()
     if not new_name:
@@ -984,6 +1042,59 @@ async def _node_name_screen(session: Session, lane: DatabaseLane, actor: User) -
         await session.write_line(colored(str(exc), fg_color=ERROR_COLOR))
         return
     await session.write_line(f"Node name set to {new_name!r}.")
+
+
+async def _set_node_name_gradient_screen(
+    session: Session, lane: DatabaseLane, actor: User, header_color: int | tuple[int, int, int]
+) -> None:
+    """Preset-only (GitHub issue #175's own deliberately narrow scope --
+    `netbbs.rendering.gradient.GRADIENTS`'s own keys, not free-form RGB
+    stop entry) -- previews the candidate against the real current node
+    name before asking for confirmation, the same "preview before
+    confirm" requirement issue #162's own RGB slots established."""
+    def _load(db: Database) -> tuple[str, str | None]:
+        return get_node_display_name(db), node_name_gradient_override(db)
+
+    name, current = await lane.run(_load)
+    choices: list[str | None] = [None, *sorted(GRADIENTS)]
+
+    await session.write_line(colored(f"\r\nGradient for {name!r}:", fg_color=header_color, bold=True))
+    for i, choice in enumerate(choices):
+        label = "solid" if choice is None else choice
+        preview = gradient_text(name, choice, truecolor=False) if choice is not None else colored(name, fg_color=header_color, bold=True)
+        marker = colored(" (current)", fg_color=MUTED_COLOR) if choice == current else ""
+        await session.write_line(colored(f"  {i}. {label:<8}", fg_color=LABEL_COLOR) + preview + marker)
+    await session.write(f"Choice (0-{len(choices) - 1}, blank to leave unchanged): ")
+
+    raw = (await session.read_line()).strip()
+    if not raw:
+        await session.write_line("No change.")
+        return
+    try:
+        index = int(raw)
+        chosen = choices[index]
+    except (ValueError, IndexError):
+        await session.write_line(colored("Not a valid choice -- no change.", fg_color=ERROR_COLOR))
+        return
+
+    if chosen == current:
+        await session.write_line("Already set to that -- no change.")
+        return
+
+    label = "solid" if chosen is None else chosen
+    preview = gradient_text(name, chosen, truecolor=False) if chosen is not None else colored(name, fg_color=header_color, bold=True)
+    await session.write_line(colored("\r\nPreview: ", fg_color=MUTED_COLOR) + preview)
+    if not await prompt_yes_no(session, f"Apply {label!r} as the node name gradient?", default=False):
+        await session.write_line("Not applied.")
+        return
+
+    def _apply(db: Database) -> None:
+        set_node_name_gradient_override(db, chosen)
+        action = "set_node_name_gradient" if chosen is not None else "clear_node_name_gradient"
+        record_action(db, actor=actor, action=action, detail=f"{current!r} -> {chosen!r}")
+
+    await lane.run(_apply)
+    await session.write_line(f"Node name gradient set to {label!r}.")
 
 
 # -- trust policy (Phase 4, issue #129) -------------------------------------
@@ -1009,7 +1120,7 @@ async def _trust_menu(session: Session, lane: DatabaseLane, actor: User) -> None
                 clear=redraw_in_place,
                 unicode_style=unicode_style, collapsed=collapsed,
                 header_color=header_color,
-            )
+            node_name_gradient=session.node_name_gradient)
         )
         options = [
             MenuEntry(label=menu_key("S", "ubjects"), brief="Trusted node/user subjects"),
@@ -1972,7 +2083,7 @@ async def _pick_target_user(session: Session, lane: DatabaseLane, actor: User, *
                 subtitle=f"page {page_index + 1}/{total_pages}, {len(working_set)} total",
                 width=session.terminal_width,
                 clear=redraw_in_place,
-                unicode_style=unicode_style, collapsed=collapsed, header_color=header_color)
+                unicode_style=unicode_style, collapsed=collapsed, header_color=header_color, node_name_gradient=session.node_name_gradient)
         )
         await session.write_line(colored(f"Sorted by: {label} {arrow}", fg_color=MUTED_COLOR))
         await session.write_line(
@@ -2187,7 +2298,7 @@ async def _draw_user_detail(
     await session.write_line(
         "\r\n" + screen_title(sanitize_text(target.username),
             breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
-            header_color=await lane.run(effective_header_color_256))
+            header_color=await lane.run(effective_header_color_256), node_name_gradient=session.node_name_gradient)
     )
     accent = await lane.run(effective_accent_color_256)
     await session.write_line(_user_detail_field_line("l", "Level", str(target.user_level), selected=selected, accent=accent))
@@ -2742,7 +2853,7 @@ async def _update_settings_screen(session: Session, lane: DatabaseLane, actor: U
             clear=redraw_in_place,
             unicode_style=unicode_style, collapsed=collapsed,
             header_color=header_color,
-        )
+        node_name_gradient=session.node_name_gradient)
     )
     await session.write_line(
         colored("Running version: ", fg_color=LABEL_COLOR)
@@ -2900,7 +3011,7 @@ async def _backup_status_screen(session: Session, lane: DatabaseLane, actor: Use
             clear=redraw_in_place,
             unicode_style=unicode_style, collapsed=collapsed,
             header_color=header_color,
-        )
+        node_name_gradient=session.node_name_gradient)
     )
     if checked_at is not None:
         display_format, display_timezone = await lane.run(resolve_display_preferences)
@@ -3077,7 +3188,7 @@ async def _link_status_screen(
             clear=redraw_in_place,
             unicode_style=unicode_style, collapsed=collapsed,
             header_color=header_color,
-        )
+        node_name_gradient=session.node_name_gradient)
     )
     await session.write_line(
         colored("Node fingerprint: ", fg_color=LABEL_COLOR)
@@ -3686,7 +3797,7 @@ async def _draw_node_menu(
     operational detail) rather than only when something's active.
     """
     await session.write_line("\r\n" + screen_title("Node management",
-            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color))
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color, node_name_gradient=session.node_name_gradient))
     await session.write_line(
         _menu_row(
             [
@@ -4259,7 +4370,7 @@ async def _draw_welcome_banner_menu(
     )
     await session.write_line("\r\n" + screen_title("Welcome banner",
             breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
-            header_color=await lane.run(effective_header_color_256)))
+            header_color=await lane.run(effective_header_color_256), node_name_gradient=session.node_name_gradient))
     await session.write_line(detail)
     await session.write_line(
         "\r\n" + _menu_row(
@@ -4625,7 +4736,7 @@ async def _draw_main_menu_banner_menu(
     )
     await session.write_line("\r\n" + screen_title("Main-menu masthead",
             breadcrumb=(session.node_display_name, "System"), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
-            header_color=await lane.run(effective_header_color_256)))
+            header_color=await lane.run(effective_header_color_256), node_name_gradient=session.node_name_gradient))
     await session.write_line(detail)
     await session.write_line(
         "\r\n" + colored(
@@ -4917,7 +5028,7 @@ async def _draw_theme_colors_menu(
     accent_rgb, header_rgb, clock_rgb, header_color = await lane.run(_load)
     await session.write_line("\r\n" + screen_title("Node colors",
             breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
-            header_color=header_color))
+            header_color=header_color, node_name_gradient=session.node_name_gradient))
     await session.write_line(
         colored(
             "Branding only -- status colors (error/success/warning/etc.) always stay standard, "
@@ -5130,7 +5241,7 @@ async def _content_menu(
 async def _draw_content_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool, collapsed: bool, header_color: int | tuple[int, int, int] = HEADER_COLOR) -> None:
     await session.write_line(
         "\r\n" + screen_title("Manage message boards/file areas/chat channels",
-            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color)
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color, node_name_gradient=session.node_name_gradient)
     )
     await session.write_line(
         _menu_row(
@@ -5582,7 +5693,7 @@ async def _community_menu(session: Session, lane: DatabaseLane, actor: User) -> 
 
 async def _draw_community_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool, collapsed: bool, header_color: int | tuple[int, int, int] = HEADER_COLOR) -> None:
     await session.write_line("\r\n" + screen_title("Communities",
-            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color))
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color, node_name_gradient=session.node_name_gradient))
     await session.write_line(
         _menu_row(
             [
@@ -5813,7 +5924,7 @@ async def _draw_community_detail(
     await session.write_line(
         "\r\n" + screen_title(sanitize_text(community.name),
             breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
-            header_color=header_color)
+            header_color=header_color, node_name_gradient=session.node_name_gradient)
     )
     await session.write_line(
         f"Description: {sanitize_text(community.description) if community.description else '(none)'}"
@@ -5905,7 +6016,7 @@ async def _board_menu(
 
 async def _draw_board_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool, collapsed: bool, header_color: int | tuple[int, int, int] = HEADER_COLOR) -> None:
     await session.write_line("\r\n" + screen_title("Message boards",
-            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color))
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color, node_name_gradient=session.node_name_gradient))
     await session.write_line(
         _menu_row(
             [
@@ -6518,7 +6629,7 @@ async def _draw_board_detail(
     await session.write_line(
         "\r\n" + screen_title(sanitize_text(board.name),
             breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
-            header_color=await lane.run(effective_header_color_256))
+            header_color=await lane.run(effective_header_color_256), node_name_gradient=session.node_name_gradient)
     )
     await session.write_line(f"Description: {sanitize_text(board.description) if board.description else '(none)'}")
     # Dogfood follow-up: nothing on this screen (or the board-list picker)
@@ -6661,7 +6772,7 @@ async def _draw_post_action(
     await session.write_line(
         "\r\n" + screen_title(sanitize_text(post.subject),
             breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
-            header_color=header_color)
+            header_color=header_color, node_name_gradient=session.node_name_gradient)
     )
     await session.write_line(f"By: {sanitize_text(post.author_label)}")
     await session.write_line(reflow(sanitize_text(post.body, allow_newlines=True), width=session.terminal_width))
@@ -6769,7 +6880,7 @@ async def _area_menu(
 
 async def _draw_area_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool, collapsed: bool, header_color: int | tuple[int, int, int] = HEADER_COLOR) -> None:
     await session.write_line("\r\n" + screen_title("File areas",
-            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color))
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color, node_name_gradient=session.node_name_gradient))
     await session.write_line(
         menu_grid(
             [(
@@ -7119,7 +7230,7 @@ async def _draw_area_detail(
     await session.write_line(
         "\r\n" + screen_title(sanitize_text(area.name),
             breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
-            header_color=await lane.run(effective_header_color_256))
+            header_color=await lane.run(effective_header_color_256), node_name_gradient=session.node_name_gradient)
     )
     await session.write_line(f"Description: {sanitize_text(area.description) if area.description else '(none)'}")
     file_count, last_file_at = await lane.run(count_visible_files, area)
@@ -7275,7 +7386,7 @@ async def _draw_file_action(
     await session.write_line(
         "\r\n" + screen_title(sanitize_text(entry.filename),
             breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
-            header_color=header_color)
+            header_color=header_color, node_name_gradient=session.node_name_gradient)
     )
     await session.write_line(f"By: {sanitize_text(entry.uploader_label)}")
     if entry.description:
@@ -7376,7 +7487,7 @@ async def _door_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
 
 async def _draw_door_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool, collapsed: bool, header_color: int | tuple[int, int, int] = HEADER_COLOR) -> None:
     await session.write_line("\r\n" + screen_title("Doors",
-            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color))
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color, node_name_gradient=session.node_name_gradient))
     await session.write_line(
         menu_grid(
             [(
@@ -7842,7 +7953,7 @@ async def _draw_door_detail(
     await session.write_line(
         "\r\n" + screen_title(sanitize_text(door.name),
             breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
-            header_color=await lane.run(effective_header_color_256))
+            header_color=await lane.run(effective_header_color_256), node_name_gradient=session.node_name_gradient)
     )
     description_text = sanitize_text(door.description) if door.description else "(none)"
     await session.write_line("Description:")
@@ -7919,7 +8030,7 @@ async def _channel_menu(
 
 async def _draw_channel_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool, collapsed: bool, header_color: int | tuple[int, int, int] = HEADER_COLOR) -> None:
     await session.write_line("\r\n" + screen_title("Chat channels",
-            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color))
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color, node_name_gradient=session.node_name_gradient))
     await session.write_line(
         _menu_row(
             [
@@ -8213,7 +8324,7 @@ async def _draw_channel_detail(
     await session.write_line(
         "\r\n" + screen_title(sanitize_text(channel.name),
             breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
-            header_color=await lane.run(effective_header_color_256))
+            header_color=await lane.run(effective_header_color_256), node_name_gradient=session.node_name_gradient)
     )
     await session.write_line(
         f"Description: {sanitize_text(channel.description) if channel.description else '(none)'}"
@@ -8453,7 +8564,7 @@ async def _category_menu(session: Session, lane: DatabaseLane, actor: User) -> N
 
 async def _draw_category_menu(session: Session, description_level: str, redraw_in_place: bool, unicode_style: bool, collapsed: bool, header_color: int | tuple[int, int, int] = HEADER_COLOR) -> None:
     await session.write_line("\r\n" + screen_title("Categories",
-            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color))
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color, node_name_gradient=session.node_name_gradient))
     await session.write_line(
         _menu_row(
             [
@@ -8510,7 +8621,7 @@ async def _draw_generic_category_menu(
     header_color: int | tuple[int, int, int] = HEADER_COLOR,
 ) -> None:
     await session.write_line("\r\n" + screen_title(title,
-            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color))
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color, node_name_gradient=session.node_name_gradient))
     await session.write_line(
         _menu_row(
             [

@@ -161,7 +161,7 @@ async def _render_mail_menu(
     )
     header = screen_title("Mail",
             breadcrumb=(session.node_display_name,), subtitle=subtitle, width=session.terminal_width, clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed,
-            header_color=await lane.run(effective_header_color_256))
+            header_color=await lane.run(effective_header_color_256), node_name_gradient=session.node_name_gradient)
     await session.write_line(f"\r\n{header}")
 
     options = [
@@ -277,7 +277,7 @@ async def _render_message(
         clear=redraw_in_place,
         unicode_style=unicode_style, collapsed=collapsed,
         header_color=await lane.run(effective_header_color_256),
-    )
+    node_name_gradient=session.node_name_gradient)
     await session.write_line(f"\r\n{header}")
     accent = await lane.run(effective_accent_color_256)
     if to_label is not None:

@@ -153,3 +153,26 @@ def test_colored_truncate_width_at_or_below_ellipsis_length():
 def test_colored_truncate_rejects_non_positive_width():
     with pytest.raises(ValueError):
         colored_truncate([("hello", 51)], width=0)
+
+
+def test_colored_truncate_accepts_a_callable_segment_renderer():
+    # GitHub issue #175 (node-name gradient breadcrumb segment): a
+    # segment's color can be an arbitrary Callable[[str], str] instead
+    # of a plain color, invoked on that segment's own plain text.
+    result = colored_truncate([("abc", lambda text: f"<{text}>"), ("def", 51)], width=80)
+    assert result == "<abc>" + colored("def", fg_color=51)
+
+
+def test_colored_truncate_callable_segment_receives_already_truncated_text():
+    # The width budget is decided against plain text first (module
+    # docstring); a callable segment must only ever see the piece that
+    # survived truncation, never the original full segment text.
+    seen: list[str] = []
+
+    def _render(text: str) -> str:
+        seen.append(text)
+        return text.upper()
+
+    result = colored_truncate([("hello", _render), ("world", 51)], width=5)
+    assert seen == ["he"]
+    assert _visible(result) == "HE..."

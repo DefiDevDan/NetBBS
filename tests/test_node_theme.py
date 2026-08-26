@@ -15,10 +15,13 @@ from netbbs.net.node_theme import (
     effective_accent_color,
     effective_clock_color,
     effective_header_color,
+    effective_node_name_gradient,
     header_color_override,
+    node_name_gradient_override,
     set_accent_color_override,
     set_clock_color_override,
     set_header_color_override,
+    set_node_name_gradient_override,
 )
 from netbbs.net.session import Session
 from netbbs.rendering import ACCENT_COLOR, CLOCK_COLOR, HEADER_COLOR
@@ -136,6 +139,38 @@ def test_clock_can_be_set_cleared_and_resolved(db):
     assert effective_clock_color(_FakeSession(True), db) == CLOCK_COLOR
 
 
+# -- node-name gradient (issue #175) -----------------------------------
+
+
+def test_node_name_gradient_defaults_to_no_override(db):
+    assert node_name_gradient_override(db) is None
+
+
+def test_node_name_gradient_can_be_set_and_read_back(db):
+    set_node_name_gradient_override(db, "rainbow")
+    assert node_name_gradient_override(db) == "rainbow"
+
+
+def test_node_name_gradient_can_be_cleared(db):
+    set_node_name_gradient_override(db, "rainbow")
+    set_node_name_gradient_override(db, None)
+    assert node_name_gradient_override(db) is None
+
+
+def test_node_name_gradient_rejects_an_unknown_gradient_name(db):
+    with pytest.raises(ValueError):
+        set_node_name_gradient_override(db, "not-a-real-gradient")
+
+
+def test_effective_node_name_gradient_falls_back_to_none_when_unset(db):
+    assert effective_node_name_gradient(db) is None
+
+
+def test_effective_node_name_gradient_returns_the_override_once_set(db):
+    set_node_name_gradient_override(db, "gold")
+    assert effective_node_name_gradient(db) == "gold"
+
+
 # -- independence ------------------------------------------------------------
 
 
@@ -143,3 +178,15 @@ def test_the_three_slots_are_independent(db):
     set_accent_color_override(db, (1, 1, 1))
     assert header_color_override(db) is None
     assert clock_color_override(db) is None
+
+
+def test_node_name_gradient_is_independent_of_the_three_rgb_slots(db):
+    set_accent_color_override(db, (1, 1, 1))
+    set_header_color_override(db, (2, 2, 2))
+    set_clock_color_override(db, (3, 3, 3))
+    assert node_name_gradient_override(db) is None
+
+    set_node_name_gradient_override(db, "red")
+    assert accent_color_override(db) == (1, 1, 1)
+    assert header_color_override(db) == (2, 2, 2)
+    assert clock_color_override(db) == (3, 3, 3)

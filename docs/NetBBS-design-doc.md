@@ -259,6 +259,20 @@ node's own branding. Full palette theming (every color configurable) was
 considered and rejected on exactly this basis, not merely deferred as too
 large -- see issue #163.
 
+A SysOp may additionally give the node name itself -- the breadcrumb segment
+shown in the upper-left corner of every screen -- a per-character gradient
+(issue #175), the same flair the default welcome banner's own wordmark
+already gets, from Settings > Node Name > [G]radient. This is a different
+kind of override from the three branding-color slots above: it recolors one
+specific piece of text, not a semantic color slot standing in for a theme
+constant, so it's a fixed preset list (`netbbs.rendering.gradient.
+GRADIENTS`'s own keys) rather than a fourth RGB slot. It's also resolved
+once at login and cached on `Session`, unlike the three RGB slots' own
+per-screen `db` lookup -- it shares `node_display_name`'s existing
+resolve-once lifecycle instead, since a SysOp's own change should take
+effect for new connections the same way a rename does, not live-update a
+session already in progress.
+
 The project intentionally provides two composition paths:
 
 - a robust simple/line-oriented editor available everywhere;
