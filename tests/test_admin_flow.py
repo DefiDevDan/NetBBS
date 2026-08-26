@@ -3488,6 +3488,91 @@ def test_gallery_declining_a_preset_returns_to_the_same_gallery_to_try_another(d
     assert banner_path(db).read_bytes() == load_welcome_banner_preset(WELCOME_BANNER_PRESETS[2])
 
 
+# -- welcome-banner filesystem picker (issue #170) --------------------------
+
+
+def test_from_disk_option_appears_in_the_welcome_banner_menu(db, lane, sysop):
+    session = FakeSession(["s", "w", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "rom disk" in _written_text(session)
+
+
+def test_from_disk_with_no_other_files_shows_an_empty_state_message(db, lane, sysop, tmp_path):
+    session = FakeSession(["s", "w", "f", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "No other .ans files found in" in text
+    assert str(tmp_path) in text
+
+
+def test_from_disk_excludes_the_current_target_file_and_lists_only_others(db, lane, sysop, tmp_path):
+    from netbbs.net.welcome_banner import banner_path
+
+    banner_path(db).write_bytes(b"ALREADY THE CURRENT BANNER")
+    (tmp_path / "custom.ans").write_bytes(b"MY OWN ART")
+
+    session = FakeSession(["s", "w", "f", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    # Scoped to the picker screen itself, not the whole session's output --
+    # the welcome-banner menu's own status line legitimately shows the
+    # current banner's filename too (that's a different, expected thing).
+    picker_text = text.split("load from disk")[1].split("Choice:")[0]
+    assert "custom.ans" in picker_text
+    assert banner_path(db).name not in picker_text
+
+
+def test_from_disk_selecting_and_declining_previews_but_does_not_load(db, lane, sysop, tmp_path):
+    from netbbs.net.welcome_banner import banner_path, is_welcome_banner_enabled
+
+    (tmp_path / "custom.ans").write_bytes(b"MY OWN ART")
+
+    # Declining loops back into this same picker (same dogfood fix as
+    # the bundled gallery), so exiting cleanly needs one extra "b".
+    session = FakeSession(["s", "w", "f", "0", "1", "n", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "Previewing 'custom.ans':" in text
+    assert "Not loaded." in text
+    assert is_welcome_banner_enabled(db) is False
+    assert not banner_path(db).exists()
+
+
+def test_from_disk_selecting_and_confirming_loads_and_enables_it(db, lane, sysop, tmp_path):
+    from netbbs.net.welcome_banner import banner_path, is_welcome_banner_enabled
+
+    (tmp_path / "custom.ans").write_bytes(b"MY OWN ART")
+
+    session = FakeSession(["s", "w", "f", "0", "1", "y", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "Loaded and enabled." in text
+    assert is_welcome_banner_enabled(db) is True
+    assert banner_path(db).read_bytes() == b"MY OWN ART"
+
+    rows = db.connection.execute(
+        "SELECT actor_user_id, detail FROM moderation_log WHERE action = 'load_welcome_banner_from_file'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["actor_user_id"] == sysop.id
+    assert "custom.ans" in rows[0]["detail"]
+
+
+def test_from_disk_rejects_an_oversized_file_without_loading_it(db, lane, sysop, tmp_path):
+    from netbbs.net.admin_flow import MAX_BANNER_SIZE_BYTES
+    from netbbs.net.welcome_banner import banner_path, is_welcome_banner_enabled
+
+    (tmp_path / "toobig.ans").write_bytes(b"A" * (MAX_BANNER_SIZE_BYTES + 1))
+
+    session = FakeSession(["s", "w", "f", "0", "1", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "over the" in text
+    assert "byte limit -- not loading." in text
+    assert is_welcome_banner_enabled(db) is False
+    assert not banner_path(db).exists()
+
+
 # -- main-menu masthead (issue #161) ---------------------------------------
 
 
@@ -3654,6 +3739,34 @@ def test_masthead_gallery_declining_the_apply_prompt_leaves_the_masthead_disable
     _run(session, lane, sysop)
     assert "Not applied." in _written_text(session)
     assert is_main_menu_banner_enabled(db) is False
+
+
+# -- masthead filesystem picker (issue #170) ---------------------------------
+
+
+def test_masthead_from_disk_option_appears_in_the_masthead_menu(db, lane, sysop):
+    session = FakeSession(["s", "m", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "rom disk" in _written_text(session)
+
+
+def test_masthead_from_disk_selecting_and_confirming_loads_and_enables_it(db, lane, sysop, tmp_path):
+    from netbbs.net.main_menu_banner import is_main_menu_banner_enabled, main_menu_banner_path
+
+    (tmp_path / "custom.ans").write_bytes(b"MY OWN MASTHEAD")
+
+    session = FakeSession(["s", "m", "f", "0", "1", "y", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "Loaded and enabled." in text
+    assert is_main_menu_banner_enabled(db) is True
+    assert main_menu_banner_path(db).read_bytes() == b"MY OWN MASTHEAD"
+
+    rows = db.connection.execute(
+        "SELECT actor_user_id FROM moderation_log WHERE action = 'load_main_menu_banner_from_file'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["actor_user_id"] == sysop.id
 
 
 # -- door gallery (issue #172 follow-up) -------------------------------------

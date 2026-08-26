@@ -4166,6 +4166,10 @@ async def _welcome_banner_menu(session: Session, lane: DatabaseLane, actor: User
             await session.write_line("")
             await _welcome_banner_gallery_screen(session, lane, actor, description_level, redraw_in_place, unicode_style, collapsed)
             await _draw_welcome_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
+        elif choice == "f":
+            await session.write_line("")
+            await _welcome_banner_filesystem_screen(session, lane, actor, description_level, redraw_in_place, unicode_style, collapsed)
+            await _draw_welcome_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
         else:
             await session.write(reject_unhandled_key(choice))
 
@@ -4201,6 +4205,7 @@ async def _draw_welcome_banner_menu(
                 MenuEntry(label=menu_key("D", "isable"), brief="Turn the banner off"),
                 MenuEntry(label=menu_key("i", "t", prefix="Ed"), brief="Edit the banner text"),
                 MenuEntry(label=menu_key("G", "allery"), brief="Apply a bundled sample banner"),
+                MenuEntry(label=menu_key("F", "rom disk"), brief="Load your own .ans file from this node"),
                 MenuEntry(label=menu_key("B", "ack"), brief="Return to Settings"),
             ],
             description_level,
@@ -4391,6 +4396,105 @@ async def _welcome_banner_gallery_screen(
         return
 
 
+def _browsable_ans_files(directory: Path, *, exclude: Path) -> list[Path]:
+    """Every `.ans` file in `directory` except `exclude` (the picker's
+    own current target -- loading it onto itself is a pointless option,
+    not a real choice). No traversal risk here: `directory.glob` only
+    ever returns real entries NetBBS itself enumerated, never a
+    caller-typed path, so there's nothing for a `..`-style escape to
+    reach in the first place (issue #170's own locked design)."""
+    return sorted(p for p in directory.glob("*.ans") if p.is_file() and p != exclude)
+
+
+async def _welcome_banner_filesystem_screen(
+    session: Session, lane: DatabaseLane, actor: User, description_level: str,
+    redraw_in_place: bool, unicode_style: bool, collapsed: bool,
+) -> None:
+    """Issue #170: load a SysOp's own externally-authored `.ans` file --
+    drawn in a dedicated tool, or downloaded from elsewhere -- instead
+    of having to shell in and place it at `banner_path(db)` by hand.
+    Different problem from the bundled gallery just above (issue #169,
+    sibling): nothing here was ever going to ship *with* NetBBS, so this
+    enumerates real files on disk instead of a fixed preset tuple.
+
+    **Browsable root** (locked design, see the issue's own comments):
+    the node's own state directory only -- exactly `banner_path(db)`'s
+    own parent, the same directory NetBBS already reads/writes banner
+    state in. No new `node_config` setting, no new attack surface
+    beyond what already exists.
+
+    **Load semantics**: copy, not reference-in-place. The selected
+    file's bytes are written to the existing well-known `banner_path
+    (db)`, exactly as if the SysOp had `cp`'d it there by hand --
+    `load_welcome_banner`/`welcome_banner_status`/backup-restore/the
+    WYSIWYG editor all keep their existing one-file-one-path assumption
+    completely untouched.
+
+    **Validation timing**: the same size cap `[E]nable` already enforces
+    runs *before* the copy, against the source file -- rejecting a pick
+    immediately with a clear reason, not a weaker path into the same
+    target than manual placement already has."""
+
+    def _list(db: Database) -> tuple[list[Path], Path]:
+        directory = banner_path(db).parent
+        return _browsable_ans_files(directory, exclude=banner_path(db)), directory
+
+    files, directory = await lane.run(_list)
+    if not files:
+        await session.write_line(colored(
+            f"\r\nNo other .ans files found in {directory}. Place one there "
+            f"(e.g. via SFTP/SCP), then browse again.", fg_color=MUTED_COLOR,
+        ))
+        return
+
+    last_stable_id: int | None = None
+    while True:
+        selection = await pick_item(
+            session,
+            list(enumerate(files, start=1)),
+            name_of=lambda pair: pair[1].name,
+            stable_id_of=lambda pair: pair[0],
+            title="Welcome banner -- load from disk",
+            empty_message="No other .ans files found.",
+            description_level=description_level,
+            redraw_in_place=redraw_in_place,
+            unicode_style=unicode_style,
+            collapsed=collapsed,
+            start_stable_id=last_stable_id,
+        )
+        if selection is None:
+            return
+        last_stable_id = selection[0]
+        path = selection[1]
+
+        size = path.stat().st_size
+        if size > MAX_BANNER_SIZE_BYTES:
+            await session.write_line(colored(
+                f"{path.name} is {size} bytes, over the {MAX_BANNER_SIZE_BYTES} byte "
+                f"limit -- not loading.", fg_color=MUTED_COLOR,
+            ))
+            continue
+
+        data = path.read_bytes()
+        await session.write_line(colored(f"\r\nPreviewing {path.name!r}:", fg_color=MUTED_COLOR))
+        await session.write_line(decode_ansi_bytes(data) + RESET)
+
+        if not await prompt_yes_no(session, f"\r\nLoad {path.name!r} as the welcome banner now?", default=False):
+            await session.write_line(colored("Not loaded.", fg_color=MUTED_COLOR))
+            continue
+
+        def _apply(db: Database) -> Path:
+            target = banner_path(db)
+            target.write_bytes(data)
+            set_welcome_banner_enabled(db, True)
+            record_action(db, actor=actor, action="load_welcome_banner_from_file", detail=f"{path} -> {target}")
+            return target
+
+        target = await lane.run(_apply)
+        await session.write_line(f"Loaded and enabled. Saved to {target}. Use [P]review to verify it looks right.")
+        return
+
+
 # -- main-menu masthead (issue #161 -- part two of the three-part
 # skinning initiative the welcome banner above calls itself part one
 # of) ---------------------------------------------------------------
@@ -4427,6 +4531,10 @@ async def _main_menu_banner_menu(session: Session, lane: DatabaseLane, actor: Us
         elif choice == "g":
             await session.write_line("")
             await _main_menu_banner_gallery_screen(session, lane, actor, description_level, redraw_in_place, unicode_style, collapsed)
+            await _draw_main_menu_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
+        elif choice == "f":
+            await session.write_line("")
+            await _main_menu_banner_filesystem_screen(session, lane, actor, description_level, redraw_in_place, unicode_style, collapsed)
             await _draw_main_menu_banner_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed)
         else:
             await session.write(reject_unhandled_key(choice))
@@ -4470,6 +4578,7 @@ async def _draw_main_menu_banner_menu(
                 MenuEntry(label=menu_key("D", "isable"), brief="Turn the masthead off"),
                 MenuEntry(label=menu_key("i", "t", prefix="Ed"), brief="Edit the masthead art"),
                 MenuEntry(label=menu_key("G", "allery"), brief="Apply a bundled sample masthead"),
+                MenuEntry(label=menu_key("F", "rom disk"), brief="Load your own .ans file from this node"),
                 MenuEntry(label=menu_key("B", "ack"), brief="Return to Settings"),
             ],
             description_level,
@@ -4625,6 +4734,75 @@ async def _main_menu_banner_gallery_screen(
 
         path = await lane.run(_apply)
         await session.write_line(f"Applied and enabled. Saved to {path}. Use [P]review to verify it looks right.")
+        return
+
+
+async def _main_menu_banner_filesystem_screen(
+    session: Session, lane: DatabaseLane, actor: User, description_level: str,
+    redraw_in_place: bool, unicode_style: bool, collapsed: bool,
+) -> None:
+    """Same load-from-disk screen as `_welcome_banner_filesystem_screen`
+    (issue #170), against `main_menu_banner_path` instead -- see that
+    function's own docstring for the locked design (browsable root,
+    copy-not-reference load semantics, validate-before-copy)."""
+
+    def _list(db: Database) -> tuple[list[Path], Path]:
+        directory = main_menu_banner_path(db).parent
+        return _browsable_ans_files(directory, exclude=main_menu_banner_path(db)), directory
+
+    files, directory = await lane.run(_list)
+    if not files:
+        await session.write_line(colored(
+            f"\r\nNo other .ans files found in {directory}. Place one there "
+            f"(e.g. via SFTP/SCP), then browse again.", fg_color=MUTED_COLOR,
+        ))
+        return
+
+    last_stable_id: int | None = None
+    while True:
+        selection = await pick_item(
+            session,
+            list(enumerate(files, start=1)),
+            name_of=lambda pair: pair[1].name,
+            stable_id_of=lambda pair: pair[0],
+            title="Masthead -- load from disk",
+            empty_message="No other .ans files found.",
+            description_level=description_level,
+            redraw_in_place=redraw_in_place,
+            unicode_style=unicode_style,
+            collapsed=collapsed,
+            start_stable_id=last_stable_id,
+        )
+        if selection is None:
+            return
+        last_stable_id = selection[0]
+        path = selection[1]
+
+        size = path.stat().st_size
+        if size > MAX_MASTHEAD_SIZE_BYTES:
+            await session.write_line(colored(
+                f"{path.name} is {size} bytes, over the {MAX_MASTHEAD_SIZE_BYTES} byte "
+                f"limit -- not loading.", fg_color=MUTED_COLOR,
+            ))
+            continue
+
+        data = path.read_bytes()
+        await session.write_line(colored(f"\r\nPreviewing {path.name!r}:", fg_color=MUTED_COLOR))
+        await session.write_line(decode_ansi_bytes(data) + RESET)
+
+        if not await prompt_yes_no(session, f"\r\nLoad {path.name!r} as the masthead now?", default=False):
+            await session.write_line(colored("Not loaded.", fg_color=MUTED_COLOR))
+            continue
+
+        def _apply(db: Database) -> Path:
+            target = main_menu_banner_path(db)
+            target.write_bytes(data)
+            set_main_menu_banner_enabled(db, True)
+            record_action(db, actor=actor, action="load_main_menu_banner_from_file", detail=f"{path} -> {target}")
+            return target
+
+        target = await lane.run(_apply)
+        await session.write_line(f"Loaded and enabled. Saved to {target}. Use [P]review to verify it looks right.")
         return
 
 
