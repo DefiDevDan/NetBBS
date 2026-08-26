@@ -108,6 +108,44 @@ def gradient_text(
     return "".join(spans)
 
 
+def gradient_color(
+    gradient: str | Sequence[tuple[int, int, int]], t: float, *, truecolor: bool = True
+) -> int | tuple[int, int, int]:
+    """
+    The single color `gradient_text` would place at fraction `t`
+    (0.0-1.0) along `gradient`, without wrapping any text in it --
+    for a caller that wants to color something *other* than a run of
+    characters along the same gradient a `gradient_text` span uses,
+    e.g. a decorative element positioned by row rather than by column
+    (the welcome banner's own vertical border bars, colored by how far
+    down the banner each row sits, echoing the horizontal rainbow its
+    top/bottom borders and wordmark already use via `gradient_text`
+    itself -- a single "║" character has no internal width for a
+    per-character gradient to run across, so the gradient has to move
+    along a different axis instead).
+
+    Same stop validation and `truecolor`/256-downgrade behavior as
+    `gradient_text` -- deliberately not duplicated, both call the same
+    `_interpolate`/`nearest_256` underneath.
+    """
+    if isinstance(gradient, str):
+        if gradient not in GRADIENTS:
+            raise ValueError(
+                f"unknown gradient {gradient!r}, expected one of {sorted(GRADIENTS)} "
+                "or an explicit list of (r, g, b) stops"
+            )
+        stops = GRADIENTS[gradient]
+    else:
+        stops = list(gradient)
+    if len(stops) < 2:
+        raise ValueError(f"gradient needs at least 2 stops, got {len(stops)}")
+    for r, g, b in stops:
+        _validate_stop(r, g, b)
+
+    rgb = _interpolate(stops, max(0.0, min(1.0, t)))
+    return rgb if truecolor else nearest_256(rgb)
+
+
 def _validate_stop(r: int, g: int, b: int) -> None:
     for name, value in (("r", r), ("g", g), ("b", b)):
         if not 0 <= value <= 255:

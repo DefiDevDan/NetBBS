@@ -7,6 +7,7 @@ tests/test_admin_flow.py) and the login-flow integration point
 from __future__ import annotations
 
 import asyncio
+import re
 
 import pytest
 
@@ -134,6 +135,24 @@ def test_truecolor_true_gradients_the_bbs_name(db):
 
 def test_truecolor_variant_still_ends_with_reset(db):
     assert load_welcome_banner(db, truecolor=True).endswith("\x1b[0m")
+
+
+def test_truecolor_variant_colors_the_vertical_bars_not_just_the_borders(db):
+    """Dogfood report: the top/bottom borders and wordmark already
+    carried the rainbow gradient, but the "|" bars down each side of
+    every row in between stayed flat HEADER_COLOR cyan. Each of the
+    four bar rows must now show a genuinely different color -- a
+    vertical continuation of the same rainbow, not a second flat color
+    replacing the first."""
+    result = load_welcome_banner(db, truecolor=True)
+    bar_rows = [line for line in result.split("\r\n") if "║" in line]  # "|" box-drawing char
+    assert len(bar_rows) == 4
+    first_colors = []
+    for line in bar_rows:
+        match = re.match(r"(\x1b\[1m\x1b\[38;2;\d+;\d+;\d+m)", line)
+        assert match is not None
+        first_colors.append(match.group(1))
+    assert len(set(first_colors)) == 4  # all four rows genuinely distinct
 
 
 def test_truecolor_has_no_effect_on_a_custom_ans_banner(db):

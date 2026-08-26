@@ -38,7 +38,16 @@ from pathlib import Path
 
 from netbbs.config import get_config, set_config
 from netbbs.net.node_theme import accent_color_override, header_color_override
-from netbbs.rendering import ACCENT_COLOR, HEADER_COLOR, RESET, colored, decode_ansi_bytes, gradient_text, nearest_256
+from netbbs.rendering import (
+    ACCENT_COLOR,
+    HEADER_COLOR,
+    RESET,
+    colored,
+    decode_ansi_bytes,
+    gradient_color,
+    gradient_text,
+    nearest_256,
+)
 from netbbs.rendering.layout import double_frame
 from netbbs.storage.database import Database
 
@@ -129,20 +138,43 @@ def _default_welcome_banner(db: Database, *, truecolor: bool) -> str:
         border_text.replace("╔", "╚").replace("╗", "╝"), "rainbow", bold=True, truecolor=True
     )
     wordmark = gradient_text("N E T B B S", "rainbow", bold=True, truecolor=True)
-    welcome_line = colored("║                      ", fg_color=header, bold=True) + wordmark + colored(
-        "                     ║", fg_color=header, bold=True
+
+    # Dogfood report: the top/bottom borders and wordmark already carry
+    # the rainbow theme, but the "║" bars down each side of every row in
+    # between stayed flat HEADER_COLOR (cyan) -- a single box-drawing
+    # character has no internal width for gradient_text's own per-
+    # character gradient to run across, so instead of leaving it flat,
+    # each row's own pair of bars takes one color from the *same*
+    # "rainbow" gradient positioned by how far down the banner that row
+    # sits (row 0 of 3 at the top, row 3 at the bottom) -- a vertical
+    # continuation of the same rainbow the horizontal borders already
+    # use, always on regardless of a SysOp's own header-color override,
+    # matching the border/wordmark's own established "always rainbow"
+    # precedent right next to it (the flat `header` color below still
+    # governs everything else on these rows -- the padding and text,
+    # never the borders themselves).
+    _last_bar_row = 3
+
+    def _bar(row: int) -> str:
+        return colored("║", fg_color=gradient_color("rainbow", row / _last_bar_row, truecolor=True), bold=True)
+
+    welcome_line = (
+        _bar(1) + colored("                      ", fg_color=header, bold=True)
+        + wordmark
+        + colored("                     ", fg_color=header, bold=True) + _bar(1)
     )
-    blank = colored("║                                                      ║", fg_color=header, bold=True)
-    tagline = colored(
-        "║        conversations across independent nodes        ║",
-        fg_color=header,
-        bold=True,
+    blank_top = _bar(0) + colored(" " * 54, fg_color=header, bold=True) + _bar(0)
+    tagline = (
+        _bar(2)
+        + colored("        conversations across independent nodes        ", fg_color=header, bold=True)
+        + _bar(2)
     )
+    blank_bottom = _bar(3) + colored(" " * 54, fg_color=header, bold=True) + _bar(3)
     subtitle = (
         colored("  NetBBS Link", fg_color=accent_override or _DEFAULT_ACCENT_RGB, bold=True)
         + colored("  ›  private experimental federation", fg_color=header, bold=True)
     )
-    return "\r\n".join([border, blank, welcome_line, tagline, blank, bottom_border, subtitle])
+    return "\r\n".join([border, blank_top, welcome_line, tagline, blank_bottom, bottom_border, subtitle])
 
 # Comfortably covers realistic ANSI art (typically a few KB, rarely
 # above ~150 KB even for elaborate multi-panel pieces) while bounding a
