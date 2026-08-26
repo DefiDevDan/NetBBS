@@ -41,9 +41,11 @@ from netbbs.rendering import (
     MenuEntry,
     action_bar,
     colored,
+    display_width,
     menu_grid,
     sanitize_text,
     screen_title,
+    wrap_to_width,
 )
 from netbbs.storage.execution import DatabaseLane
 
@@ -266,18 +268,36 @@ async def edit_resource_draft(
         preamble_text = preamble(draft) if callable(preamble) else preamble
         if preamble_text:
             await session.write_line(preamble_text)
+        field_line_count = 0
         for i, f in enumerate(fields):
             value = sanitize_text(f.render(draft))
             # One colored() call, not marker/label separately -- two
             # calls would insert an SGR reset between "> " and the
             # label text, splitting what should read as one contiguous
             # highlighted run.
-            prefix = (
-                colored(f"> {f.label}", fg_color=accent_color, bold=True)
-                if i == selected
-                else colored(f"  {f.label}", fg_color=LABEL_COLOR)
+            marker = "> " if i == selected else "  "
+            prefix = colored(
+                f"{marker}{f.label}", fg_color=accent_color if i == selected else LABEL_COLOR,
+                bold=(i == selected),
             )
-            await session.write_line(f"{prefix}: {colored(value, fg_color=MUTED_COLOR)}")
+            # Dogfood report: a long field value (a free-text
+            # description, most often) used to print as one raw
+            # unwrapped line regardless of terminal width. Wrapped here,
+            # hanging-indented to align under where the value starts on
+            # line one, rather than every field growing an unconditional
+            # second "Label:\nvalue" line the way a mail body's own
+            # reflow block does -- this screen is dozens of short
+            # one-line fields for every one that's ever actually long,
+            # and forcing every field onto two lines would double this
+            # screen's height for no reason.
+            label_width = display_width(f"{marker}{f.label}: ")
+            available = max(1, session.terminal_width - label_width)
+            value_lines = wrap_to_width(value, available) or [""]
+            field_line_count += len(value_lines)
+            await session.write_line(f"{prefix}: {colored(value_lines[0], fg_color=MUTED_COLOR)}")
+            indent = " " * label_width
+            for continuation in value_lines[1:]:
+                await session.write_line(f"{indent}{colored(continuation, fg_color=MUTED_COLOR)}")
         menu_entries = [MenuEntry(label=f.menu_text, brief=f.brief, detailed=f.help) for f in fields]
         if save is not None:
             menu_entries.append(MenuEntry(label=save_menu_text, brief=_SAVE_BRIEF))
@@ -309,7 +329,7 @@ async def edit_resource_draft(
             fixed_lines = (
                 (3 if subtitle else 2)  # screen_title: title [+ subtitle] + underline
                 + (preamble_text.count("\r\n") + 1 if preamble_text else 0)
-                + len(fields)  # one current-value line per field
+                + field_line_count  # every field's own value lines, wrapped ones included
                 + 1  # blank line before the menu row
                 + (1 if any(f.help for f in fields) else 0)  # "(Ctrl-H for help...)" hint
                 + 1  # "Choice: " prompt line

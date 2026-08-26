@@ -7,6 +7,7 @@ create/edit screen driver (design doc, dogfood feature request) behind
 from __future__ import annotations
 
 import asyncio
+import re
 
 import pytest
 
@@ -130,6 +131,13 @@ class RealByteFakeSession(FakeSession):
 
 def _written_text(session: FakeSession) -> str:
     return "".join(session.written)
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _visible(text: str) -> str:
+    return _ANSI_RE.sub("", text)
 
 
 def _name_field() -> FieldSpec:
@@ -1119,6 +1127,78 @@ def test_description_level_brief_still_shows_when_it_fits():
     )
     assert result == "saved"
     assert "Shown at the top of listings" in _written_text(session)
+
+
+# -- long field values are wrapped, not printed as one raw line (dogfood
+# report) ---------------------------------------------------------------
+
+
+def _description_field() -> FieldSpec:
+    return FieldSpec(
+        key="description",
+        hotkey="d",
+        menu_text=menu_key("D", "escription"),
+        label="Description",
+        render=lambda draft: draft.get("description") or "(none)",
+        prompt=text_field("description"),
+    )
+
+
+def test_a_long_field_value_is_word_wrapped_with_a_hanging_indent():
+    """Dogfood report: a field's rendered value used to print as one
+    raw, unwrapped line regardless of terminal width -- fixed generically
+    here (`edit_resource_draft` itself), not per resource kind, since
+    every board/area/channel/door/Community editor shares this same
+    field-rendering loop."""
+    async def save(draft):
+        return "saved"
+
+    long_value = (
+        "A genuinely long free-text value, well past eighty columns on any "
+        "ordinary terminal, written specifically to prove it wraps instead "
+        "of running off the edge of the screen as one continuous line."
+    )
+    session = FakeSession(["s"])
+    asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Edit thing", fields=[_description_field()], draft={"description": long_value},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        )
+    )
+    text = _visible(_written_text(session))
+    # The label line and every wrapped continuation line must each fit
+    # within the 80-column terminal, and there must genuinely be more
+    # than one -- not silently truncated, not still one long line.
+    block = text.split("Description:")[1].split("Choice:")[0]
+    lines = [line for line in block.splitlines() if line.strip()]
+    assert len(lines) > 1
+    assert all(len(line) <= 80 for line in lines)
+    # Hanging-indented: a continuation line starts with spaces aligning
+    # under where the value itself began on line one, not flush left.
+    assert lines[1].startswith("  ")
+
+
+def test_wrapped_field_value_round_trips_through_the_draft_unchanged():
+    """Wrapping is purely a rendering concern -- the underlying draft
+    value a field's own prompt reads/writes must stay exactly what was
+    typed, never the wrapped/re-joined display text."""
+    long_value = "word " * 40  # long enough to wrap several times at 80 columns
+
+    async def save(draft):
+        return draft["description"]
+
+    session = FakeSession(["s"])
+    result = asyncio.run(
+        edit_resource_draft(
+            session, None,
+            title="Edit thing", fields=[_description_field()], draft={"description": long_value},
+            save=save, error_type=FieldError,
+            save_menu_text=menu_key("S", "ave"), back_menu_text=menu_key("B", "ack"),
+        )
+    )
+    assert result == long_value
 
 
 # -- redraw-in-place (dogfood feature request) -------------------------------
