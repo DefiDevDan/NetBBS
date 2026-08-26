@@ -2446,4 +2446,43 @@ MIGRATIONS = [
             ON operational_run_history(kind, id DESC);
         """,
     ),
+    Migration(
+        description=(
+            "Issue #172: the door registry -- a SysOp-registered external "
+            "program a caller can launch and play, attached to a board/"
+            "community with the same coarse permission model as boards/ "
+            "file areas. No `door_id` content-addressing (unlike boards/ "
+            "file areas -- see their own comments): doors are local-only, "
+            "single-player, session-scoped execution with no stated Link "
+            "future in the locked design (issue #63/#167), so there is no "
+            "later-federation reason to pay for a content-addressed ID "
+            "here. `min_play_level` is a single gate (not a read/write "
+            "split like boards/file areas) -- 'launch this door' is one "
+            "action, not two. `executable_path`/`args` are stored "
+            "separately, `args` as a JSON-encoded list of strings, so a "
+            "door is always launched via `asyncio.create_subprocess_exec`'s "
+            "argv-list form -- never through a shell, which would reopen "
+            "shell-metacharacter injection from whatever a SysOp happens "
+            "to type into the args field. No `working_dir` column: each "
+            "launch gets a freshly created, per-session scratch directory "
+            "(see netbbs.doors.runtime) rather than one shared static "
+            "path, since two callers could launch the same door "
+            "concurrently and each needs its own isolated drop-file."
+        ),
+        sql="""
+        CREATE TABLE doors (
+            id                INTEGER PRIMARY KEY,
+            name              TEXT NOT NULL UNIQUE,
+            description       TEXT,
+            executable_path   TEXT NOT NULL,
+            args              TEXT,
+            min_play_level    INTEGER NOT NULL DEFAULT 0,
+            pinned            INTEGER NOT NULL DEFAULT 0,
+            created_at        TEXT NOT NULL,
+            community_id      INTEGER REFERENCES communities(id)
+        );
+
+        CREATE INDEX idx_doors_community_id ON doors(community_id);
+        """,
+    ),
 ]

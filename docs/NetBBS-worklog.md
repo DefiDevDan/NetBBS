@@ -2959,3 +2959,22 @@ transport quarantine test to also recover: pushing events immediately
 after restoring trust (without a fresh hello first) fails with the
 completed-hello error, not a trust-policy one, which is easy to
 misdiagnose as a bug in the recovery path itself.
+
+`netbbs.doors.runtime`'s sandbox model (issue #63/#167/#172) is
+deliberately same-OS-user subprocess isolation, not containers or a
+privilege-separated user -- see that module's own docstring for the
+full reasoning. Two non-obvious constraints that follow from that
+choice, both real and both accepted rather than overlooked:
+`resource.RLIMIT_NPROC` is a ceiling on the *real UID's* total process
+count, not a per-process-tree limit -- since every door and NetBBS
+itself share one OS user by design, `DOOR_MAX_PROCESSES` bounds one
+door's own runaway forking but also stacks across every concurrent door
+session and NetBBS's own process count; it's a coarse fork-bomb backstop,
+not a precise per-door quota. And `resource` itself is POSIX-only --
+guarded with a plain `try/except ImportError` (this project's dev
+sandbox routinely runs on Windows), so a door still runs during local
+development, just without the CPU/memory/process-count ceilings a real
+NetBSD/Linux node enforces; only the async wall-time watchdog (pure
+`asyncio`, cross-platform) applies unconditionally. Real verification of
+the `resource.setrlimit` ceilings themselves needs to happen on an
+actual POSIX target, not this Windows dev box.
