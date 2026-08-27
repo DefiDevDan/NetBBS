@@ -27,11 +27,45 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import sys
 
 ESC = "\x1b"
 RESET = f"{ESC}[0m"
 BOLD = f"{ESC}[1m"
+DIM = f"{ESC}[2m"
+
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\([AB0-2]|\x1b[78HDM]")
+
+
+def _strip_ansi(text: str) -> str:
+    return ANSI_ESCAPE_RE.sub("", text)
+
+
+def _dlen(text: str) -> int:
+    clean = _strip_ansi(text)
+    w = 0
+    for ch in clean:
+        w += 2 if ord(ch) > 0x2E80 else 1
+    return w
+
+
+def _box_line(left: str, content: str, right: str, width: int = 78) -> str:
+    border_w = _dlen(left) + _dlen(right)
+    target_inner = width - border_w
+    inner_w = _dlen(content)
+    pad = max(0, target_inner - inner_w)
+    return f"{left}{content}{' ' * pad}{right}"
+
+
+def _center_line(left: str, content: str, right: str, width: int = 78) -> str:
+    border_w = _dlen(left) + _dlen(right)
+    target_inner = width - border_w
+    inner_w = _dlen(content)
+    pad_total = max(0, target_inner - inner_w)
+    pad_left = pad_total // 2
+    pad_right = pad_total - pad_left
+    return f"{left}{' ' * pad_left}{content}{' ' * pad_right}{right}"
 
 
 def _load_door_info() -> dict:
@@ -58,7 +92,7 @@ def _load_door_info() -> dict:
 class Palette:
     """Two depths of the same handful of named colors -- truecolor RGB
     triples, and their nearest hand-picked xterm 256 equivalents. A real
-    nearest-256 algorithm is overkill for the six colors this door
+    nearest-256 algorithm is overkill for the colors this door
     actually uses."""
 
     def __init__(self, truecolor: bool):
@@ -93,6 +127,18 @@ class Palette:
     @property
     def gold(self) -> str:
         return self._sgr((255, 200, 60), 220)
+
+    @property
+    def border(self) -> str:
+        return self._sgr((130, 95, 230), 135)
+
+    @property
+    def dark_border(self) -> str:
+        return self._sgr((85, 75, 130), 60)
+
+    @property
+    def white(self) -> str:
+        return self._sgr((250, 250, 255), 255)
 
 
 def out(text: str = "") -> None:
@@ -133,43 +179,98 @@ QUESTIONS = [
     ("Which number base do 256-color ANSI codes use per channel?", ["Binary", "Octal", "Decimal", "Hexadecimal"], 2),
     ("What's the classic BBS term for a caller's very first visit?", ["A new user", "A guest login", "A cold call", "A first-timer"], 0),
     ("SSH primarily improves on Telnet by adding what?", ["Faster transfer speed", "Encryption", "Color support", "File attachments"], 1),
+    ("Who co-created CBBS in 1978, the world's first computerized BBS?", ["Ward Christensen & Randy Suess", "Dennis Ritchie", "Ken Thompson", "Gary Kildall"], 0),
+    ("Which AT command instructs a Hayes-compatible modem to hang up?", ["ATH0", "ATDT", "ATZ", "ATO"], 0),
+    ("What was the device driver needed to render ANSI graphics on PC-DOS?", ["ANSI.SYS", "COLOR.SYS", "VGA.COM", "SCREEN.EXE"], 0),
+    ("Which archiving utility was created by Phil Katz for BBS distribution?", ["PKZIP", "ARJ", "LHA", "TAR"], 0),
+    ("What does the 'WWIV' BBS software acronym stand for?", ["World War IV", "Wide World Info Video", "Western Wireless Voice", "World Wide Interface Vision"], 0),
+    ("What was the maximum connection speed of a V.90 dial-up modem?", ["14.4 kbps", "28.8 kbps", "33.6 kbps", "56 kbps"], 3),
+    ("Which BBS graphical vector protocol predated HTML in the early 90s?", ["RIPscrip", "NAPLPS", "Teletext", "PostScript"], 0),
+    ("In FidoNet network addressing (e.g. 1:105/42), what does the 1 indicate?", ["Zone", "Net", "Node", "Point"], 0),
+    ("Which famous fantasy RPG door game was created by Seth Robinson?", ["Legend of the Red Dragon", "TradeWars 2002", "Barren Realms Elite", "Solar Realms"], 0),
+    ("Which file transfer protocol used 1024-byte blocks and CRC checking?", ["Ymodem-1K", "Xmodem-Checksum", "Kermit", "ASCII"], 0),
 ]
 
 QUESTIONS_PER_ROUND = 8
 LETTERS = ["A", "B", "C", "D"]
 
 
-def draw_title(p: Palette, info: dict) -> None:
+def draw_title(p: Palette, info: dict, width: int = 78) -> None:
+    w = width
     out_line()
-    out_line(f"{p.title}{BOLD}╔═════════════════════════════════════════════╗{RESET}")
-    out_line(f"{p.title}{BOLD}║{RESET}          {p.gold}{BOLD}R E T R O   T R I V I A{RESET}          {p.title}{BOLD}║{RESET}")
-    out_line(f"{p.title}{BOLD}╚════════════════════════════════════════════╝{RESET}")
+    out_line(f"{p.border}{BOLD}╔{'═' * (w - 2)}╗{RESET}")
+    t1 = f"{p.accent}✦  ✦  ✦{RESET}       {p.gold}{BOLD}R E T R O   T R I V I A{RESET}       {p.accent}✦  ✦  ✦{RESET}"
+    out_line(_center_line(f"{p.border}{BOLD}║{RESET}", t1, f"{p.border}{BOLD}║{RESET}", w))
+    t2 = f"{p.title}The Classic BBS & Retro Computing Challenge{RESET}"
+    out_line(_center_line(f"{p.border}{BOLD}║{RESET}", t2, f"{p.border}{BOLD}║{RESET}", w))
+    out_line(f"{p.border}{BOLD}╚{'═' * (w - 2)}╝{RESET}")
     out_line()
-    out_line(f"{p.muted}Welcome, {RESET}{p.accent}{BOLD}{info['handle']}{RESET}{p.muted}, to {info['node_name']}'s trivia challenge.{RESET}")
-    out_line(f"{p.muted}Answer with A, B, C, or D -- no Enter needed.{RESET}")
+    b1 = f"{p.dark_border}⟦{RESET} {p.muted}NODE:{RESET} {p.accent}{BOLD}{info.get('node_name', 'NetBBS')}{RESET} {p.dark_border}⟧{RESET}"
+    b2 = f"{p.dark_border}⟦{RESET} {p.muted}CALLER:{RESET} {p.gold}{BOLD}{info.get('handle', 'Guest')}{RESET} {p.dark_border}⟧{RESET}"
+    b3 = f"{p.dark_border}⟦{RESET} {p.muted}ROUND:{RESET} {p.accent}{BOLD}8 QUESTIONS{RESET} {p.dark_border}⟧{RESET}"
+    out_line(f"  {b1}   {b2}   {b3}")
     out_line()
+    out_line(f"{p.muted}Welcome, {RESET}{p.accent}{BOLD}{info.get('handle', 'Guest')}{RESET}{p.muted}, to {info.get('node_name', 'NetBBS')}'s trivia challenge.{RESET}")
+    out_line(f"{p.dark_border}╭{'─' * (w - 2)}╮{RESET}")
+    out_line(f"{p.dark_border}│{RESET}  {p.gold}{BOLD}HOW TO PLAY:{RESET} {p.white}Press {p.gold}{BOLD}A{RESET}{p.white}, {p.gold}{BOLD}B{RESET}{p.white}, {p.gold}{BOLD}C{RESET}{p.white}, or {p.gold}{BOLD}D{RESET} {p.white}to answer immediately -- no Enter needed.{RESET}  {p.dark_border}│{RESET}")
+    out_line(f"{p.dark_border}╰{'─' * (w - 2)}╯{RESET}")
 
 
-def ask_question(p: Palette, number: int, total: int, question: str, choices: list[str]) -> int:
-    out_line(f"{p.accent}{BOLD}Question {number}/{total}{RESET}  {question}")
+def ask_question(p: Palette, number: int, total: int, question: str, choices: list[str], width: int = 78) -> int:
+    w = width
+    pct = int((number - 1) / total * 100)
+    filled = int((number - 1) / total * 10)
+    bar = "■" * filled + "□" * (10 - filled)
+
+    out_line()
+    top_hdr = f"── {p.accent}{BOLD}Question {number}/{total}{RESET}{p.border} ──── Progress [{p.gold}{bar}{p.border}] {pct:2d}% ──"
+    dash_len = w - 2 - _dlen(top_hdr)
+    out_line(f"{p.border}╭{top_hdr}{'─' * max(0, dash_len)}╮{RESET}")
+    out_line(_box_line(f"{p.border}│{RESET}", "", f"{p.border}│{RESET}", w))
+
+    # Clean word-wrap for questions
+    words = question.split()
+    lines: list[str] = []
+    cur = ""
+    for word in words:
+        if _dlen(cur + " " + word) > (w - 6):
+            lines.append(cur)
+            cur = word
+        else:
+            cur = f"{cur} {word}" if cur else word
+    if cur:
+        lines.append(cur)
+
+    for ql in lines:
+        out_line(_box_line(f"{p.border}│{RESET}", f"  {p.white}{BOLD}{ql}{RESET}", f"{p.border}│{RESET}", w))
+
+    out_line(_box_line(f"{p.border}│{RESET}", "", f"{p.border}│{RESET}", w))
+    out_line(f"{p.border}╞{'═' * (w - 2)}╡{RESET}")
+    out_line(_box_line(f"{p.border}│{RESET}", "", f"{p.border}│{RESET}", w))
+
     for letter, choice in zip(LETTERS, choices):
-        out_line(f"  {p.gold}{BOLD}[{letter}]{RESET} {choice}")
-    out(f"{p.muted}Your answer: {RESET}")
+        row = f"   {p.gold}{BOLD}[{letter}]{RESET}  {p.white}{choice}{RESET}"
+        out_line(_box_line(f"{p.border}│{RESET}", row, f"{p.border}│{RESET}", w))
+
+    out_line(_box_line(f"{p.border}│{RESET}", "", f"{p.border}│{RESET}", w))
+    out_line(f"{p.border}╰{'─' * (w - 2)}╯{RESET}")
+    out(f"  {p.accent}⚡{RESET} {p.muted}Your answer [{p.gold}A{p.muted}/{p.gold}B{p.muted}/{p.gold}C{p.muted}/{p.gold}D{p.muted}]: {RESET}")
+
     while True:
         key = read_key().upper()
         if key in LETTERS:
-            out_line(key)
+            out_line(f"{p.gold}{BOLD}{key}{RESET}")
             return LETTERS.index(key)
-        # Anything else (stray bytes, arrow-key escape fragments, etc.)
-        # is just ignored -- this game only ever listens for A-D.
+        # Stray bytes / arrow fragments ignored
 
 
-def draw_result(p: Palette, correct: bool, answer: str) -> None:
+def draw_result(p: Palette, correct: bool, answer: str, width: int = 78) -> None:
+    w = width
     if correct:
-        out_line(f"{p.correct}{BOLD}Correct!{RESET}")
+        out_line(f"  {p.correct}{BOLD}✔ Correct!{RESET} {p.accent}Excellent deduction.{RESET}")
     else:
-        out_line(f"{p.wrong}{BOLD}Not quite.{RESET} {p.muted}The answer was {answer}.{RESET}")
-    out_line()
+        out_line(f"  {p.wrong}{BOLD}✘ Not quite.{RESET} {p.muted}The answer was {RESET}{p.gold}{BOLD}{answer}{RESET}{p.muted}.{RESET}")
+    out_line(f"  {p.dark_border}{'─' * (w - 4)}{RESET}")
 
 
 def rank_for(score: int, total: int) -> str:
@@ -183,11 +284,51 @@ def rank_for(score: int, total: int) -> str:
     return "Newbie"
 
 
-def draw_final_score(p: Palette, score: int, total: int) -> None:
-    rule = f"{p.title}{BOLD}" + "─" * 50 + RESET
-    out_line(rule)
-    out_line(f"{p.gold}{BOLD}Final score: {score}/{total}{RESET}  ({rank_for(score, total)})")
-    out_line(rule)
+def rank_flavor(score: int, total: int) -> tuple[str, str]:
+    pct = score / total
+    if pct == 1.0:
+        return "★★★★★", "Flawless telecommunication mastery -- true SysOp material!"
+    if pct >= 0.75:
+        return "★★★★☆", "Impressive telecommunications knowledge -- true BBS veteran!"
+    if pct >= 0.5:
+        return "★★★☆☆", "Respectable dial-up literacy -- your carrier signal is strong!"
+    return "★★☆☆☆", "Welcome to the scene! Keep dialing in and learning the ropes."
+
+
+def draw_final_score(p: Palette, score: int, total: int, info: dict | None = None, width: int = 78) -> None:
+    w = width
+    info = info or _load_door_info()
+    stars, flavor = rank_flavor(score, total)
+    rank_name = rank_for(score, total)
+    pct_final = int(score / total * 100)
+    filled_acc = int(score / total * 20)
+    bar_acc = "█" * filled_acc + "░" * (20 - filled_acc)
+
+    out_line()
+    out_line(f"{p.border}{BOLD}╔{'═' * (w - 2)}╗{RESET}")
+    f_title = f"{p.gold}{BOLD}★   T R I V I A   R E S U L T S   ★{RESET}"
+    out_line(_center_line(f"{p.border}{BOLD}║{RESET}", f_title, f"{p.border}{BOLD}║{RESET}", w))
+    out_line(f"{p.border}{BOLD}╠{'═' * (w - 2)}╣{RESET}")
+    out_line(_box_line(f"{p.border}{BOLD}║{RESET}", "", f"{p.border}{BOLD}║{RESET}", w))
+
+    # Exact string required by tests: "Final score: {score}/{total}  ({rank_for(score, total)})"
+    fs_text = f"  {p.gold}{BOLD}Final score: {score}/{total}{RESET}  {p.white}({rank_name}){RESET}"
+    out_line(_box_line(f"{p.border}{BOLD}║{RESET}", fs_text, f"{p.border}{BOLD}║{RESET}", w))
+
+    acc_text = f"  {p.muted}Performance :{RESET} {p.accent}[{p.correct}{bar_acc}{p.accent}] {p.gold}{BOLD}{pct_final}%{RESET}"
+    out_line(_box_line(f"{p.border}{BOLD}║{RESET}", acc_text, f"{p.border}{BOLD}║{RESET}", w))
+
+    rank_badge = f"  {p.muted}Final Rank  :{RESET} {p.accent}{stars}{RESET} {p.gold}{BOLD}{rank_name}{RESET}"
+    out_line(_box_line(f"{p.border}{BOLD}║{RESET}", rank_badge, f"{p.border}{BOLD}║{RESET}", w))
+
+    flavor_text = f"  {p.muted}\"{flavor}\"{RESET}"
+    out_line(_box_line(f"{p.border}{BOLD}║{RESET}", flavor_text, f"{p.border}{BOLD}║{RESET}", w))
+    out_line(_box_line(f"{p.border}{BOLD}║{RESET}", "", f"{p.border}{BOLD}║{RESET}", w))
+    out_line(f"{p.border}{BOLD}╠{'─' * (w - 2)}╣{RESET}")
+
+    caller_str = f"  {p.muted}Player: {p.accent}{info.get('handle', 'Guest')}{p.muted}  •  Node: {p.accent}{info.get('node_name', 'NetBBS')}{p.muted}  •  Format: {p.accent}8-Question Round{RESET}"
+    out_line(_box_line(f"{p.border}{BOLD}║{RESET}", caller_str, f"{p.border}{BOLD}║{RESET}", w))
+    out_line(f"{p.border}{BOLD}╚{'═' * (w - 2)}╝{RESET}")
     out_line()
     out_line(f"{p.muted}Thanks for playing. Press any key to leave...{RESET}")
 
@@ -197,19 +338,22 @@ def main() -> int:
     info = _load_door_info()
     palette = Palette(truecolor=info.get("color_depth") == "truecolor")
 
-    draw_title(palette, info)
+    term_w = info.get("terminal_width", 80)
+    w = 78 if term_w >= 80 else max(40, term_w)
+
+    draw_title(palette, info, width=w)
 
     round_questions = random.sample(QUESTIONS, k=min(QUESTIONS_PER_ROUND, len(QUESTIONS)))
     score = 0
     try:
         for i, (question, choices, correct_index) in enumerate(round_questions, start=1):
-            chosen = ask_question(palette, i, len(round_questions), question, choices)
+            chosen = ask_question(palette, i, len(round_questions), question, choices, width=w)
             correct = chosen == correct_index
             if correct:
                 score += 1
-            draw_result(palette, correct, f"{LETTERS[correct_index]}) {choices[correct_index]}")
+            draw_result(palette, correct, f"{LETTERS[correct_index]}) {choices[correct_index]}", width=w)
 
-        draw_final_score(palette, score, len(round_questions))
+        draw_final_score(palette, score, len(round_questions), info=info, width=w)
         read_key()
     except EOFError:
         return 0
