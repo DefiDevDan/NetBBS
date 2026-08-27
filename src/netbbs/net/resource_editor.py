@@ -294,10 +294,11 @@ async def edit_resource_draft(
             available = max(1, session.terminal_width - label_width)
             value_lines = wrap_to_width(value, available) or [""]
             field_line_count += len(value_lines)
-            await session.write_line(f"{prefix}: {colored(value_lines[0], fg_color=MUTED_COLOR)}")
+            val_color = 252 if i == selected else MUTED_COLOR
+            await session.write_line(f"{prefix}: {colored(value_lines[0], fg_color=val_color)}")
             indent = " " * label_width
             for continuation in value_lines[1:]:
-                await session.write_line(f"{indent}{colored(continuation, fg_color=MUTED_COLOR)}")
+                await session.write_line(f"{indent}{colored(continuation, fg_color=val_color)}")
         menu_entries = [MenuEntry(label=f.menu_text, brief=f.brief, detailed=f.help) for f in fields]
         if save is not None:
             menu_entries.append(MenuEntry(label=save_menu_text, brief=_SAVE_BRIEF))
@@ -383,7 +384,9 @@ async def edit_resource_draft(
             await session.write("\a")
             continue
         if key.kind == EditorKeyKind.CTRL and key.char == "h":
-            await _show_field_help(session, fields, selected=selected, header_color=header_color)
+            await _show_field_help(
+                session, fields, selected=selected, header_color=header_color, unicode_style=unicode_style,
+            )
             continue
         if key.kind == EditorKeyKind.CTRL and key.char == "c":
             # Issue #157: Ctrl-C as an incremental alias for [B]ack --
@@ -422,7 +425,9 @@ async def edit_resource_draft(
         # still handled here too, matching pre-#160 behavior exactly
         # for a session that can't decode arrows at all.
         if choice == HELP_KEY:
-            await _show_field_help(session, fields, selected=selected, header_color=header_color)
+            await _show_field_help(
+                session, fields, selected=selected, header_color=header_color, unicode_style=unicode_style,
+            )
             continue
         if choice == back_hotkey or choice == CANCEL_KEY:
             await session.write_line("")
@@ -479,6 +484,7 @@ async def _read_navigable_key(session: Session) -> EditorKey:
 async def _show_field_help(
     session: Session, fields: list[FieldSpec], *, selected: int | None = None,
     header_color: int | tuple[int, int, int] = HEADER_COLOR,
+    unicode_style: bool = False,
 ) -> None:
     """Ctrl-H's own content (issue #150): every field with a `help`
     string authored, one after another.
@@ -497,19 +503,20 @@ async def _show_field_help(
         if not field.help:
             await show_help(
                 session, "Field help", [f"No help is available for {field.label!r} yet."],
-                header_color=header_color,
+                header_color=header_color, unicode_style=unicode_style,
             )
             return
         await show_help(
             session, "Field help", [colored(field.label, fg_color=header_color, bold=True), f"  {field.help}"],
-            header_color=header_color,
+            header_color=header_color, unicode_style=unicode_style,
         )
         return
 
     documented = [f for f in fields if f.help]
     if not documented:
         await show_help(
-            session, "Field help", ["No help is available for this screen yet."], header_color=header_color
+            session, "Field help", ["No help is available for this screen yet."], header_color=header_color,
+            unicode_style=unicode_style,
         )
         return
     lines: list[str] = []
@@ -517,7 +524,7 @@ async def _show_field_help(
         lines.append(colored(f.label, fg_color=header_color, bold=True))
         lines.append(f"  {f.help}")
         lines.append("")
-    await show_help(session, "Field help", lines[:-1], header_color=header_color)
+    await show_help(session, "Field help", lines[:-1], header_color=header_color, unicode_style=unicode_style)
 
 
 def text_field(key: str, *, required: bool = False) -> FieldPrompt:

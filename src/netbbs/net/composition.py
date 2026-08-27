@@ -310,6 +310,7 @@ _REVIEW_HELP: dict[str, tuple[str, str]] = {
 async def _show_review_help(
     session: Session, *, field_order: tuple[str, ...], selected: str | None,
     header_color: int | tuple[int, int, int] = HEADER_COLOR,
+    unicode_style: bool = False,
 ) -> None:
     """Same "narrow to the highlighted field if one is selected, else
     list everything" shape `netbbs.net.resource_editor._show_field_help`
@@ -321,7 +322,7 @@ async def _show_review_help(
         label, help_text = _REVIEW_HELP[selected]
         await show_help(
             session, "Field help", [colored(label, fg_color=header_color, bold=True), f"  {help_text}"],
-            header_color=header_color,
+            header_color=header_color, unicode_style=unicode_style,
         )
         return
     lines: list[str] = []
@@ -330,7 +331,7 @@ async def _show_review_help(
         lines.append(colored(label, fg_color=header_color, bold=True))
         lines.append(f"  {help_text}")
         lines.append("")
-    await show_help(session, "Field help", lines[:-1], header_color=header_color)
+    await show_help(session, "Field help", lines[:-1], header_color=header_color, unicode_style=unicode_style)
 
 
 async def review_composition(
@@ -348,6 +349,7 @@ async def review_composition(
     collapsed: bool = False,
     accent_color: int = ACCENT_COLOR,
     header_color: int | tuple[int, int, int] = HEADER_COLOR,
+    truecolor: bool = False,
 ) -> ReviewAction:
     """Render a complete draft and return one explicit review action.
 
@@ -360,7 +362,11 @@ async def review_composition(
     preference, same caching rule as every other screen in this rollout.
     `redraw_in_place` (dogfood feature request, `netbbs.net.
     redraw_preference`) is the same shape -- the caller's already-
-    resolved preference, not looked up here.
+    resolved preference, not looked up here. `truecolor` is likewise
+    already-resolved -- the caller's `netbbs.net.color_depth_preference.
+    effective_truecolor(session, db, user)`, which honors that user's own
+    `[C]olor depth` override rather than this module reading `session.
+    supports_truecolor` directly and silently ignoring it.
 
     Dogfood feature request, issue #160's cursor-navigation follow-up
     (item 2 of the prioritized list): `[T]o`/`[U]pdate subject`/`[B]ody`
@@ -411,7 +417,12 @@ async def review_composition(
             else colored("  Body", fg_color=MUTED_COLOR, bold=True)
         )
         await session.write_line(body_prefix)
+        rule_char = "─" if unicode_style else "-"
+        divider_color = 238 if truecolor else MUTED_COLOR
+        preview_rule = colored(rule_char * min(session.terminal_width, 78), fg_color=divider_color)
+        await session.write_line(preview_rule)
         await session.write_line(_preview_body(body, session.terminal_width))
+        await session.write_line(preview_rule)
 
         options = [MenuEntry(label=menu_key(commit_key.upper(), commit_label), brief=commit_brief)]
         if recipient is not None:
@@ -449,7 +460,10 @@ async def review_composition(
             await session.write("\a")
             continue
         if key.kind == EditorKeyKind.CTRL and key.char == "h":
-            await _show_review_help(session, field_order=field_order, selected=selected, header_color=header_color)
+            await _show_review_help(
+                session, field_order=field_order, selected=selected, header_color=header_color,
+                unicode_style=unicode_style,
+            )
             await draw()
             continue
         if key.kind == EditorKeyKind.ENTER or (key.kind == EditorKeyKind.CHAR and key.char == " "):
@@ -464,7 +478,10 @@ async def review_composition(
                 # to plain `read_key()`) delivers Ctrl-H as an ordinary
                 # character, never as `EditorKeyKind.CTRL` -- same dual
                 # path `edit_resource_draft` itself handles.
-                await _show_review_help(session, field_order=field_order, selected=selected, header_color=header_color)
+                await _show_review_help(
+                session, field_order=field_order, selected=selected, header_color=header_color,
+                unicode_style=unicode_style,
+            )
                 await draw()
                 continue
             if choice in field_order:

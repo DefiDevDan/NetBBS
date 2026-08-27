@@ -365,16 +365,27 @@ async def pick_item(
             # cursor -- `highlighted` is `None` (marker never shown)
             # until the first arrow press, see this function's own
             # docstring.
-            marker = "> " if highlighted == position - 1 else "  "
+            is_highlighted = highlighted == position - 1
+            marker = "> " if is_highlighted else "  "
             id_str = str(stable_id_of(item))
             id_padding = " " * (max_id_width - len(id_str))
+
+            if is_highlighted:
+                key_color = lambda txt: colored(txt, fg_color=accent_color, bold=True)
+                item_name_color = lambda txt: colored(txt, fg_color=accent_color, bold=True)
+                desc_color = 252
+            else:
+                key_color = MENU_KEY_COLOR
+                item_name_color = accent_color
+                desc_color = MUTED_COLOR
+
             segments: list[tuple[str, int | None]] = [
-                (f"{marker}{position:02d}. ", MENU_KEY_COLOR),
+                (f"{marker}{position:02d}. ", key_color),
                 (f"(#{id_str}) {id_padding}", MUTED_COLOR),
-                (sanitize_text(name_of(item)), accent_color),
+                (sanitize_text(name_of(item)), item_name_color),
             ]
             if description:
-                segments.append((f" - {sanitize_text(description)}", MUTED_COLOR))
+                segments.append((f" - {sanitize_text(description)}", desc_color))
             await session.write_line(colored_truncate(segments, session.terminal_width))
 
         nav = _render_nav(
@@ -447,7 +458,8 @@ async def pick_item(
 
         if key.kind == EditorKeyKind.CTRL and key.char == "h":
             await _show_picker_help(
-                session, on_sort=on_sort, has_refresh=refresh is not None, header_color=header_color
+                session, on_sort=on_sort, has_refresh=refresh is not None, header_color=header_color,
+                unicode_style=unicode_style,
             )
             page_items = await _render()
             continue
@@ -730,6 +742,7 @@ async def _read_navigable_key(session: Session, *, distinguish_ctrl_h: bool = Fa
 async def _show_picker_help(
     session: Session, *, on_sort: Callable | None, has_refresh: bool,
     header_color: int | tuple[int, int, int] = HEADER_COLOR,
+    unicode_style: bool = False,
 ) -> None:
     """Ctrl-H's own content for this screen (dogfood feature request --
     the shared picker had no on-demand help at all, only the terse
@@ -774,7 +787,7 @@ async def _show_picker_help(
             "", colored("Ctrl-R", fg_color=header_color, bold=True),
             "  Re-fetches the list from scratch and clears any active search.",
         ]
-    await show_help(session, "Navigation help", lines, header_color=header_color)
+    await show_help(session, "Navigation help", lines, header_color=header_color, unicode_style=unicode_style)
 
 
 def _search_completer(candidates: Sequence[str]) -> Completer:
