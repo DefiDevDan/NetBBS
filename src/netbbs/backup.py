@@ -2,20 +2,22 @@
 Node backup and restore (design doc §13.4/§13.10, issue #60's first
 operational slice, hardened by issue #75).
 
-A node's recoverable state is nine `db_path`-relative artifacts, not
+A node's recoverable state is twelve `db_path`-relative artifacts, not
 just the database: content blobs (`netbbs.files.storage`), node
 identity (`netbbs.link.node_identity`), the SSH host key
 (`netbbs.net.ssh`), the welcome banner (`netbbs.net.welcome_banner`),
 the main-menu masthead (`netbbs.net.main_menu_banner`, issue #161), the
-logoff banner (`netbbs.net.logoff_banner`, issue #177), and the two
+logoff banner (`netbbs.net.logoff_banner`, issue #177), the two
 new-account banners (`netbbs.net.new_account_banner_before`/`_after`,
-issue #177) all live at derived paths alongside the database, each with
+issue #177), and the three submenu mastheads (`netbbs.net.
+board_list_banner`/`file_area_banner`/`chat_channel_picker_banner`,
+issue #176) all live at derived paths alongside the database, each with
 no independent config field of its own. A backup covering only the
 database silently loses the SSH host key (every client gets a MITM
 warning after restore) and, far more seriously, the Link node identity
 -- root-key custody is explicitly "part of ordinary node backup and
 restore" (design doc §4.5), not a separate ceremony. This module treats
-all nine as one atomic backup operation, never a DB-only one.
+all twelve as one atomic backup operation, never a DB-only one.
 
 Deliberately path-based, not `Database`-based: a backup must be safely
 takeable against a live, running node, and opening a second `Database`
@@ -150,6 +152,24 @@ def _new_account_banner_after_path_for(db_path: Path) -> Path:
     return db_path.parent / f"{db_path.stem}_new_account_banner_after.ans"
 
 
+def _board_list_banner_path_for(db_path: Path) -> Path:
+    """Mirrors `netbbs.net.board_list_banner.board_list_banner_path`'s
+    own derived path (issue #176)."""
+    return db_path.parent / f"{db_path.stem}_board_list_banner.ans"
+
+
+def _file_area_banner_path_for(db_path: Path) -> Path:
+    """Mirrors `netbbs.net.file_area_banner.file_area_banner_path`'s
+    own derived path (issue #176)."""
+    return db_path.parent / f"{db_path.stem}_file_area_banner.ans"
+
+
+def _chat_channel_picker_banner_path_for(db_path: Path) -> Path:
+    """Mirrors `netbbs.net.chat_channel_picker_banner.
+    chat_channel_picker_banner_path`'s own derived path (issue #176)."""
+    return db_path.parent / f"{db_path.stem}_chat_channel_picker_banner.ans"
+
+
 def _sha256_of_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -181,11 +201,12 @@ def create_backup(*, db_path: Path, identity_dir: Path, destination: Path) -> Pa
     SQLite's own online backup API (`netbbs.selfupdate.
     snapshot_database`), and every other artifact is either static once
     created or already rewritten via its own atomic-replace pattern --
-    see the module docstring for the accepted exceptions (the welcome
-    banner, the main-menu masthead, the logoff banner, and both
-    new-account banners have no atomicity guarantee on their own writes;
-    a backup landing mid-edit could capture a half-written one, purely
-    cosmetic, no correctness consequence).
+    see the module docstring for the accepted exceptions (every banner/
+    masthead singleton -- the welcome banner, the main-menu masthead,
+    the logoff banner, both new-account banners, and the three submenu
+    mastheads -- has no atomicity guarantee on its own writes; a backup
+    landing mid-edit could capture a half-written one, purely cosmetic,
+    no correctness consequence).
 
     The manifest's `checksums` (design doc §13.10, issue #75) cover
     every file captured *outside* the content-addressed `files/` tree
@@ -228,6 +249,9 @@ def create_backup(*, db_path: Path, identity_dir: Path, destination: Path) -> Pa
         _logoff_banner_path_for(db_path),
         _new_account_banner_before_path_for(db_path),
         _new_account_banner_after_path_for(db_path),
+        _board_list_banner_path_for(db_path),
+        _file_area_banner_path_for(db_path),
+        _chat_channel_picker_banner_path_for(db_path),
     ):
         if extra_path.exists():
             shutil.copy2(extra_path, destination / extra_path.name)

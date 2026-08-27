@@ -332,6 +332,27 @@ from netbbs.net.new_account_banner_after import (
     new_account_banner_after_status,
     set_new_account_banner_after_enabled,
 )
+from netbbs.net.board_list_banner import (
+    MAX_BOARD_LIST_BANNER_SIZE_BYTES,
+    board_list_banner_path,
+    board_list_banner_status,
+    load_board_list_banner,
+    set_board_list_banner_enabled,
+)
+from netbbs.net.file_area_banner import (
+    MAX_FILE_AREA_BANNER_SIZE_BYTES,
+    file_area_banner_path,
+    file_area_banner_status,
+    load_file_area_banner,
+    set_file_area_banner_enabled,
+)
+from netbbs.net.chat_channel_picker_banner import (
+    MAX_CHAT_CHANNEL_PICKER_BANNER_SIZE_BYTES,
+    chat_channel_picker_banner_path,
+    chat_channel_picker_banner_status,
+    load_chat_channel_picker_banner,
+    set_chat_channel_picker_banner_enabled,
+)
 from netbbs.rendering import (
     ACCENT_COLOR,
     ALERT_COLOR,
@@ -904,6 +925,10 @@ async def _system_menu(
             await session.write_line("")
             await _session_banners_menu(session, lane, actor)
             await _draw_system_menu(session, node_controls, link_context, description_level, redraw_in_place, unicode_style, header_color=header_color)
+        elif choice == "e":
+            await session.write_line("")
+            await _section_mastheads_menu(session, lane, actor)
+            await _draw_system_menu(session, node_controls, link_context, description_level, redraw_in_place, unicode_style, header_color=header_color)
         elif choice == "n" and node_controls is not None:
             await session.write_line("")
             await _node_menu(session, lane, actor, node_controls)
@@ -962,6 +987,7 @@ async def _draw_system_menu(
         MenuEntry(label=menu_key("C", "olors"), brief="Node-wide accent/header/clock branding"),
         MenuEntry(label=menu_key("a", "me", prefix="Node N"), brief="The name and gradient shown in every screen's own corner"),
         MenuEntry(label=menu_key("S", "ession banners"), brief="Logoff and new-account banners"),
+        MenuEntry(label=menu_key("e", "ction mastheads", prefix="S"), brief="Above the board/file/chat pickers"),
         MenuEntry(label=menu_key("U", "pdate"), brief="Software update settings"),
         MenuEntry(label=menu_key("T", "imestamp format"), brief="Node-wide date/time display"),
         MenuEntry(label=menu_key("P", "olicy trust"), brief="Federation trust policy"),
@@ -5550,6 +5576,532 @@ async def _edit_new_account_banner_after_screen(session: Session, lane: Database
 
     path.write_bytes(result)
     await lane.run(record_action, actor=actor, action="edit_new_account_banner_after", detail=str(path))
+    await session.write_line(f"\r\nSaved {path}. Use [P]review to verify it looks right.")
+
+
+# -- section mastheads (issue #176) --------------------------------------
+#
+# Extends the main-menu masthead (issue #161) to the three top-level
+# index/listing screens -- board list, file areas, chat channel picker --
+# via netbbs.net.picker.pick_item's own new `masthead` parameter (issue
+# #176), each an independent singleton on the same mechanism as every
+# banner/masthead above. Grouped under one new "Section mastheads"
+# Settings entry for the same reason issue #177's own "Session banners"
+# entry exists -- no good non-colliding mnemonic was left for three more
+# flat top-level rows -- and, like that entry, this is a reasonable
+# interim grouping, not a commitment to keep this exact shape once issue
+# #178's own broader "Banners & Mastheads" reorg lands.
+
+
+async def _section_mastheads_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
+    description_level = await lane.run(menu_description_level, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
+    header_color = await lane.run(effective_header_color_256)
+    await _draw_section_mastheads_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+    while True:
+        choice = (await session.read_key()).lower()
+
+        if choice == "b":
+            await session.write_line("")
+            return
+        elif choice == "o":
+            await session.write_line("")
+            await _board_list_masthead_menu(session, lane, actor)
+            await _draw_section_mastheads_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "f":
+            await session.write_line("")
+            await _file_area_masthead_menu(session, lane, actor)
+            await _draw_section_mastheads_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "c":
+            await session.write_line("")
+            await _chat_channel_picker_masthead_menu(session, lane, actor)
+            await _draw_section_mastheads_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        else:
+            await session.write(reject_unhandled_key(choice))
+
+
+async def _draw_section_mastheads_menu(
+    session: Session, lane: DatabaseLane, description_level: str, redraw_in_place: bool,
+    unicode_style: bool, collapsed: bool, header_color: int | tuple[int, int, int],
+) -> None:
+    await session.write_line("\r\n" + screen_title("Section mastheads",
+            breadcrumb=(session.node_display_name,), width=session.terminal_width, clear=redraw_in_place,
+            unicode_style=unicode_style, collapsed=collapsed, header_color=header_color,
+            node_name_gradient=session.node_name_gradient))
+    await session.write_line(
+        colored(
+            "Optional mastheads shown above the board list, file-area list, and chat channel "
+            "picker -- at every level of browsing (top level, a category, a Community), the "
+            "same way the main-menu masthead marks the main menu.",
+            fg_color=MUTED_COLOR,
+        )
+    )
+    await session.write_line(
+        "\r\n" + _menu_row(
+            [
+                MenuEntry(label=menu_key("o", "ard list", prefix="B"), brief="Above every board-list view"),
+                MenuEntry(label=menu_key("F", "ile areas"), brief="Above every file-area-list view"),
+                MenuEntry(label=menu_key("C", "hat channels"), brief="Above the channel picker"),
+                MenuEntry(label=menu_key("B", "ack"), brief="Return to Settings"),
+            ],
+            description_level,
+            width=session.terminal_width,
+            height=session.terminal_height,
+        )
+    )
+    await session.write("Choice: ")
+
+
+# -- board list masthead --------------------------------------------------
+
+
+async def _board_list_masthead_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
+    description_level = await lane.run(menu_description_level, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
+    header_color = await lane.run(effective_header_color_256)
+    await _draw_board_list_masthead_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+    while True:
+        choice = (await session.read_key()).lower()
+
+        if choice == "b":
+            await session.write_line("")
+            return
+        elif choice == "p":
+            await session.write_line("")
+            await _preview_board_list_masthead_screen(session, lane)
+            await _draw_board_list_masthead_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "e":
+            await session.write_line("")
+            await _enable_board_list_masthead_screen(session, lane, actor)
+            await _draw_board_list_masthead_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "d":
+            await session.write_line("")
+            await _disable_board_list_masthead_screen(session, lane, actor)
+            await _draw_board_list_masthead_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "i":
+            await session.write_line("")
+            await _edit_board_list_masthead_screen(session, lane, actor)
+            await _draw_board_list_masthead_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        else:
+            await session.write(reject_unhandled_key(choice))
+
+
+async def _draw_board_list_masthead_menu(
+    session: Session, lane: DatabaseLane, description_level: str, redraw_in_place: bool,
+    unicode_style: bool, collapsed: bool, header_color: int | tuple[int, int, int],
+) -> None:
+    status = await lane.run(board_list_banner_status)
+    state = "ENABLED" if status.enabled else "disabled"
+    file_state = f"{status.size_bytes} bytes" if status.exists else "missing"
+    state_color = SUCCESS_COLOR if status.enabled else MUTED_COLOR
+    file_color = METADATA_COLOR if status.exists else ERROR_COLOR
+    detail = (
+        colored(state, fg_color=state_color, bold=status.enabled)
+        + colored(" -- file: ", fg_color=LABEL_COLOR)
+        + colored(str(status.path), fg_color=METADATA_COLOR)
+        + colored(f" ({file_state})", fg_color=file_color)
+    )
+    await session.write_line("\r\n" + screen_title("Board list masthead",
+            breadcrumb=(session.node_display_name, "System", "Section mastheads"), width=session.terminal_width,
+            clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color,
+            node_name_gradient=session.node_name_gradient))
+    await session.write_line(
+        colored("Shown above every board-browsing view -- the top level, a category, or a "
+                "Community/Uncategorized scope.", fg_color=MUTED_COLOR)
+    )
+    await session.write_line(detail)
+    await session.write_line(
+        "\r\n" + _menu_row(
+            [
+                MenuEntry(label=menu_key("P", "review"), brief="Show the masthead as callers see it"),
+                MenuEntry(label=menu_key("E", "nable"), brief="Turn the masthead on"),
+                MenuEntry(label=menu_key("D", "isable"), brief="Turn the masthead off"),
+                MenuEntry(label=menu_key("i", "t", prefix="Ed"), brief="Edit the masthead art"),
+                MenuEntry(label=menu_key("B", "ack"), brief="Return to Section mastheads"),
+            ],
+            description_level,
+            width=session.terminal_width,
+            height=session.terminal_height,
+        )
+    )
+    await session.write("Choice: ")
+
+
+async def _preview_board_list_masthead_screen(session: Session, lane: DatabaseLane) -> None:
+    status, masthead_text = await lane.run(lambda db: (board_list_banner_status(db), load_board_list_banner(db)))
+    await session.write_line(colored("\r\nPreviewing board list masthead as shown above the board list:", fg_color=MUTED_COLOR))
+    if masthead_text:
+        await session.write_line(masthead_text)
+    else:
+        await session.write_line(
+            colored(f"(no masthead -- enabled={status.enabled}, file exists={status.exists})", fg_color=MUTED_COLOR)
+        )
+    await session.write_line(colored("Press any key to continue...", fg_color=MUTED_COLOR))
+    await session.read_key()
+
+
+async def _enable_board_list_masthead_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    status = await lane.run(board_list_banner_status)
+    if not status.exists:
+        await session.write_line(
+            colored(
+                f"No masthead file found at {status.path}. Place a .ans file there first, then enable.",
+                fg_color=MUTED_COLOR,
+            )
+        )
+        return
+    if (status.size_bytes or 0) > MAX_BOARD_LIST_BANNER_SIZE_BYTES:
+        await session.write_line(
+            colored(
+                f"Masthead file at {status.path} is {status.size_bytes} bytes, over the "
+                f"{MAX_BOARD_LIST_BANNER_SIZE_BYTES} byte limit -- not enabling.",
+                fg_color=MUTED_COLOR,
+            )
+        )
+        return
+
+    def _apply(db: Database) -> None:
+        set_board_list_banner_enabled(db, True)
+        record_action(db, actor=actor, action="enable_board_list_banner", detail=str(status.path))
+
+    await lane.run(_apply)
+    await session.write_line("Board list masthead enabled. Use [P]review to verify it looks right.")
+
+
+async def _disable_board_list_masthead_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    def _apply(db: Database):
+        status = board_list_banner_status(db)
+        set_board_list_banner_enabled(db, False)
+        record_action(db, actor=actor, action="disable_board_list_banner", detail=str(status.path))
+        return status
+
+    status = await lane.run(_apply)
+    await session.write_line(f"Board list masthead disabled. Your file at {status.path} was left in place.")
+
+
+async def _edit_board_list_masthead_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    path = await lane.run(board_list_banner_path)
+    initial_bytes = path.read_bytes() if path.exists() else None
+    draft_path = path.parent / f"{path.name}.draft"
+
+    result = await edit_ansi_art(
+        session, initial_bytes=initial_bytes, draft_path=draft_path,
+        redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+        unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+    )
+    if result is None:
+        await session.write_line(colored("\r\nNo changes saved.", fg_color=MUTED_COLOR))
+        return
+
+    path.write_bytes(result)
+    await lane.run(record_action, actor=actor, action="edit_board_list_banner", detail=str(path))
+    await session.write_line(f"\r\nSaved {path}. Use [P]review to verify it looks right.")
+
+
+# -- file area masthead ----------------------------------------------------
+
+
+async def _file_area_masthead_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
+    description_level = await lane.run(menu_description_level, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
+    header_color = await lane.run(effective_header_color_256)
+    await _draw_file_area_masthead_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+    while True:
+        choice = (await session.read_key()).lower()
+
+        if choice == "b":
+            await session.write_line("")
+            return
+        elif choice == "p":
+            await session.write_line("")
+            await _preview_file_area_masthead_screen(session, lane)
+            await _draw_file_area_masthead_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "e":
+            await session.write_line("")
+            await _enable_file_area_masthead_screen(session, lane, actor)
+            await _draw_file_area_masthead_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "d":
+            await session.write_line("")
+            await _disable_file_area_masthead_screen(session, lane, actor)
+            await _draw_file_area_masthead_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "i":
+            await session.write_line("")
+            await _edit_file_area_masthead_screen(session, lane, actor)
+            await _draw_file_area_masthead_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        else:
+            await session.write(reject_unhandled_key(choice))
+
+
+async def _draw_file_area_masthead_menu(
+    session: Session, lane: DatabaseLane, description_level: str, redraw_in_place: bool,
+    unicode_style: bool, collapsed: bool, header_color: int | tuple[int, int, int],
+) -> None:
+    status = await lane.run(file_area_banner_status)
+    state = "ENABLED" if status.enabled else "disabled"
+    file_state = f"{status.size_bytes} bytes" if status.exists else "missing"
+    state_color = SUCCESS_COLOR if status.enabled else MUTED_COLOR
+    file_color = METADATA_COLOR if status.exists else ERROR_COLOR
+    detail = (
+        colored(state, fg_color=state_color, bold=status.enabled)
+        + colored(" -- file: ", fg_color=LABEL_COLOR)
+        + colored(str(status.path), fg_color=METADATA_COLOR)
+        + colored(f" ({file_state})", fg_color=file_color)
+    )
+    await session.write_line("\r\n" + screen_title("File area masthead",
+            breadcrumb=(session.node_display_name, "System", "Section mastheads"), width=session.terminal_width,
+            clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color,
+            node_name_gradient=session.node_name_gradient))
+    await session.write_line(
+        colored("Shown above every file-area-browsing view -- the top level, a category, or a "
+                "Community/Uncategorized scope.", fg_color=MUTED_COLOR)
+    )
+    await session.write_line(detail)
+    await session.write_line(
+        "\r\n" + _menu_row(
+            [
+                MenuEntry(label=menu_key("P", "review"), brief="Show the masthead as callers see it"),
+                MenuEntry(label=menu_key("E", "nable"), brief="Turn the masthead on"),
+                MenuEntry(label=menu_key("D", "isable"), brief="Turn the masthead off"),
+                MenuEntry(label=menu_key("i", "t", prefix="Ed"), brief="Edit the masthead art"),
+                MenuEntry(label=menu_key("B", "ack"), brief="Return to Section mastheads"),
+            ],
+            description_level,
+            width=session.terminal_width,
+            height=session.terminal_height,
+        )
+    )
+    await session.write("Choice: ")
+
+
+async def _preview_file_area_masthead_screen(session: Session, lane: DatabaseLane) -> None:
+    status, masthead_text = await lane.run(lambda db: (file_area_banner_status(db), load_file_area_banner(db)))
+    await session.write_line(colored("\r\nPreviewing file area masthead as shown above the file-area list:", fg_color=MUTED_COLOR))
+    if masthead_text:
+        await session.write_line(masthead_text)
+    else:
+        await session.write_line(
+            colored(f"(no masthead -- enabled={status.enabled}, file exists={status.exists})", fg_color=MUTED_COLOR)
+        )
+    await session.write_line(colored("Press any key to continue...", fg_color=MUTED_COLOR))
+    await session.read_key()
+
+
+async def _enable_file_area_masthead_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    status = await lane.run(file_area_banner_status)
+    if not status.exists:
+        await session.write_line(
+            colored(
+                f"No masthead file found at {status.path}. Place a .ans file there first, then enable.",
+                fg_color=MUTED_COLOR,
+            )
+        )
+        return
+    if (status.size_bytes or 0) > MAX_FILE_AREA_BANNER_SIZE_BYTES:
+        await session.write_line(
+            colored(
+                f"Masthead file at {status.path} is {status.size_bytes} bytes, over the "
+                f"{MAX_FILE_AREA_BANNER_SIZE_BYTES} byte limit -- not enabling.",
+                fg_color=MUTED_COLOR,
+            )
+        )
+        return
+
+    def _apply(db: Database) -> None:
+        set_file_area_banner_enabled(db, True)
+        record_action(db, actor=actor, action="enable_file_area_banner", detail=str(status.path))
+
+    await lane.run(_apply)
+    await session.write_line("File area masthead enabled. Use [P]review to verify it looks right.")
+
+
+async def _disable_file_area_masthead_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    def _apply(db: Database):
+        status = file_area_banner_status(db)
+        set_file_area_banner_enabled(db, False)
+        record_action(db, actor=actor, action="disable_file_area_banner", detail=str(status.path))
+        return status
+
+    status = await lane.run(_apply)
+    await session.write_line(f"File area masthead disabled. Your file at {status.path} was left in place.")
+
+
+async def _edit_file_area_masthead_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    path = await lane.run(file_area_banner_path)
+    initial_bytes = path.read_bytes() if path.exists() else None
+    draft_path = path.parent / f"{path.name}.draft"
+
+    result = await edit_ansi_art(
+        session, initial_bytes=initial_bytes, draft_path=draft_path,
+        redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+        unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+    )
+    if result is None:
+        await session.write_line(colored("\r\nNo changes saved.", fg_color=MUTED_COLOR))
+        return
+
+    path.write_bytes(result)
+    await lane.run(record_action, actor=actor, action="edit_file_area_banner", detail=str(path))
+    await session.write_line(f"\r\nSaved {path}. Use [P]review to verify it looks right.")
+
+
+# -- chat channel picker masthead -------------------------------------------
+
+
+async def _chat_channel_picker_masthead_menu(session: Session, lane: DatabaseLane, actor: User) -> None:
+    description_level = await lane.run(menu_description_level, actor)
+    unicode_style = await lane.run(unicode_style_enabled, actor)
+    collapsed = await lane.run(breadcrumb_collapsed_enabled, actor)
+    redraw_in_place = await lane.run(redraw_in_place_enabled, actor)
+    header_color = await lane.run(effective_header_color_256)
+    await _draw_chat_channel_picker_masthead_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+    while True:
+        choice = (await session.read_key()).lower()
+
+        if choice == "b":
+            await session.write_line("")
+            return
+        elif choice == "p":
+            await session.write_line("")
+            await _preview_chat_channel_picker_masthead_screen(session, lane)
+            await _draw_chat_channel_picker_masthead_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "e":
+            await session.write_line("")
+            await _enable_chat_channel_picker_masthead_screen(session, lane, actor)
+            await _draw_chat_channel_picker_masthead_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "d":
+            await session.write_line("")
+            await _disable_chat_channel_picker_masthead_screen(session, lane, actor)
+            await _draw_chat_channel_picker_masthead_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        elif choice == "i":
+            await session.write_line("")
+            await _edit_chat_channel_picker_masthead_screen(session, lane, actor)
+            await _draw_chat_channel_picker_masthead_menu(session, lane, description_level, redraw_in_place, unicode_style, collapsed, header_color)
+        else:
+            await session.write(reject_unhandled_key(choice))
+
+
+async def _draw_chat_channel_picker_masthead_menu(
+    session: Session, lane: DatabaseLane, description_level: str, redraw_in_place: bool,
+    unicode_style: bool, collapsed: bool, header_color: int | tuple[int, int, int],
+) -> None:
+    status = await lane.run(chat_channel_picker_banner_status)
+    state = "ENABLED" if status.enabled else "disabled"
+    file_state = f"{status.size_bytes} bytes" if status.exists else "missing"
+    state_color = SUCCESS_COLOR if status.enabled else MUTED_COLOR
+    file_color = METADATA_COLOR if status.exists else ERROR_COLOR
+    detail = (
+        colored(state, fg_color=state_color, bold=status.enabled)
+        + colored(" -- file: ", fg_color=LABEL_COLOR)
+        + colored(str(status.path), fg_color=METADATA_COLOR)
+        + colored(f" ({file_state})", fg_color=file_color)
+    )
+    await session.write_line("\r\n" + screen_title("Chat channel picker masthead",
+            breadcrumb=(session.node_display_name, "System", "Section mastheads"), width=session.terminal_width,
+            clear=redraw_in_place, unicode_style=unicode_style, collapsed=collapsed, header_color=header_color,
+            node_name_gradient=session.node_name_gradient))
+    await session.write_line(
+        colored("Shown above every channel-picker view -- the top level, a category, or a "
+                "Community/Uncategorized scope. Never inside a live channel.", fg_color=MUTED_COLOR)
+    )
+    await session.write_line(detail)
+    await session.write_line(
+        "\r\n" + _menu_row(
+            [
+                MenuEntry(label=menu_key("P", "review"), brief="Show the masthead as callers see it"),
+                MenuEntry(label=menu_key("E", "nable"), brief="Turn the masthead on"),
+                MenuEntry(label=menu_key("D", "isable"), brief="Turn the masthead off"),
+                MenuEntry(label=menu_key("i", "t", prefix="Ed"), brief="Edit the masthead art"),
+                MenuEntry(label=menu_key("B", "ack"), brief="Return to Section mastheads"),
+            ],
+            description_level,
+            width=session.terminal_width,
+            height=session.terminal_height,
+        )
+    )
+    await session.write("Choice: ")
+
+
+async def _preview_chat_channel_picker_masthead_screen(session: Session, lane: DatabaseLane) -> None:
+    status, masthead_text = await lane.run(
+        lambda db: (chat_channel_picker_banner_status(db), load_chat_channel_picker_banner(db))
+    )
+    await session.write_line(
+        colored("\r\nPreviewing chat channel picker masthead as shown above the channel picker:", fg_color=MUTED_COLOR)
+    )
+    if masthead_text:
+        await session.write_line(masthead_text)
+    else:
+        await session.write_line(
+            colored(f"(no masthead -- enabled={status.enabled}, file exists={status.exists})", fg_color=MUTED_COLOR)
+        )
+    await session.write_line(colored("Press any key to continue...", fg_color=MUTED_COLOR))
+    await session.read_key()
+
+
+async def _enable_chat_channel_picker_masthead_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    status = await lane.run(chat_channel_picker_banner_status)
+    if not status.exists:
+        await session.write_line(
+            colored(
+                f"No masthead file found at {status.path}. Place a .ans file there first, then enable.",
+                fg_color=MUTED_COLOR,
+            )
+        )
+        return
+    if (status.size_bytes or 0) > MAX_CHAT_CHANNEL_PICKER_BANNER_SIZE_BYTES:
+        await session.write_line(
+            colored(
+                f"Masthead file at {status.path} is {status.size_bytes} bytes, over the "
+                f"{MAX_CHAT_CHANNEL_PICKER_BANNER_SIZE_BYTES} byte limit -- not enabling.",
+                fg_color=MUTED_COLOR,
+            )
+        )
+        return
+
+    def _apply(db: Database) -> None:
+        set_chat_channel_picker_banner_enabled(db, True)
+        record_action(db, actor=actor, action="enable_chat_channel_picker_banner", detail=str(status.path))
+
+    await lane.run(_apply)
+    await session.write_line("Chat channel picker masthead enabled. Use [P]review to verify it looks right.")
+
+
+async def _disable_chat_channel_picker_masthead_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    def _apply(db: Database):
+        status = chat_channel_picker_banner_status(db)
+        set_chat_channel_picker_banner_enabled(db, False)
+        record_action(db, actor=actor, action="disable_chat_channel_picker_banner", detail=str(status.path))
+        return status
+
+    status = await lane.run(_apply)
+    await session.write_line(f"Chat channel picker masthead disabled. Your file at {status.path} was left in place.")
+
+
+async def _edit_chat_channel_picker_masthead_screen(session: Session, lane: DatabaseLane, actor: User) -> None:
+    path = await lane.run(chat_channel_picker_banner_path)
+    initial_bytes = path.read_bytes() if path.exists() else None
+    draft_path = path.parent / f"{path.name}.draft"
+
+    result = await edit_ansi_art(
+        session, initial_bytes=initial_bytes, draft_path=draft_path,
+        redraw_in_place=await lane.run(redraw_in_place_enabled, actor),
+        unicode_style=await lane.run(unicode_style_enabled, actor),
+        collapsed=await lane.run(breadcrumb_collapsed_enabled, actor),
+    )
+    if result is None:
+        await session.write_line(colored("\r\nNo changes saved.", fg_color=MUTED_COLOR))
+        return
+
+    path.write_bytes(result)
+    await lane.run(record_action, actor=actor, action="edit_chat_channel_picker_banner", detail=str(path))
     await session.write_line(f"\r\nSaved {path}. Use [P]review to verify it looks right.")
 
 

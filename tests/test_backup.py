@@ -1,7 +1,7 @@
 """
 Tests for netbbs.backup (design doc §13.4, issue #60's first
 operational slice): create_backup/restore_backup capturing and
-restoring all nine recoverable-state artifacts, the ordering/safety
+restoring all twelve recoverable-state artifacts, the ordering/safety
 invariants around them, and the `python -m netbbs.backup` CLI.
 """
 
@@ -64,6 +64,18 @@ def _new_account_banner_after_path(db_path):
     return db_path.parent / f"{db_path.stem}_new_account_banner_after.ans"
 
 
+def _board_list_banner_path(db_path):
+    return db_path.parent / f"{db_path.stem}_board_list_banner.ans"
+
+
+def _file_area_banner_path(db_path):
+    return db_path.parent / f"{db_path.stem}_file_area_banner.ans"
+
+
+def _chat_channel_picker_banner_path(db_path):
+    return db_path.parent / f"{db_path.stem}_chat_channel_picker_banner.ans"
+
+
 @pytest.fixture
 def db_path(tmp_path):
     path = tmp_path / "netbbs.db"
@@ -77,7 +89,7 @@ def identity_dir(tmp_path):
 
 
 def _seed_full_node(db_path, identity_dir) -> NodeIdentity:
-    """Populate every one of the nine backup artifacts with
+    """Populate every one of the twelve backup artifacts with
     distinguishable content, including the transient `.incoming`
     staging file that must never survive into a backup."""
     blob_path = _storage_root(db_path) / _BLOB_HASH[:2] / _BLOB_HASH
@@ -97,6 +109,9 @@ def _seed_full_node(db_path, identity_dir) -> NodeIdentity:
     _logoff_banner_path(db_path).write_text("fake logoff banner")
     _new_account_banner_before_path(db_path).write_text("fake before banner")
     _new_account_banner_after_path(db_path).write_text("fake after banner")
+    _board_list_banner_path(db_path).write_text("fake board masthead")
+    _file_area_banner_path(db_path).write_text("fake file area masthead")
+    _chat_channel_picker_banner_path(db_path).write_text("fake channel masthead")
 
     return identity
 
@@ -104,7 +119,7 @@ def _seed_full_node(db_path, identity_dir) -> NodeIdentity:
 # -- create_backup --------------------------------------------------------
 
 
-def test_create_backup_captures_all_nine_artifacts(tmp_path, db_path, identity_dir):
+def test_create_backup_captures_all_twelve_artifacts(tmp_path, db_path, identity_dir):
     _seed_full_node(db_path, identity_dir)
     destination = tmp_path / "backup1"
 
@@ -120,6 +135,9 @@ def test_create_backup_captures_all_nine_artifacts(tmp_path, db_path, identity_d
     assert (destination / f"{db_path.stem}_logoff_banner.ans").read_text() == "fake logoff banner"
     assert (destination / f"{db_path.stem}_new_account_banner_before.ans").read_text() == "fake before banner"
     assert (destination / f"{db_path.stem}_new_account_banner_after.ans").read_text() == "fake after banner"
+    assert (destination / f"{db_path.stem}_board_list_banner.ans").read_text() == "fake board masthead"
+    assert (destination / f"{db_path.stem}_file_area_banner.ans").read_text() == "fake file area masthead"
+    assert (destination / f"{db_path.stem}_chat_channel_picker_banner.ans").read_text() == "fake channel masthead"
     assert (destination / "manifest.json").exists()
 
 
@@ -217,7 +235,7 @@ def test_restore_backup_round_trip(tmp_path, db_path, identity_dir):
     destination = tmp_path / "backup1"
     create_backup(db_path=db_path, identity_dir=identity_dir, destination=destination)
 
-    # Simulate data loss: wipe every one of the nine artifacts.
+    # Simulate data loss: wipe every one of the twelve artifacts.
     conn = sqlite3.connect(str(db_path))
     conn.execute("DELETE FROM node_config")
     conn.commit()
@@ -231,6 +249,9 @@ def test_restore_backup_round_trip(tmp_path, db_path, identity_dir):
     _logoff_banner_path(db_path).unlink()
     _new_account_banner_before_path(db_path).unlink()
     _new_account_banner_after_path(db_path).unlink()
+    _board_list_banner_path(db_path).unlink()
+    _file_area_banner_path(db_path).unlink()
+    _chat_channel_picker_banner_path(db_path).unlink()
 
     restore_backup(source=destination, db_path=db_path, identity_dir=identity_dir)
 
@@ -242,6 +263,9 @@ def test_restore_backup_round_trip(tmp_path, db_path, identity_dir):
     assert _logoff_banner_path(db_path).read_text() == "fake logoff banner"
     assert _new_account_banner_before_path(db_path).read_text() == "fake before banner"
     assert _new_account_banner_after_path(db_path).read_text() == "fake after banner"
+    assert _board_list_banner_path(db_path).read_text() == "fake board masthead"
+    assert _file_area_banner_path(db_path).read_text() == "fake file area masthead"
+    assert _chat_channel_picker_banner_path(db_path).read_text() == "fake channel masthead"
     conn = sqlite3.connect(str(db_path))
     marker = conn.execute("SELECT value FROM node_config WHERE key = 'marker'").fetchone()
     conn.close()

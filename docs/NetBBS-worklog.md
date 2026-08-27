@@ -810,6 +810,22 @@ hand immediately before the prepended content instead — never rely on
 `screen_title`'s own `clear` for a screen whose real first line isn't the
 title.
 
+Prepending optional content (a masthead) above a *live, self-redrawing*
+screen is a different problem from prepending it above a screen drawn
+once per outer-loop iteration (`_draw_main_menu`'s own case above): issue
+#176 extended `netbbs.net.picker.pick_item` with a `masthead` parameter,
+not a caller writing the masthead once before its first call into
+`pick_item` — `pick_item` redraws its own screen from scratch, via its
+own internal closure, on every state change it handles itself (paging,
+search, sort, `Ctrl-R` refresh) that the caller never sees or gets a
+chance to re-prepend anything for. A parameter threaded through that
+closure is the only way the content survives every one of those redraws,
+not just the first paint. Any future "show optional content above a
+shared, self-contained interactive component" feature should check
+whether that component owns its own redraw loop before assuming a
+`_draw_main_menu`-style "caller writes it once, above one function call"
+shape will work.
+
 ### Text and byte boundaries
 
 Core text utilities use `\n`. CRLF normalization belongs in the transport.

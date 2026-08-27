@@ -54,6 +54,7 @@ from netbbs.rendering import (
     MUTED_COLOR,
     MenuEntry,
     action_bar,
+    clear_screen,
     colored,
     colored_truncate,
     cut_to_width,
@@ -102,6 +103,7 @@ async def pick_item(
     accent_color: int = ACCENT_COLOR,
     header_color: int | tuple[int, int, int] = HEADER_COLOR,
     start_stable_id: int | None = None,
+    masthead: str = "",
 ) -> T | None:
     """
     Let the user browse/search/jump through `items` and pick one, or
@@ -246,9 +248,40 @@ async def pick_item(
     ignored if no item's `stable_id_of` matches (e.g. the item was
     deleted between calls) -- falls back to the ordinary page-1,
     nothing-highlighted start.
+
+    `masthead` (GitHub issue #176), if given, is the caller's already-
+    resolved `load_*_masthead(db)` result -- an optional SysOp-authored
+    banner prepended above every redraw of this picker, the same
+    "prepend above still-fully-live content" trick issue #161's main-
+    menu masthead established. `""` (the default, and what every
+    existing caller gets) renders byte-for-byte as before this
+    parameter existed. Threaded through a closure, not re-resolved here,
+    so it reappears correctly on every one of this function's own
+    internal redraws (paging, search, sort, refresh, Ctrl-L) -- not just
+    the first paint, unlike a caller that only wrote it once before its
+    first call into this function. Same `clear_screen()`-ordering
+    hazard as `_draw_main_menu`'s own masthead handling: `screen_title`
+    embeds its own `clear_screen()` inside the string it returns, so
+    whenever a masthead is shown, `clear` is forced `False` on the
+    `screen_title` call below and the redraw-in-place clear (if wanted)
+    is issued by hand *before* the masthead instead.
     """
+    def _masthead_prefix() -> str:
+        # Same clear_screen()-ordering hazard `_draw_main_menu`'s own
+        # masthead handling documents: the clear (if `redraw_in_place`)
+        # must land *before* the masthead, and (for the populated-page
+        # branch in `_render` below) *before* `screen_title`'s own
+        # returned string too, since `screen_title` embeds its own
+        # clear_screen() inside whatever it returns.
+        if not masthead:
+            return ""
+        return (clear_screen() if redraw_in_place else "") + masthead
+
     if not items and refresh is None:
-        await session.write_line(colored(f"\r\n{empty_message}", fg_color=MUTED_COLOR))
+        prefix = _masthead_prefix()
+        await session.write_line(
+            (f"{prefix}\r\n" if prefix else "") + colored(f"\r\n{empty_message}", fg_color=MUTED_COLOR)
+        )
         return None
 
     working_set: Sequence[T] = items
@@ -269,7 +302,10 @@ async def pick_item(
         nonlocal page_index
         if not working_set:
             page_index = 0
-            await session.write_line(colored(f"\r\n{empty_message}", fg_color=MUTED_COLOR))
+            prefix = _masthead_prefix()
+            await session.write_line(
+                (f"{prefix}\r\n" if prefix else "") + colored(f"\r\n{empty_message}", fg_color=MUTED_COLOR)
+            )
             trailer = f"{menu_key('B', 'ack')} {'—' if unicode_style else '-'} Ctrl-L: redraw"
             if refresh is not None:
                 trailer += ", Ctrl-R: refresh"
@@ -283,13 +319,15 @@ async def pick_item(
         start = page_index * page_size
         page_items = working_set[start : start + page_size]
 
+        if masthead:
+            await session.write_line(_masthead_prefix())
         await session.write_line(
             "\r\n" + screen_title(
                 title,
                 breadcrumb=(session.node_display_name, *breadcrumb),
                 subtitle=f"page {page_index + 1}/{total_pages}, {len(working_set)} total",
                 width=session.terminal_width,
-                clear=redraw_in_place,
+                clear=False if masthead else redraw_in_place,
                 unicode_style=unicode_style, collapsed=collapsed,
                 header_color=header_color, node_name_gradient=session.node_name_gradient)
         )

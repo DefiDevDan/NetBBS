@@ -174,6 +174,7 @@ from netbbs.net.composition import ReviewAction, edit_line_body, review_composit
 from netbbs.net.draft_storage import delete_draft, drafts_directory, load_draft
 from netbbs.net.editor_preference import fullscreen_editor_enabled, set_fullscreen_editor_enabled
 from netbbs.net.door_flow import browse_doors, has_visible_doors
+from netbbs.net.board_list_banner import load_board_list_banner
 from netbbs.net.file_flow import browse_file_areas, enter_file_area, has_visible_areas
 from netbbs.net.logoff_banner import load_logoff_banner
 from netbbs.net.mail_flow import browse_mail
@@ -2806,6 +2807,13 @@ async def _browse_boards_in_category(
     # content-restriction the way min_age is; see can_post's own check,
     # below, for where it actually applies.
     effective_community_id = community_id if community_scoped else None
+    # GitHub issue #176: resolved once, reused for both pick_item calls
+    # below (flat and mixed-with-categories) -- shows at every level of
+    # board browsing this recursive function reaches (top level, a
+    # category, a Community/Uncategorized scope), not only the very
+    # first unfiltered screen, matching this feature's own scoping
+    # decision.
+    board_masthead = load_board_list_banner(db)
 
     def _load(order_by: str) -> tuple[list[Board], list[Category]]:
         all_boards = [
@@ -2887,6 +2895,7 @@ async def _browse_boards_in_category(
             collapsed=collapsed,
             accent_color=accent_color,
             header_color=header_color,
+            masthead=board_masthead,
         )
         if board is not None:
             await _show_board(session, db, board, user, link_context=link_context)
@@ -2929,6 +2938,7 @@ async def _browse_boards_in_category(
         collapsed=collapsed,
         accent_color=accent_color,
         header_color=header_color,
+        masthead=board_masthead,
     )
     if selected is None:
         return

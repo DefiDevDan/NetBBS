@@ -199,6 +199,9 @@ back up all of it together, not just the database (see §5):
 | Logoff banner (if customized) | `<db-stem>_logoff_banner.ans` |
 | New-account banner, before signup (if customized) | `<db-stem>_new_account_banner_before.ans` |
 | New-account banner, after signup (if customized) | `<db-stem>_new_account_banner_after.ans` |
+| Board list masthead (if customized) | `<db-stem>_board_list_banner.ans` |
+| File area masthead (if customized) | `<db-stem>_file_area_banner.ans` |
+| Chat channel picker masthead (if customized) | `<db-stem>_chat_channel_picker_banner.ans` |
 | Config file | wherever `--config` points (not derived from `--db`) |
 | Logs | `netbbs.log` next to the database, self-rotating at 10 MiB
   with 5 backups kept (50 MiB worst case, never unbounded) — also

@@ -4406,6 +4406,207 @@ def test_new_account_banner_after_preview_shows_resolved_content(db, lane, sysop
     assert "DISTINCTIVE WELCOME TEXT" in _written_text(session)
 
 
+# -- section mastheads (issue #176) ---------------------------------------
+
+
+def test_section_mastheads_option_appears_in_the_system_submenu(db, lane, sysop):
+    session = FakeSession(["s", "e", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "ction mastheads" in _written_text(session)
+
+
+def test_section_mastheads_menu_lists_all_three(db, lane, sysop):
+    session = FakeSession(["s", "e", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "ard list" in text
+    assert "ile areas" in text
+    assert "hat channels" in text
+
+
+# -- board list masthead --------------------------------------------------
+
+
+def test_board_list_masthead_enable_with_no_file_present_shows_friendly_error(db, lane, sysop):
+    from netbbs.net.board_list_banner import is_board_list_banner_enabled
+
+    session = FakeSession(["s", "e", "o", "e", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "No masthead file found" in _written_text(session)
+    assert is_board_list_banner_enabled(db) is False
+
+
+def test_board_list_masthead_enable_with_oversized_file_shows_friendly_error(db, lane, sysop):
+    from netbbs.net.board_list_banner import MAX_BOARD_LIST_BANNER_SIZE_BYTES, board_list_banner_path
+
+    board_list_banner_path(db).write_bytes(b"x" * (MAX_BOARD_LIST_BANNER_SIZE_BYTES + 1))
+    session = FakeSession(["s", "e", "o", "e", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    text = _written_text(session)
+    assert "over the" in text and "byte limit" in text
+
+
+def test_board_list_masthead_enable_with_valid_file_succeeds_and_is_audit_logged(db, lane, sysop):
+    from netbbs.net.board_list_banner import board_list_banner_path, is_board_list_banner_enabled
+
+    board_list_banner_path(db).write_bytes(b"MY CUSTOM BOARD MASTHEAD")
+    session = FakeSession(["s", "e", "o", "e", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Board list masthead enabled" in _written_text(session)
+    assert is_board_list_banner_enabled(db) is True
+
+    rows = db.connection.execute(
+        "SELECT actor_user_id FROM moderation_log WHERE action = 'enable_board_list_banner'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["actor_user_id"] == sysop.id
+
+
+def test_board_list_masthead_disable_reverts_flag_without_deleting_file(db, lane, sysop):
+    from netbbs.net.board_list_banner import (
+        board_list_banner_path,
+        is_board_list_banner_enabled,
+        set_board_list_banner_enabled,
+    )
+
+    board_list_banner_path(db).write_bytes(b"MY CUSTOM BOARD MASTHEAD")
+    set_board_list_banner_enabled(db, True)
+
+    session = FakeSession(["s", "e", "o", "d", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert is_board_list_banner_enabled(db) is False
+    assert board_list_banner_path(db).read_bytes() == b"MY CUSTOM BOARD MASTHEAD"
+
+
+def test_board_list_masthead_preview_shows_resolved_content(db, lane, sysop):
+    from netbbs.net.board_list_banner import board_list_banner_path, set_board_list_banner_enabled
+
+    board_list_banner_path(db).write_bytes(b"DISTINCTIVE BOARD TEXT")
+    set_board_list_banner_enabled(db, True)
+
+    session = FakeSession(["s", "e", "o", "p", "x", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "DISTINCTIVE BOARD TEXT" in _written_text(session)
+
+
+def test_board_list_masthead_edit_round_trips_into_board_list_banner_path(db, lane, sysop):
+    from netbbs.net.board_list_banner import board_list_banner_path
+    from netbbs.rendering.ansi_art import decode_ansi_bytes
+    from netbbs.rendering.ansi_parse import parse_ansi_into_buffer
+    from netbbs.rendering.screen_buffer import ScreenBuffer
+
+    session = FakeSession(["s", "e", "o", "i", "A", "CTRL+O", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Saved" in _written_text(session)
+
+    saved = board_list_banner_path(db)
+    assert saved.exists()
+    buf = ScreenBuffer(80, 24)
+    parse_ansi_into_buffer(decode_ansi_bytes(saved.read_bytes()), buf)
+    assert buf.get_cell(0, 0).char == "A"
+
+    rows = db.connection.execute(
+        "SELECT actor_user_id FROM moderation_log WHERE action = 'edit_board_list_banner'"
+    ).fetchall()
+    assert len(rows) == 1
+
+
+# -- file area masthead ----------------------------------------------------
+
+
+def test_file_area_masthead_enable_with_valid_file_succeeds(db, lane, sysop):
+    from netbbs.net.file_area_banner import file_area_banner_path, is_file_area_banner_enabled
+
+    file_area_banner_path(db).write_bytes(b"MY CUSTOM FILE AREA MASTHEAD")
+    session = FakeSession(["s", "e", "f", "e", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "File area masthead enabled" in _written_text(session)
+    assert is_file_area_banner_enabled(db) is True
+
+    rows = db.connection.execute(
+        "SELECT actor_user_id FROM moderation_log WHERE action = 'enable_file_area_banner'"
+    ).fetchall()
+    assert len(rows) == 1
+
+
+def test_file_area_masthead_disable_reverts_flag_without_deleting_file(db, lane, sysop):
+    from netbbs.net.file_area_banner import (
+        file_area_banner_path,
+        is_file_area_banner_enabled,
+        set_file_area_banner_enabled,
+    )
+
+    file_area_banner_path(db).write_bytes(b"MY CUSTOM FILE AREA MASTHEAD")
+    set_file_area_banner_enabled(db, True)
+
+    session = FakeSession(["s", "e", "f", "d", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert is_file_area_banner_enabled(db) is False
+    assert file_area_banner_path(db).read_bytes() == b"MY CUSTOM FILE AREA MASTHEAD"
+
+
+def test_file_area_masthead_preview_shows_resolved_content(db, lane, sysop):
+    from netbbs.net.file_area_banner import file_area_banner_path, set_file_area_banner_enabled
+
+    file_area_banner_path(db).write_bytes(b"DISTINCTIVE FILE AREA TEXT")
+    set_file_area_banner_enabled(db, True)
+
+    session = FakeSession(["s", "e", "f", "p", "x", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "DISTINCTIVE FILE AREA TEXT" in _written_text(session)
+
+
+# -- chat channel picker masthead -------------------------------------------
+
+
+def test_chat_channel_picker_masthead_enable_with_valid_file_succeeds(db, lane, sysop):
+    from netbbs.net.chat_channel_picker_banner import (
+        chat_channel_picker_banner_path,
+        is_chat_channel_picker_banner_enabled,
+    )
+
+    chat_channel_picker_banner_path(db).write_bytes(b"MY CUSTOM CHANNEL MASTHEAD")
+    session = FakeSession(["s", "e", "c", "e", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "Chat channel picker masthead enabled" in _written_text(session)
+    assert is_chat_channel_picker_banner_enabled(db) is True
+
+    rows = db.connection.execute(
+        "SELECT actor_user_id FROM moderation_log WHERE action = 'enable_chat_channel_picker_banner'"
+    ).fetchall()
+    assert len(rows) == 1
+
+
+def test_chat_channel_picker_masthead_disable_reverts_flag_without_deleting_file(db, lane, sysop):
+    from netbbs.net.chat_channel_picker_banner import (
+        chat_channel_picker_banner_path,
+        is_chat_channel_picker_banner_enabled,
+        set_chat_channel_picker_banner_enabled,
+    )
+
+    chat_channel_picker_banner_path(db).write_bytes(b"MY CUSTOM CHANNEL MASTHEAD")
+    set_chat_channel_picker_banner_enabled(db, True)
+
+    session = FakeSession(["s", "e", "c", "d", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert is_chat_channel_picker_banner_enabled(db) is False
+    assert chat_channel_picker_banner_path(db).read_bytes() == b"MY CUSTOM CHANNEL MASTHEAD"
+
+
+def test_chat_channel_picker_masthead_preview_shows_resolved_content(db, lane, sysop):
+    from netbbs.net.chat_channel_picker_banner import (
+        chat_channel_picker_banner_path,
+        set_chat_channel_picker_banner_enabled,
+    )
+
+    chat_channel_picker_banner_path(db).write_bytes(b"DISTINCTIVE CHANNEL TEXT")
+    set_chat_channel_picker_banner_enabled(db, True)
+
+    session = FakeSession(["s", "e", "c", "p", "x", "b", "b", "b", "b"])
+    _run(session, lane, sysop)
+    assert "DISTINCTIVE CHANNEL TEXT" in _written_text(session)
+
+
 def test_theme_colors_menu_shows_default_status_for_all_three_slots(db, lane, sysop):
     session = FakeSession(["s", "c", "b", "b", "b"])
     _run(session, lane, sysop)

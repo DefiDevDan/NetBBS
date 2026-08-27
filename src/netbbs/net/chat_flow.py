@@ -143,6 +143,7 @@ from netbbs.messaging_preferences import accepts_direct_messages
 from netbbs.moderation import ChannelPermission, has_permission
 from netbbs.net.char_input import Completer, InputHistory, LiveInputBuffer, reject_unhandled_key
 from netbbs.net.char_input import move_cursor as relative_move_cursor
+from netbbs.net.chat_channel_picker_banner import load_chat_channel_picker_banner
 from netbbs.net.node_theme import effective_accent_color_256, effective_header_color_256
 from netbbs.net.picker import pick_item
 from netbbs.net.redraw_preference import redraw_in_place_enabled
@@ -513,6 +514,15 @@ async def _pick_channel(
     unicode_style = await lane.run(unicode_style_enabled, user)
     collapsed = await lane.run(breadcrumb_collapsed_enabled, user)
     redraw_in_place = await lane.run(redraw_in_place_enabled, user)
+    # GitHub issue #176: resolved once, reused for both pick_item calls
+    # below (flat and mixed-with-categories) -- shows at every level of
+    # channel browsing this recursive function reaches (top level, a
+    # category, a Community/Uncategorized scope), matching
+    # `login_flow._browse_boards_in_category`'s own identical wiring.
+    # Never the inside of a live channel -- see chat_channel_picker_
+    # banner's own module docstring for why that's a categorically
+    # different rendering model, not just one level deeper.
+    channel_masthead = await lane.run(load_chat_channel_picker_banner)
     title = "Chat channels" if title_prefix is not None else "Available chat channels"
     picker_breadcrumb = (title_prefix,) if title_prefix is not None else ()
 
@@ -540,6 +550,7 @@ async def _pick_channel(
             unicode_style=unicode_style,
             collapsed=collapsed,
             accent_color=await lane.run(effective_accent_color_256),
+            masthead=channel_masthead,
         )
 
     mixed: list[Category | Channel] = [*categories_here, *channels_here]
@@ -578,6 +589,7 @@ async def _pick_channel(
         unicode_style=unicode_style,
         collapsed=collapsed,
         accent_color=await lane.run(effective_accent_color_256),
+        masthead=channel_masthead,
     )
     if selected is None:
         return None

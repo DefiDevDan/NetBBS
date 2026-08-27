@@ -81,6 +81,7 @@ from netbbs.link.files import RemoteFile, is_area_linked, list_remote_files
 from netbbs.link.protocol import LinkProtocolError
 from netbbs.net import zmodem
 from netbbs.net.confirm import prompt_yes_no
+from netbbs.net.file_area_banner import load_file_area_banner
 from netbbs.net.node_theme import effective_accent_color_256, effective_header_color_256
 from netbbs.net.picker import pick_item
 from netbbs.net.session import Session
@@ -260,6 +261,12 @@ async def _browse_areas_in_category(
     redraw_in_place = await lane.run(redraw_in_place_enabled, user)
     unicode_style = await lane.run(unicode_style_enabled, user)
     collapsed = await lane.run(breadcrumb_collapsed_enabled, user)
+    # GitHub issue #176: resolved once, reused for both pick_item calls
+    # below (flat and mixed-with-categories) -- shows at every level of
+    # file-area browsing this recursive function reaches (top level, a
+    # category, a Community/Uncategorized scope), matching
+    # `login_flow._browse_boards_in_category`'s own identical wiring.
+    area_masthead = await lane.run(load_file_area_banner)
     mode_box = {"mode": current_mode}
 
     async def _persist_sort_choice(mode: str, scope_kwargs: dict) -> None:
@@ -304,6 +311,7 @@ async def _browse_areas_in_category(
             collapsed=collapsed,
             accent_color=await lane.run(effective_accent_color_256),
             header_color=await lane.run(effective_header_color_256),
+            masthead=area_masthead,
         )
         if area is not None:
             await _show_area(session, lane, area, user, link_context=link_context)
@@ -347,6 +355,7 @@ async def _browse_areas_in_category(
         collapsed=collapsed,
         accent_color=await lane.run(effective_accent_color_256),
         header_color=await lane.run(effective_header_color_256),
+        masthead=area_masthead,
     )
     if selected is None:
         return

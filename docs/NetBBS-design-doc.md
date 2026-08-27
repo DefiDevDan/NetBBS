@@ -290,6 +290,29 @@ banners, with no built-in default art -- disabled is a complete
 non-event, unlike the welcome banner's own always-renders-something
 default.
 
+The main-menu masthead (issue #161) also extends to the three top-level
+index/listing screens -- board list, file areas, and the chat channel
+picker (issue #176) -- since each renders once per view as a
+`screen_title` + listing through the shared `netbbs.net.picker.
+pick_item`, structurally identical to the main menu despite being a
+recursive, categorized/Community-scoped browsing hierarchy rather than
+one flat screen. Each masthead shows at *every* level that hierarchy
+reaches (the unfiltered top level, a category, a Community/Uncategorized
+scope), not only the very first screen -- it marks "you're in this
+section," not one specific screen state. This required `pick_item`
+itself to grow a `masthead` parameter (threaded through its own internal
+redraw closure so the masthead survives paging/search/sort/refresh, not
+just the first paint) rather than each of the three call sites prepending
+it independently, since `pick_item`'s live picker redraws itself
+wholesale on every state change, unlike the main menu's own single
+per-loop-iteration draw. Deliberately never the per-board/per-area
+drill-down screens or the inside of a live chat channel -- see issue
+#176's own scoping discussion for why those are a bigger feature and a
+categorically different rendering model, respectively, not simply "one
+level deeper." Each of the three is its own independent singleton,
+reachable from Settings > Section mastheads, with the same no-default-
+art/complete-non-event-when-disabled shape issue #177's own banners use.
+
 The project intentionally provides two composition paths:
 
 - a robust simple/line-oriented editor available everywhere;
@@ -2922,9 +2945,9 @@ introduced.
 
 ### 13.4 Backup and restore (issue #60's first operational slice)
 
-A node's recoverable state is not only its database — it is nine artifacts,
-today scattered across derived, `db_path`-relative filenames with no single
-existing tool that treats them as one recoverable set:
+A node's recoverable state is not only its database — it is twelve
+artifacts, today scattered across derived, `db_path`-relative filenames
+with no single existing tool that treats them as one recoverable set:
 
 | Artifact | Location | Written by |
 |---|---|---|
@@ -2937,12 +2960,15 @@ existing tool that treats them as one recoverable set:
 | Logoff banner | `db_path.parent / f"{db_path.stem}_logoff_banner.ans"` | SysOp, via the logoff-banner menu screen (issue #177) |
 | New-account banner (before signup) | `db_path.parent / f"{db_path.stem}_new_account_banner_before.ans"` | SysOp, via its own menu screen (issue #177) |
 | New-account banner (after signup) | `db_path.parent / f"{db_path.stem}_new_account_banner_after.ans"` | SysOp, via its own menu screen (issue #177) |
+| Board list masthead | `db_path.parent / f"{db_path.stem}_board_list_banner.ans"` | SysOp, via its own menu screen (issue #176) |
+| File area masthead | `db_path.parent / f"{db_path.stem}_file_area_banner.ans"` | SysOp, via its own menu screen (issue #176) |
+| Chat channel picker masthead | `db_path.parent / f"{db_path.stem}_chat_channel_picker_banner.ans"` | SysOp, via its own menu screen (issue #176) |
 
 A backup covering only the database silently loses the SSH host key (every
 client gets a MITM warning on next connect after restore) and, far more
 seriously, the Link node identity (root-key custody is explicitly "part of
 ordinary node backup and restore" per §4.5's node identity model, not a
-separate ceremony) — so this design treats all nine as one atomic backup
+separate ceremony) — so this design treats all twelve as one atomic backup
 operation, never a DB-only one.
 
 **Mechanism**: a new `netbbs.backup` module (synchronous, path-based — no
