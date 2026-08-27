@@ -51,4 +51,4 @@ def effective_truecolor(session: Session, db: Database, user: User) -> bool:
     should use for its `truecolor` argument -- override-wins-over-
     negotiated logic lives here once, not duplicated per call site."""
     override = color_depth_override(db, user)
-    return session.supports_truecolor if override is None else override == "truecolor"
+    return getattr(session, "supports_truecolor", False) if override is None else override == "truecolor"
