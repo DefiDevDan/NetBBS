@@ -319,10 +319,35 @@ def _load_voidrunner_default_save_dir() -> Path:
             return module._default_save_dir()
 
 
+def _remove_hall_of_fame_entry(save_dir: Path, user_id: int) -> None:
+    """The door also writes a *shared* `leaderboard.json` in this same
+    default save directory (see `update_hall_of_fame`) -- unlike
+    `save_path`, this file may genuinely hold other pilots' real dogfood
+    history if anyone has ever played Voidrunner for real on this same
+    machine using its own default (non-overridden) save location, so
+    cleanup here must only ever strip out this test's own entry, never
+    delete or truncate the whole file."""
+    path = save_dir / "leaderboard.json"
+    if not path.exists():
+        return
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(entries, list):
+        return
+    remaining = [e for e in entries if e.get("user_id") != user_id]
+    if remaining:
+        path.write_text(json.dumps(remaining), encoding="utf-8")
+    else:
+        path.unlink(missing_ok=True)
+
+
 def test_the_real_space_trading_door_plays_a_full_opening_loop_through_run_door(db, lane, player):
     door = create_door(db, "Voidrunner", sys.executable, args=(str(_VOIDRUNNER_PATH),), creator=player)
     session = FakeSession()
-    save_path = _load_voidrunner_default_save_dir() / f"{player.id}.json"
+    save_dir = _load_voidrunner_default_save_dir()
+    save_path = save_dir / f"{player.id}.json"
     # Belt-and-suspenders: a prior interrupted run of this same test
     # (skipping its own `finally` cleanup below -- a hard process kill,
     # not an ordinary assertion failure, which `finally` already
@@ -334,6 +359,7 @@ def test_the_real_space_trading_door_plays_a_full_opening_loop_through_run_door(
     # leftover file from an earlier ad hoc manual repro of this exact
     # scenario made this test fail intermittently.
     save_path.unlink(missing_ok=True)
+    _remove_hall_of_fame_entry(save_dir, player.id)
 
     async def scenario():
         task = asyncio.create_task(_run(session, lane, door, player))
@@ -356,3 +382,4 @@ def test_the_real_space_trading_door_plays_a_full_opening_loop_through_run_door(
         assert save_path.exists()  # the door manages its own save, unmediated by NetBBS
     finally:
         save_path.unlink(missing_ok=True)
+        _remove_hall_of_fame_entry(save_dir, player.id)
